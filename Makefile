@@ -354,3 +354,12 @@ build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime
 
 build/test_romfs: tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c runtime/romfs_build.h runtime/romfs_image.h
 	clang -O1 -Iruntime -o $@ tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c -lpthread
+
+$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
+
+test-vibration: $(B)/test_vibration
+	$(B)/test_vibration
+
+.PHONY: test-vibration
