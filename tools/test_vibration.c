@@ -36,10 +36,22 @@ static IpcResp command(uint32_t cmd, const void *data, uint32_t size) {
     return resp;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     const uint32_t left = 0x00000003, right = 0x00010003;
     SDL_Gamepad *pad = (SDL_Gamepad *)(uintptr_t)1;
     vibration_reset();
+    if (argc == 2) {
+        // Run in separate processes to cover the cached shape switch and absent variables.
+        VibrationValue pulse = {.1f, 100, 0, 320};
+        vibration_send(left, &pulse);
+        vibration_update(pad, true);
+        assert(motor_high == 0 && duration == 100);
+        if (!strcmp(argv[1], "off")) assert(motor_low == 0);
+        else if (!strcmp(argv[1], "raw")) assert(motor_low == 6554);
+        else { assert(!strcmp(argv[1], "shaped")); assert(motor_low > 16384); }
+        printf("vibration: %s environment check passed\n", argv[1]);
+        return 0;
+    }
     IpcResp resp = command(205, NULL, 0);
     assert(resp.data_size == 1 && resp.data[0] == 1);
     resp = command(203, NULL, 0);

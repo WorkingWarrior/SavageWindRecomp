@@ -397,6 +397,10 @@ $(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibr
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
 
 test-vibration: $(B)/test_vibration
-	$(B)/test_vibration
+	SAVAGEWIND_VIBRATION=1 SAVAGEWIND_VIBRATION_SHAPE=0 $(B)/test_vibration
+	env -u SAVAGEWIND_VIBRATION -u SAVAGEWIND_VIBRATION_SHAPE $(B)/test_vibration shaped
+	env -u SAVAGEWIND_VIBRATION SAVAGEWIND_VIBRATION_SHAPE=0 $(B)/test_vibration raw
+	env -u SAVAGEWIND_VIBRATION_SHAPE SAVAGEWIND_VIBRATION=0 $(B)/test_vibration off
+	SAVAGEWIND_VIBRATION=1 SAVAGEWIND_VIBRATION_SHAPE=1 $(B)/test_vibration shaped
 
 .PHONY: test-vibration

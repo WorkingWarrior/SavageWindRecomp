@@ -1,5 +1,5 @@
 // The SDK mixes its vibration nodes itself, then sends HID commands 201 / 206. SDL's two motors cannot reproduce
-// HD rumble frequencies: use the strongest low / high band across the two device values instead.
+// HD rumble frequencies: approximate them with frequency-shaped motor amplitudes by default.
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <pthread.h>
@@ -26,14 +26,9 @@ void vibration_send(uint32_t handle, const VibrationValue *value) {
     if (i < 0) return;
     pthread_mutex_lock(&lock);
     if (permitted) {
-        VibrationValue previous = values[i];
         values[i] = *value;
         values[i].low_amplitude = amplitude(value->low_amplitude);
         values[i].high_amplitude = amplitude(value->high_amplitude);
-        if ((previous.low_amplitude != values[i].low_amplitude || previous.high_amplitude != values[i].high_amplitude) &&
-            getenv("SAVAGEWIND_VIBRATION"))
-            LOG("[vibration] handle %#x low %.3f@%.0fHz high %.3f@%.0fHz\n", handle,
-    values[i].low_amplitude, values[i].low_frequency, values[i].high_amplitude, values[i].high_frequency);
     }
     pthread_mutex_unlock(&lock);
 }
@@ -79,7 +74,7 @@ static float tune(const char *name, float def) {
 
 static bool shape_on(void) {
     static int on = -1;
-    if (on < 0) { const char *s = getenv("SAVAGEWIND_VIBRATION_SHAPE"); on = s && *s && *s != '0'; }
+    if (on < 0) { const char *s = getenv("SAVAGEWIND_VIBRATION_SHAPE"); on = !s || strcmp(s, "0") != 0; }
     return on;
 }
 
@@ -141,7 +136,9 @@ void vibration_update(SDL_Gamepad *pad, bool focused) {
     if (!pad) return;
     pthread_mutex_lock(&lock);
     VibrationValue snap[2] = {values[0], values[1]};
-    bool on = focused && permitted;
+    // Both vibration and shaping are opt-out: only an explicit =0 disables them.
+    const char *setting = getenv("SAVAGEWIND_VIBRATION");
+    bool on = focused && permitted && (!setting || strcmp(setting, "0") != 0);
     pthread_mutex_unlock(&lock);
     uint64_t now = SDL_GetTicks();
     uint16_t low = 0, high = 0;

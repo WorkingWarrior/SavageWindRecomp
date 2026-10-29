@@ -30,6 +30,9 @@ Switch pads) the user needs access to `/dev/hidraw*`, which most distributions g
 (`steam-devices`, or Steam installed); without them the controller still works through the kernel driver. Started from
 Steam with Steam Input on, the game sees Steam's virtual Xbox controller.
 
+Controller vibration and frequency shaping are enabled by default. Set `SAVAGEWIND_VIBRATION=0` to disable rumble,
+or `SAVAGEWIND_VIBRATION_SHAPE=0` to use the original direct amplitude mapping without shaping.
+
 If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package (the AppImage runtime
 needs `fusermount3`), or run it as `./Savage_Wind-....AppImage --appimage-extract-and-run`.
 
