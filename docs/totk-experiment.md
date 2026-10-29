@@ -139,8 +139,8 @@ Savage's registered service names, read from the source, are `acc:u0`,
   this is a pre-existing baseline finding, not a TotK-induced regression.
 - Baseline synthetic tests: game sites **35 checks PASS**, layout **59 checks
   PASS**. These do not prove gameplay.
-- Baseline full build: **PENDING**. TotK generation/link/runtime and post-change
-  BOTW regression: **PENDING**.
+- Baseline full build: **PASS**. TotK generation: **PASS** with unsupported SDK
+  instructions recorded below. TotK link/runtime: **PENDING**.
 
 ## Implementation decision
 
@@ -162,5 +162,58 @@ and other platforms are not part of this experiment.
 Baseline full build **PASS**: exit 0, 284.84 s, `savagewind` and `swgame.so` linked.
 The original executable/library were preserved under `build/totk-experiment/`
 before rebuilding. Baseline runtime started with isolated config/cache/save paths;
-it produced Vulkan draws, but its frame-180 screenshot was black, so that image
-does not establish menu/gameplay acceptance. A later visual comparison is pending.
+its frame-180 screenshot was black. Later frame-3100 window captures from fresh
+baseline and post-change runs both visibly show the opening scene and subtitle
+**“Open your eyes…”**. Both runs used scratch saves; no existing save was copied.
+These are visual startup checks, not full gameplay/physical input/audio acceptance.
+The two captures are under `build/totk-experiment/botw-{before,after}-menu-state/`
+in `build/frames/window_03100.png`. The directory name “menu” is just a log name;
+the captured scene is the game's opening, not a title menu.
+
+## Executed generation and regression checks
+
+| Check | Result |
+| --- | --- |
+| Post-change BOTW sites / layout tests | PASS: 35 / 59 checks, matching baseline |
+| BOTW generation before/after | PASS: all **997 files byte-identical**, compared by relative names and SHA-256 |
+| Post-change BOTW full build | PASS, exit 0; generated object reuse is valid because generated C and cpu.h are unchanged |
+| BOTW visual startup | Opening scene/subtitle observed before and after, same frame index, separate fresh state |
+| Wrong-game generator negative control | BOTW NSO with `--game totk` exits 1, refuses ID cd57b23fa4bbad65; creates no layout output |
+| Wrong-game library negative control | BOTW library with `--game totk` is rejected before module loading: “TotK experiment requires recognized 1.0.0 code with no BOTW sites” |
+
+The first visual runs ended at their external observation timeout (90/100 s,
+exit 124), not a successful game exit. Screenshots were produced before timeout.
+No timeout was increased to fix startup behavior; later captures were selected
+because frame 180 showed no content. No causal performance comparison was made.
+
+TotK generation command (source checkout, read-only ExeFS):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 tools/venv/bin/python tools/gen.py all \
+  ../totk-recomp/totk-build/data/exefs build/totk-experiment/totk-gen \
+  --game totk --simd c --hle runtime/hle/hle_symbols.txt
+```
+
+Exit **0**, with the following layout and results:
+
+| Module | Guest range | Functions | C chunks | Unsupported counter |
+| --- | --- | ---: | ---: | ---: |
+| main | 0x7000000000–0x7004666000 | 243504 | 1332 | 0 |
+| subsdk0 | 0x7004666000–0x7004d0f000 | 14007 | 181 | 0 |
+| sdk | 0x7004d0f000–0x7005ae8000 | 40275 | 231 | 277 |
+
+The generated layout carries version 1.0.0 and **zero BOTW sites**. Generation
+times reported per module: 61 s / 4 s / 9 s. This does not prove every generated
+function is semantically correct or reachable. In particular, the SDK's 277
+unsupported cases remain potential runtime traps pending execution.
+
+Build attempt: `make -j4 B=build/totk-run GEN=build/totk-experiment/totk-gen`,
+with output in `build/totk-experiment/totk-build.log` (**PENDING**).
+
+`tools/totk_experiment_run.py` runs one attempt under a pty, preserving a transcript
+and JSON result in a new subdirectory of `build/totk-experiment`. It clears inherited
+SavageWind debug switches and isolates config, cache and saves. It terminates at
+the first logged missing behavior/fatal error or observation timeout; it never
+retries or supplies replacement service results. A negative-control run already
+verified rejection of a BOTW library. An early trap still needs classification:
+it is not automatically evidence of a graphics/service blocker.
