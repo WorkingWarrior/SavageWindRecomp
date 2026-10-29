@@ -141,3 +141,26 @@ Savage's registered service names, read from the source, are `acc:u0`,
   PASS**. These do not prove gameplay.
 - Baseline full build: **PENDING**. TotK generation/link/runtime and post-change
   BOTW regression: **PENDING**.
+
+## Implementation decision
+
+Use `gen.py --game totk` to lift the existing TotK NSOs into SavageWind's **Cpu**
+contract. No Ctx adapter, Cpu layout change or dispatcher change is introduced.
+`--game botw` remains the generator/runtime default; BOTW version/site lookup
+retains its existing checks. `runtime/game_profile.h` holds the independently
+recognized TotK 1.0.0 build prefix `082ce09b06e33a12`, read by the Python profile.
+Runtime `--game totk --play <data>` checks the main module ID, version and absence
+of BOTW sites before accepting the game library. GameLib ABI remains unchanged.
+
+TotK disables BOTW code patches, site dereferences, title/options modification,
+FPS/controller/VFR patches, voice/RSTB/version rewrites, test warp/save rewriting
+and render-target/shadow scaling. It retains guest target sizes and a neutral
+16:9 output fit. This is preparation for a bounded attempt, not rendering proof.
+The BOTW installer is deliberately unavailable in TotK mode. Packaged TotK setup
+and other platforms are not part of this experiment.
+
+Baseline full build **PASS**: exit 0, 284.84 s, `savagewind` and `swgame.so` linked.
+The original executable/library were preserved under `build/totk-experiment/`
+before rebuilding. Baseline runtime started with isolated config/cache/save paths;
+it produced Vulkan draws, but its frame-180 screenshot was black, so that image
+does not establish menu/gameplay acceptance. A later visual comparison is pending.

@@ -10,6 +10,7 @@
 
 #include "vk.h"
 #include "../../settings.h"
+#include "../../game_profile.h"
 #include "../astc.h"
 #include "../glyphs.h"
 #include "../renderer.h"
@@ -178,6 +179,7 @@ static bool rs_stale(const TexBackend *b) {
 // shadow map). Everything else keeps its guest size: LUTs, cubemaps, the small odd-sized steps of the bloom and
 // exposure chains (sampled with normalized coordinates, they work at any size). SAVAGEWIND_NO_SCALE=1: none scaled.
 static uint8_t tex_scale_group(const NvnTexture *t) {
+    if (!game_is_botw()) return RS_NONE;
     static int on = -1;
     if (on < 0) on = getenv("SAVAGEWIND_NO_SCALE") == NULL;
     if (!on) return RS_NONE;

@@ -3,6 +3,7 @@
 // (runtime/gamelib.h, the generated layout.c). g_site holds them once the library is loaded (gamelib_load).
 #pragma once
 #include <stdint.h>
+#include "game_profile.h"
 
 // name (as in tools/game_sites.py) and what is there
 #define GAME_SITES(X)                                                                                                  \

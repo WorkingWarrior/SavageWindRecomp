@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../game_profile.h"
 
 typedef struct { const char *name; float x, y, z; const char *map_type, *map_name; } WarpPlace;
 // Positions are the game's own start positions near each place (Map/MainField/Static.smubin and
@@ -76,6 +77,7 @@ static void set_str(uint8_t *d, uint64_t size, const char *name, const char *s) 
 }
 
 bool test_warp_active(void) {
+    if (!game_is_botw()) return false;
     return getenv("SAVAGEWIND_TEST_WARP") || getenv("SAVAGEWIND_TEST_TIME") || getenv("SAVAGEWIND_TEST_WEATHER") ||
            getenv("SAVAGEWIND_TEST_FLAGS");
 }
@@ -143,6 +145,7 @@ void test_warp_patch(uint8_t *d, uint64_t size) {
 // [0x7001cf5d00] (+0x5c0 count, +0x5c8 its managers; [0] = TimeMgr, the time at +0xb8), as SAVAGEWIND_CLOCK_PROBE
 // reads it (runtime/hle/framepace.c).
 void test_warp_frame(uint64_t frame) {
+    if (!game_is_botw()) return;
     static float tod = -2;
     if (tod == -2) {
         const char *t = getenv("SAVAGEWIND_TEST_TIME");

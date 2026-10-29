@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "../framepace.h"
+#include "../game_profile.h"
 #include "../hle.h"
 #include "../platform.h"
 #include "../settings.h"
@@ -64,6 +65,14 @@ double upscale_factor(void) {
 static volatile float g_view_shape = 1, g_fov = 1;
 
 void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
+    if (!game_is_botw()) {
+        double fit = fmin(dw / 16.0, dh / 9.0);
+        *o = (OutScale){.sx = 1, .sy = 1, .scene_sx = 1, .scene_sy = 1, .shape = 1,
+                        .vx = (dw - 16 * fit) / 2, .vy = (dh - 9 * fit) / 2,
+                        .vw = 16 * fit, .vh = 9 * fit, .crop = {0, 0, 1, 1}};
+        g_view_shape = g_fov = 1;
+        return;
+    }
     double fit = fmin(dw / 1920.0, dh / 1080.0);
     static double forced = -1, wide_test = -1;
     if (forced < 0) forced = getenv("SAVAGEWIND_SCALE") ? atof(getenv("SAVAGEWIND_SCALE")) : 0;
@@ -199,6 +208,7 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o) {
 // SAVAGEWIND_SHADOW_AT=<frame>:<console|high|ultra|extreme|width>,... from that presented frame on (same-view A/B in one
 // run).
 unsigned shadow_map_size(unsigned long long frame) {
+    if (!game_is_botw()) return 0;
     static const unsigned size[SHADOW_COUNT] = {0, 2048, 4096, 8192};
     static int n = -1;
     static unsigned long long at[8];

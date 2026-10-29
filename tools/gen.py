@@ -31,6 +31,7 @@ import unicorn as uc
 from unicorn import arm64_const as A
 
 import game_sites
+import game_profiles
 import layout
 import patches
 from analyze import eh_frame_extents, eh_frame_functions
@@ -604,6 +605,8 @@ def discover(m, starts):
 
 def main_sites(nso, base, opts):
     """(version, sites) of a main module (tools/game_sites.py); none with --no-sites"""
+    if getattr(opts, 'game', 'botw') == 'totk':
+        return game_profiles.totk_version(nso.build_id), {}
     if opts.no_sites:
         return '', {}
     return game_sites.for_module(nso, base, opts.any_version, lambda s: print(s, file=sys.stderr))
@@ -701,6 +704,8 @@ def main():
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--any-version', action='store_true')  # (a main module of a version not supported yet)
     ap.add_argument('--no-sites', action='store_true')  # (made-up modules, tools/test_layout.py: no sites, no patches)
+    ap.add_argument('--game', choices=('botw', 'totk'), default='botw',
+                    help='game identity, independent of BOTW version/site selection; TotK is experimental')
     ap.add_argument('--simd', choices=('asm', 'c'),
                     default='asm' if platform.machine().lower() in ('arm64', 'aarch64') else 'c')
     args = ap.parse_args()

@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "gamelib.h"
+#include "game_profile.h"
 #include "paths.h"
 #include "nvn/maxwell/shader.h"
 #include "nvn/shader_archive.h"
@@ -318,7 +319,13 @@ int main(int argc, char **argv) {
     static char arg_root[1024];
     bool build_romfs = false, scan = false, precompile = false;
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--play")) skip_launcher = true;
+        if (!strcmp(argv[i], "--game")) {
+            if (++i >= argc || !game_select(argv[i])) {
+                fprintf(stderr, "--game requires botw or totk (TotK is an experiment)\n");
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--play")) skip_launcher = true;
         else if (!strcmp(argv[i], "--config")) config = true;
         else if (!strcmp(argv[i], "--build-romfs")) build_romfs = true;
         else if (!strcmp(argv[i], "--scan-shaders")) scan = true;
@@ -329,7 +336,12 @@ int main(int argc, char **argv) {
 #ifdef __APPLE__
     if (launcher_config_key_held()) config = true;  // (the Mac's "Savage Wind Configuration": Option held)
 #endif
+    if (!game_is_botw() && (!skip_launcher || config || build_romfs || scan || precompile)) {
+        fprintf(stderr, "TotK experiment uses --game totk --play <existing data>; the installer is BOTW-only\n");
+        return 2;
+    }
     rt_paths_init();  // the data root becomes the working directory (runtime/paths.h)
+    if (!game_is_botw()) LOG("[experiment] game %s: BOTW sites, patches and scaling disabled\n", game_profile_name());
     if (build_romfs) return build_romfs_image(root);
     if (scan) return scan_shaders(root);
 #ifndef __APPLE__

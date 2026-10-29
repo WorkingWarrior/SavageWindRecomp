@@ -77,6 +77,19 @@ const char *g_game_version = "";
 // g_site from the library's sites: every one runtime/game_sites.h names has to be there (the library and this build
 // come from the same tools/game_sites.py, or their GAMELIB_IDs would differ).
 static bool take_sites(const GameLibTables *t) {
+    if (!game_is_botw()) {
+        const GameLibModule *main = NULL;
+        for (uint32_t i = 0; i < *t->nmodules; i++)
+            if (!strcmp(t->modules[i].name, "main")) main = &t->modules[i];
+        if (!main || strncmp(main->build_id, TOTK_100_BUILD_ID, 16) ||
+            strcmp(t->version, "1.0.0") || *t->nsites) {
+            snprintf(g_error, sizeof g_error, "TotK experiment requires recognized 1.0.0 code with no BOTW sites");
+            return false;
+        }
+        memset(&g_site, 0, sizeof g_site);
+        g_game_version = t->version;
+        return true;
+    }
     static const struct {
         const char *name;
         size_t off;

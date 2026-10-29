@@ -62,6 +62,7 @@ static int env_int(const char *name, int def) {
 }
 
 bool framepace_on(void) {
+    if (!game_is_botw()) return false;
     static int on = -1;
     if (on < 0) on = env_int("SAVAGEWIND_FRAMEPACE", 1) != 0;
     return on;
@@ -85,7 +86,7 @@ static bool in_event(void) {
     return evt && *(uint64_t *)(uintptr_t)(evt + 0x1d2b8);
 }
 
-bool framepace_in_event(void) { return in_event(); }
+bool framepace_in_event(void) { return game_is_botw() && in_event(); }
 
 // The game's UI screen `id` exists (the screen manager's array; ids as runtime/ui/game_options.mm uses them)
 static bool screen_up(uint32_t id) {
@@ -96,12 +97,13 @@ static bool screen_up(uint32_t id) {
 }
 
 // (screens: 1 the start screen, 0x38 its load and confirmation menus)
-bool framepace_title_ui(void) { return screen_up(1) || screen_up(0x38); }
+bool framepace_title_ui(void) { return game_is_botw() && (screen_up(1) || screen_up(0x38)); }
 
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
-bool framepace_menu_ui(void) { return *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
+bool framepace_menu_ui(void) { return game_is_botw() && *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
 
 int framepace_target(void) {
+    if (!game_is_botw()) return 30;
     static int forced = -2, movie = -2, menu = -2, event = -2;
     if (forced == -2) forced = env_int("SAVAGEWIND_FPS", -1);
     extern bool movie_paced(void);
@@ -203,6 +205,7 @@ static void clock_probe(uint64_t vfr);
 static void log_screens(void);
 
 void rt_vfr_update(uint64_t vfr) {
+    if (!game_is_botw()) return;
     extern bool nvn_timeline(void);
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
     extern uint64_t g_fs_vfr;  // (SAVAGEWIND_FRAME_LOG=2, nvn/objects.c)
@@ -283,6 +286,7 @@ void rt_vfr_update(uint64_t vfr) {
 // instead of presented frames, so one script drives the game the same way at any frame rate: each presented frame
 // adds its length x 30, at most 1.5 (a load's long frames count like the console's).
 uint64_t framepace_script_frame(uint64_t presented) {
+    if (!game_is_botw()) return presented;
     static int on = -1;
     static double t;
     static uint64_t last;
