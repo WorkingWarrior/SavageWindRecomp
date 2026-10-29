@@ -65,10 +65,79 @@ or key access required). This reconstruction has not been run here.
 6. Check BOTW regression evidence separately and report blockers, effort and
    recommendation based on executed results.
 
+## Inventory (source evidence, before implementation)
+
+Paths in the left column are in SavageWind; `reference:` means `../totk-recomp`.
+Line locations below refer to the experiment base before edits. The coordinator
+checked the key cited code after the delegated inventories. None of this proves
+TotK execution or visual correctness.
+
+### Graphics and shaders (priority)
+
+| Area | Counterpart and concrete difference |
+| --- | --- |
+| NVN entry | `runtime/hle/nvn_boot.c:34-52` resolves names into host implementations. A missing implementation is registered as a null HLE slot; `runtime/dispatch.c:139-147` routes it to the unimplemented handler. Reference `runtime/hle_nvn.cpp` also has a fallback; neither proc list proves game compatibility. |
+| Maxwell and SPIR-V | Both have `runtime/nvn/maxwell/translate.c` and Vulkan shader compilation. Reference `runtime/nvn/vulkan/shaders.c:65-117` applies NoContraction and `:119-137` offers **opt-in**, device-checked SignedZeroInfNanPreserve. Reference also has `spvgen.c`; Savage uses `runtime/nvn/vulkan/spirv.c`. No TotK shader corpus was run on Savage. |
+| Synchronization | Savage `runtime/nvn/vulkan/vk.h:6-8` documents GENERAL layouts, barriers and timeline sequence numbers. Reference `runtime/nvn/vulkan/exec.c:681-693` additionally submits at a game fence to delimit per-submission copies. Do not treat their synchronization as interchangeable. |
+| GPU-written storage | Savage `runtime/nvn/vulkan/exec.c:3286-3304` waits when subsequent CPU copies overlap GPU writes. Reference `runtime/nvn/vulkan/exec.c:4682-4715` has a VRAM device window with upload/writeback and fallback to host memory. This is a different strategy, not evidence that Savage cannot execute any TotK shader. |
+| BOTW target scaling | `runtime/nvn/vulkan/textures.c:175-195` classifies targets using BOTW 1920x1080, 1600x900 and square-shadow assumptions. `runtime/nvn/output_scale.c:66-116` reads BOTW UI/event state and applies projection/FOV policy. These must be neutralized for TotK before rendering. |
+| Resource fixes | Reference `tools/rstb_slack.py:1-16` supplies an overlay RESTBL with more heap slack; `make_gameover_fix.py` and `make_quickmenu_fix.py` change frame-based resource behavior. These are **not** NVN implementations. No such fixes will be transferred before a corresponding observed blocker. |
+
+### SDK, memory and CPU contract
+
+Savage executes a generated SDK over its own SVC kernel and IPC services.
+The reference replaces more SDK calls with direct HLE. Counting HLE macros, or
+finding no identically named HLE source file, does **not** establish a missing
+service in Savage.
+
+| Area | Savage | Reference | Evidence limit / concrete gap |
+| --- | --- | --- | --- |
+| CPU | `runtime/cpu.h:7-35`: x[32], separate sp/pc, NZCV bits 31..28, TLS registers, thread pointer, FPCR/FPSR, v[32] at offset 512 | `runtime/rt.h:31-41`: Ctx x/sp/v, separate n/z/c/vf bytes, 32-bit FPCR/FPSR, tpidr, extra exclusive value and host pointer | Layouts cannot be cast or linked directly. |
+| Dispatch | `runtime/dispatch.c:139-170`: c->pc and thread-local target cache, generated GuestFn(Cpu*) | `runtime/rt_main.cpp:155-179`: import thunks and rt_call_indirect(Ctx*, target) | Prefer regenerating NSOs into the existing Cpu contract; actual generation/link must establish feasibility. |
+| Address space | `runtime/rt.h:16-31`: modules back-to-back at 0x7000000000, heap 0x7240000000 / max 3.25 GiB | `runtime/rt_main.cpp`, `runtime/hle_os_mem.cpp:24-40`: reference-specific layout and heap accounting | Both use host pointers for guest addresses, with different placement and accounting. No address translation bridge is implied. |
+| Memory calls | `runtime/kernel.c:847-875`: SetHeapSize, QueryMemory, Map/UnmapMemory | `runtime/hle_os_mem.cpp:30-34`: QueryMemoryInfo plus direct allocation HLE | Savage permissions/attributes are no-ops; MapMemory copies. Whether TotK requires different semantics is unverified. |
+| Threads | `runtime/kernel.c`, `runtime/kernel.h`: SVC kernel threads, waits and synchronization | `runtime/hle_os_thread.cpp:135-145`: SDK HLE creates host threads | Both have threads; TLS/scheduling semantics are not proven equivalent. |
+| Files / saves | `runtime/services/fs.c`, `runtime/ipc.c:57-74`: fsp-srv IPC and host/RomFS storage | `runtime/hle_fs.cpp:221-227`: direct MountRom/SaveData/cache/temp HLE | Unknown Savage services use a logging stub (`runtime/ipc.c:19-40`); unknown commands can also return success. A logged stub is a research stop, not acceptance. |
+| Account | `runtime/services/acc.c:1-22`: acc:u0, one local UID | `runtime/hle_account.cpp`: local-user HLE | Source counterpart, untested on TotK. |
+| Audio | `runtime/services/audio.c:1021-1040`: audren:u renderer | `runtime/hle_audio.cpp`: nn::audio HLE | Different boundary/ABI. Source presence does not prove TotK audio. |
+| Input / settings | `runtime/services/hid_set.c`, `runtime/hle/input.c`: HID and set services | `runtime/hle_hid.cpp`: HID HLE | Host keybindings and walking threshold were chosen for BOTW; no physical controls tested here. |
+| Time | `runtime/services/time.c`: time:u/a/s | `runtime/hle_time.cpp`: clocks and calendar HLE | Source counterpart; no behavioral acceptance. |
+
+Savage's registered service names, read from the source, are `acc:u0`,
+`appletOE`, `apm`, `lm`, `audren:u`, `audout:u`, `fsp-srv`, `hid`, `hid:sys`,
+`set`, `set:sys`, `pctl`, `pctl:s`, `pctl:a`, `pctl:r`, `aoc:u`, `nfp:user`,
+`time:u`, `time:a`, `time:s`, plus `sm:` in `runtime/ipc.c`.
+
+### BOTW assumptions and experiment boundaries
+
+- `tools/game_sites.py` / `runtime/game_versions.h` describe BOTW versions;
+  `tools/gen.py:605-617` obtains sites and applies `tools/patches.py` only when
+  those sites exist. `--no-sites` alone does not make the runtime game-neutral.
+- `runtime/gamelib.c:77-98` requires all BOTW sites. TotK needs a distinct,
+  recognized identity that bypasses **only** those BOTW requirements, without
+  fabricating addresses or weakening BOTW validation.
+- `runtime/hle/framepace.c:73-102,167-180` dereferences BOTW pause/UI/event data
+  and writes the controller step. `runtime/ui/game_options.mm:815-831` mutates
+  BOTW title button tables. `runtime/services/fs.c:493-496` patches its version
+  string. All must be inactive for TotK.
+- `runtime/nvn/objects.c:1078-1102` reads the BOTW frame-loop object when its
+  return address matches. TotK must keep only the ordinary NVN interval behavior.
+- `runtime/services/test_warp.c:145-162` has a hard-coded BOTW world pointer;
+  `runtime/services/fs.c:768-773` can patch BOTW save data. Both must be disabled
+  for TotK, including when their debug environment variables are set.
+- The launcher is a BOTW installer: its version list and RomFS validation are
+  BOTW-specific. This experiment uses explicit generator selection and `--play`
+  with separate runtime state; a multi-game installer is outside this bring-up.
+
 ## Current evidence
 
 - Reference extracted ExeFS exists with `main`, `rtld`, `sdk`, `subsdk0` and
   `main.npdm`; it can be used in place without modifying/copying originals.
-- Generator, link, runtime and BOTW regression results: **PENDING**.
-- Read-only inventories have been delegated by explicit user request; their
-  findings remain hypotheses until checked against the cited source lines.
+- Baseline BOTW 1.9.0 inputs found at the existing user data root, without changing
+  them. Generation exit status 0: main 125144 functions / 559 chunks, subsdk0
+  13936 / 179, sdk 40516 / 254. The SDK reports one unsupported instruction;
+  this is a pre-existing baseline finding, not a TotK-induced regression.
+- Baseline synthetic tests: game sites **35 checks PASS**, layout **59 checks
+  PASS**. These do not prove gameplay.
+- Baseline full build: **PENDING**. TotK generation/link/runtime and post-change
+  BOTW regression: **PENDING**.
