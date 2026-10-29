@@ -163,6 +163,12 @@ static void boot(const char *root) {
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
+    if (!game_is_botw()) {
+        Module *sdk = loader_module("sdk");
+        if (!sdk || sdk->size <= TOTK_100_SDK_LSE_FLAG_OFF) FATAL("TotK SDK has no observed LSE flag address\n");
+        uint64_t flag = sdk->base + TOTK_100_SDK_LSE_FLAG_OFF;
+        LOG("[experiment] outline atomics flag %llx = %u after module load (read only)\n", flag, LD8(flag));
+    }
     { extern void fs_title_version_patch(void); fs_title_version_patch(); }  // (runtime/services/fs.c)
     { extern void settings_load(void); settings_load(); }
     { extern void language_booted(void); language_booted(); }  // (runtime/language.c)

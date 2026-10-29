@@ -207,6 +207,11 @@ times reported per module: 61 s / 4 s / 9 s. This does not prove every generated
 function is semantically correct or reachable. In particular, the SDK's 277
 unsupported cases remain potential runtime traps pending execution.
 
+Their generated C contains **277 unique guest PCs**, duplicated into 434 emitted
+`rt_udf` calls: 197 PCs tagged `exclusive pair / CAS` and 80 tagged `ldst reg
+atomic/pac`. These tags do not identify the exact instructions or prove reachability.
+No instruction implementation has been added speculatively.
+
 Build attempt: `make -j4 B=build/totk-run GEN=build/totk-experiment/totk-gen`,
 with output in `build/totk-experiment/totk-build.log` (**PENDING**).
 
@@ -217,3 +222,123 @@ the first logged missing behavior/fatal error or observation timeout; it never
 retries or supplies replacement service results. A negative-control run already
 verified rejection of a BOTW library. An early trap still needs classification:
 it is not automatically evidence of a graphics/service blocker.
+
+## Cost so far
+
+The initial profile/observation changes span **17 files**: 12 runtime files,
+3 tools, Makefile and this document. There are 24 added/changed runtime functions
+including the inline profile predicate; most changes are one guard at an existing
+function boundary. Generator changes are limited to profile selection in
+`main_sites` and its CLI option. The game library ABI is unchanged.
+
+**Cpu/Ctx conversion cost: 0 changed Cpu/Ctx/dispatcher/lifter/SIMD files and
+0 changed functions in that contract.** NSOs were regenerated rather than linking
+the reference's incompatible Ctx-generated code. No CPU/GPU performance delta
+was measured. This count will be updated if an executed trap requires a change.
+
+## Pair instructions and outline atomics (revised user scope)
+
+The user replaced the temporary “large mnemonic set” stop: implement the observed
+64-bit exclusive pairs, investigate outline-atomic guards, and continue to the
+first missing service/graphics behavior or menu. The initial build was stopped
+at that temporary boundary after about 9m52s, preserving 1688 objects. There was
+no compiler failure and no completed TotK executable/library at that point.
+
+### Exact decoding of the original 277 unsupported PCs
+
+The coordinator decoded the original SDK words with Capstone 5.0.7, matching
+**277 unique PCs / 80 exact mnemonics**. Full address/word/operand metadata is
+local only: `build/totk-experiment/unsupported-sdk-decoded.json` (not committed).
+The 177 exclusive pairs are four mnemonics; the other 100 PCs are size/order
+variants of CAS/CASP, SWP, LDADD, LDCLR, LDEOR and LDSET. Counting spelling variants
+does not by itself determine implementation effort.
+
+| Mnemonic | Unique PCs | Mnemonic | Unique PCs | Mnemonic | Unique PCs | Mnemonic | Unique PCs |
+| --- | ---: | --- | ---: | --- | ---: | --- | ---: |
+| `cas` | 2 | `ldaddal` | 2 | `ldclrlh` | 1 | `ldsetb` | 1 |
+| `casa` | 2 | `ldaddalb` | 1 | `ldeor` | 2 | `ldseth` | 1 |
+| `casab` | 1 | `ldaddalh` | 1 | `ldeora` | 2 | `ldsetl` | 2 |
+| `casah` | 1 | `ldaddb` | 1 | `ldeorab` | 1 | `ldsetlb` | 1 |
+| `casal` | 2 | `ldaddh` | 1 | `ldeorah` | 1 | `ldsetlh` | 1 |
+| `casalb` | 1 | `ldaddl` | 2 | `ldeoral` | 2 | `ldxp` | 26 |
+| `casalh` | 1 | `ldaddlb` | 1 | `ldeoralb` | 1 | `stlxp` | 63 |
+| `casb` | 1 | `ldaddlh` | 1 | `ldeoralh` | 1 | `stxp` | 38 |
+| `cash` | 1 | `ldaxp` | 50 | `ldeorb` | 1 | `swp` | 2 |
+| `casl` | 2 | `ldclr` | 2 | `ldeorh` | 1 | `swpa` | 2 |
+| `caslb` | 1 | `ldclra` | 2 | `ldeorl` | 2 | `swpab` | 1 |
+| `caslh` | 1 | `ldclrab` | 1 | `ldeorlb` | 1 | `swpah` | 1 |
+| `casp` | 1 | `ldclrah` | 1 | `ldeorlh` | 1 | `swpal` | 2 |
+| `caspa` | 1 | `ldclral` | 2 | `ldset` | 2 | `swpalb` | 1 |
+| `caspal` | 1 | `ldclralb` | 1 | `ldseta` | 2 | `swpalh` | 1 |
+| `caspl` | 1 | `ldclralh` | 1 | `ldsetab` | 1 | `swpb` | 1 |
+| `ldadd` | 2 | `ldclrb` | 1 | `ldsetah` | 1 | `swph` | 1 |
+| `ldadda` | 2 | `ldclrh` | 1 | `ldsetal` | 2 | `swpl` | 2 |
+| `ldaddab` | 1 | `ldclrl` | 2 | `ldsetalb` | 1 | `swplb` | 1 |
+| `ldaddah` | 1 | `ldclrlb` | 1 | `ldsetalh` | 1 | `swplh` | 1 |
+
+### What the reference actually implements
+
+`reference:tools/recomp/gen.py:512-547,799-817` has scalar exclusive handlers but
+**no handlers for these pair or LSE instructions**. Its `:265-272` emits
+`rt_trap("unhandled: ...")` for them. The existing reference SDK `report.json`
+independently contains the same counts: 177 pairs and 100 LSE, among 3719 total
+unhandled instructions. This is not evidence that those paths were executed.
+`reference:runtime/rt.h:163-189` supplies scalar value/CAS monitors; `excl_val2`
+exists in Ctx but is not used to implement pairs. Runtime SDK PLT binding prefers
+HLE, then main exports, then lifted SDK (`reference:runtime/rt_main.cpp:681-728`),
+so reference startup does not exercise the same SDK path as Savage. No reference
+runtime was launched in this experiment.
+
+### LSE guard and evidence limits
+
+For **all 100 LSE PCs**, the preceding three instructions are an ADRP to
+0x7005ae4000, LDRB w16 at offset 0x780, and CBZ w16 to the LL/SC fallback.
+The shared feature byte is **0x7005ae4780**, SDK-relative **0xdd5780**. For example,
+the guard starts at 0x700527ce50 and skips CASB at 0x700527ce5c when zero; CASP's
+guard starts at 0x700527d150 and selects LDXP/STXP fallback at 0x700527d164.
+The final checked LSE instruction is LDSETAL at 0x700527e12c.
+
+The byte is in zero-initialized BSS. A scan of SDK ADRP references found only the
+100 outline guards referring to this offset; no initializer/store was found.
+There is no exported `lse_atomics` symbol or matching relative data pointer.
+Thus these guarded LSE instructions are unreachable **while this byte stays
+zero**; no instruction or flag is patched to manufacture that result. The boot
+log will observe the byte after actual module loading. Its value on a physical
+Switch was not measured here; absence of all possible indirect writes has not
+been formally proved. LSE `rt_udf` remains visible rather than silently emulated.
+
+For hardware context, Arm identifies Cortex-A57 as Armv8.0-A and LSE as an
+Armv8.1-A feature; this does not substitute for reading the actual flag on a console.
+Sources: [Arm extension guide](https://developer.arm.com/-/media/Arm%20Developer%20Community/PDF/Learn%20the%20Architecture/Understanding%20the%20Armv8.x%20extensions.pdf),
+[Arm LSE introduction](https://learn.arm.com/learning-paths/servers-and-cloud-computing/lse/intro/).
+
+### Minimal pair implementation and CPU cost
+
+Previously, scalar `ldxr/stxr` helpers stored an address and one value in Cpu,
+loaded with acquire ordering, and used a value-based CAS with seq-cst ordering
+for store-conditional. The scalar path remains unchanged. The new 64-bit pairs
+use aligned 128-bit atomic load/CAS, relaxed ordering for LDXP/STXP, acquire for
+LDAXP and release for STLXP; store returns 0/1 and consumes the reservation.
+Both halves are captured before writing destination registers. SP/XZR and base
+overlaps retain architectural register semantics. No unobserved 32-bit pair forms
+or additional LSE families were implemented.
+
+Arm requires an aligned, indivisible successful 128-bit pair store; see
+[Arm A64 instruction definitions](https://documentation-service.arm.com/static/67e40f3398aa3c3b6eea6a85).
+The helpers use the existing value/CAS monitor approximation: an ABA write that
+restores identical data is **not detected**, as with the original scalar monitor.
+This is not a complete hardware exclusive-monitor model.
+
+Cpu adds one `excl_val2` field at offset **336**, using existing padding. **sizeof
+Cpu stays 1024, SIMD v stays at 512, and all previous field offsets stay unchanged.**
+No Ctx adapter, flag representation change, dispatcher change or ABI version
+change is needed. Production instruction changes are **2 files** (`cpu.h`,
+`lifter.py`): 2 new helpers and 1 modified decoder function. The readonly boot
+observation additionally touches `game_profile.h` / `main.c`. Two test files add
+8 Unicorn differential sequences plus 4×10000 contended increments and an atomic
+pair-store observer. All passed on this Linux x86-64 host. Other hosts are untested.
+
+After the pair change, all 177 original pair PCs lift successfully and the SDK
+unsupported count is **100**, exactly the guarded LSE set. BOTW generation again
+has **997 byte-identical files** compared with the pre-experiment baseline.
+Full post-pair BOTW/TotK builds and startup observation are **PENDING**.

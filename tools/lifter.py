@@ -389,6 +389,15 @@ class Lifter:
         nbits = 8 << size
         addr = XS(rn)
         if o1:
+            if o2 == 0 and size == 3:  # observed LDXP/LDAXP/STXP/STLXP, two X registers
+                rt2 = bits(w, 10, 5)
+                if L and rs == 31:
+                    return Insn('op', '{ __uint128_t pair = ldxp128(c, ' + addr +
+                                f', {o0}, {hx(pc)}); ' + set_reg(1, rt, '(uint64_t)pair') + ' ' +
+                                set_reg(1, rt2, '(uint64_t)(pair >> 64)') + ' }')
+                if not L:
+                    return Insn('op', f'{{ uint32_t st = stxp128(c, {addr}, {X(rt)}, {X(rt2)}, {o0}); '
+                                + set_reg(0, rs, 'st') + ' }')
             raise Unsupported('exclusive pair / CAS')
         if o2 == 0:
             if L:

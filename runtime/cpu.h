@@ -1,6 +1,7 @@
 // Guest CPU state and helpers used by recompiled code.
 #pragma once
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -16,7 +17,8 @@ typedef struct __attribute__((aligned(16))) Cpu {
     void *thread;            // 312: runtime thread object
     uint64_t fpcr;           // 320: guest FPCR/FPSR (portable FP/SIMD lowering only; the asm path uses the host's)
     uint64_t fpsr;           // 328
-    uint8_t _pad[512 - 336];
+    uint64_t excl_val2;      // 336: second half of a 64-bit exclusive pair, formerly padding
+    uint8_t _pad[512 - 344];
     __uint128_t v[32];       // 512
 } Cpu;
 
@@ -26,6 +28,8 @@ _Static_assert(offsetof(Cpu, nzcv) == 272, "nzcv");
 _Static_assert(offsetof(Cpu, fpcr) == 320, "fpcr");
 _Static_assert(offsetof(Cpu, fpsr) == 328, "fpsr");
 _Static_assert(offsetof(Cpu, v) == 512, "v");
+_Static_assert(offsetof(Cpu, excl_val2) == 336, "excl_val2");
+_Static_assert(sizeof(Cpu) == 1024, "Cpu size");
 
 typedef void (*GuestFn)(Cpu *);
 
@@ -95,6 +99,30 @@ EXCL(8, uint8_t)
 EXCL(16, uint16_t)
 EXCL(32, uint32_t)
 EXCL(64, uint64_t)
+
+// The observed 64-bit pair forms: one aligned, indivisible 128-bit store. Like
+// the scalar monitor above this is a value-based CAS reservation, not a hardware
+// write-history monitor (an ABA write is not detected). Keep the scalar path and
+// every pre-existing Cpu offset unchanged. No 32-bit pair form is added here.
+static inline __uint128_t ldxp128(Cpu *c, uint64_t a, bool acquire, uint64_t pc) {
+    if (a & 15) rt_udf(c, pc);
+    __uint128_t v = __atomic_load_n((__uint128_t *)(uintptr_t)a,
+                                   acquire ? __ATOMIC_ACQUIRE : __ATOMIC_RELAXED);
+    c->excl_addr = a;
+    c->excl_val = (uint64_t)v;
+    c->excl_val2 = (uint64_t)(v >> 64);
+    return v;
+}
+
+static inline uint32_t stxp128(Cpu *c, uint64_t a, uint64_t lo, uint64_t hi, bool release) {
+    uint64_t reserved = c->excl_addr;
+    c->excl_addr = ~0ull;
+    if (reserved != a) return 1;
+    __uint128_t expected = ((__uint128_t)c->excl_val2 << 64) | c->excl_val;
+    __uint128_t desired = ((__uint128_t)hi << 64) | lo;
+    return !__atomic_compare_exchange_n((__uint128_t *)(uintptr_t)a, &expected, desired, false,
+                                        release ? __ATOMIC_RELEASE : __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
 
 // ---- flags (packed NZCV in bits 31..28)
 #define FLAG_N(c) (((c)->nzcv >> 31) & 1)

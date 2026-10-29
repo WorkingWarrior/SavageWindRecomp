@@ -3,6 +3,7 @@
 #include <stdbool.h>
 
 #define TOTK_100_BUILD_ID "082ce09b06e33a12"
+#define TOTK_100_SDK_LSE_FLAG_OFF 0xdd5780ull  // read-only experiment observation, not a forced feature flag
 
 typedef enum { GAME_BOTW, GAME_TOTK } GameProfile;
 #ifdef __cplusplus
