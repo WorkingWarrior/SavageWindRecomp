@@ -9,6 +9,8 @@
 #include "input_bind.h"
 #include "language.h"
 
+bool fsr3_upscaler_enabled(void);  // (nvn/output_scale.c: FSR 3 upscaling held back for now)
+
 #define SETTINGS_FILE settings_file()
 
 // SAVAGEWIND_SETTINGS=<path>: another settings file (test runs never touch the player's savagewind.ini)
@@ -34,6 +36,7 @@ Settings g_settings = {
     .vsync = VSYNC_DEFAULT,
     .wide_view = true,
     .fov = 100,
+    .color_lut_strength = 100,
 };
 
 static const char *const k_vsync[VSYNC_COUNT] = {"on", "fast", "adaptive", "off"};  // (VSYNC_*: the ini's words)
@@ -50,7 +53,7 @@ static const char *const k_hdr[HDR_COUNT] = {"auto", "on", "off"};             /
 
 static const char *const k_icons[ICONS_COUNT] = {"auto", "keyboard", "xbox", "playstation", "nintendo"};
 
-static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance"};
+static const char *const k_quality[UPQ_COUNT] = {"ultra_quality", "quality", "balanced", "performance", "ultra_performance"};
 
 void settings_load(void) {
     static bool loaded;
@@ -82,8 +85,11 @@ void settings_load(void) {
         }
         else if (!strcmp(key, "settings_version")) version = atoi(val);
         else if (!strcmp(key, "resolution")) snprintf(old_res, sizeof old_res, "%s", val);  // (version 1)
-        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; fsr3 / dlss: not yet)
-            g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL : UPSCALE_OFF;
+        else if (!strcmp(key, "upscaler"))  // (metalfx / fsr1: this OS's spatial upscaler; fsr3: Vulkan, held back
+            // for now: FSR 1 with the same quality mode, nvn/output_scale.c fsr3_upscaler_enabled; dlss: not yet)
+            g_settings.upscaler = !strcmp(val, "fsr1") || !strcmp(val, "metalfx") ? UPSCALE_SPATIAL
+                                : !strcmp(val, "fsr3") ? (fsr3_upscaler_enabled() ? UPSCALE_FSR3_OR_SPATIAL : UPSCALE_SPATIAL)
+                                                       : UPSCALE_OFF;
         else if (!strcmp(key, "upscaler_quality")) {
             for (int i = 0; i < UPQ_COUNT; i++)
                 if (!strcmp(val, k_quality[i])) g_settings.upscale_quality = i;
@@ -93,11 +99,13 @@ void settings_load(void) {
             if (sscanf(val, "%dx%d", &w, &h) == 2 && w >= 320 && h >= 200 && w <= 16384 && h <= 16384)
                 g_settings.window_w = w, g_settings.window_h = h;
         }
-        else if (!strcmp(key, "antialias")) g_settings.antialias = !strcmp(val, "off") ? AA_OFF : AA_SMAA;  // ("fxaa": SMAA now)
+        else if (!strcmp(key, "antialias"))  // ("fxaa": SMAA now; "taa": Vulkan only)
+            g_settings.antialias = !strcmp(val, "off") ? AA_OFF : !strcmp(val, "taa") ? AA_TAA_OR_SMAA : AA_SMAA;
         else if (!strcmp(key, "anisotropy")) {  // (game, 2x .. 16x)
             int a = atoi(val);
             g_settings.anisotropy = a >= 16 ? 4 : a >= 8 ? 3 : a >= 4 ? 2 : a >= 2 ? 1 : 0;
         }
+        else if (!strcmp(key, "frame_generation")) g_settings.frame_gen = atoi(val) != 0;
         else if (!strcmp(key, "sharpening")) {  // (percent, in steps of 10)
             int p = atoi(val);
             g_settings.sharpening = p < 0 ? 0 : p > 100 ? 10 : (p + 5) / 10;
@@ -131,6 +139,16 @@ void settings_load(void) {
             g_settings.hdr_white = n >= 80 && n <= 1000 ? n : 0;
         }
         else if (!strcmp(key, "field_of_view")) g_settings.fov = atoi(val);  // (percent)
+        else if (!strcmp(key, "colour_exposure")) g_settings.color_exposure = (int)lroundf((float)atof(val) * 10);  // (EV)
+        else if (!strcmp(key, "colour_contrast")) g_settings.color_contrast = atoi(val);  // (percent)
+        else if (!strcmp(key, "colour_saturation")) g_settings.color_saturation = atoi(val);
+        else if (!strcmp(key, "colour_temperature")) g_settings.color_temperature = atoi(val);
+        else if (!strcmp(key, "colour_tint")) g_settings.color_tint = atoi(val);
+        else if (!strcmp(key, "colour_lut")) {  // (none: no LUT)
+            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", strcmp(val, "none") ? val : "");
+            g_settings.color_lut_set = true;
+        }
+        else if (!strcmp(key, "colour_lut_strength")) g_settings.color_lut_strength = atoi(val);  // (percent)
         else if (!strcmp(key, "shadow_resolution"))  // (console / high / ultra / extreme)
             g_settings.shadow_res = !strcmp(val, "extreme") ? SHADOW_EXTREME : !strcmp(val, "ultra") ? SHADOW_ULTRA
                                   : !strcmp(val, "high") ? SHADOW_HIGH : SHADOW_CONSOLE;
@@ -182,6 +200,14 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
+#define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
+    g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
+    g_settings.color_contrast = CLAMP(g_settings.color_contrast, -50, 50);
+    g_settings.color_saturation = CLAMP(g_settings.color_saturation, -100, 100);
+    g_settings.color_temperature = CLAMP(g_settings.color_temperature, -100, 100);
+    g_settings.color_tint = CLAMP(g_settings.color_tint, -100, 100);
+    g_settings.color_lut_strength = CLAMP(g_settings.color_lut_strength, 0, 100);
+#undef CLAMP
     for (int i = 0; i < 2; i++)
         if (!(g_settings.stick_deadzone[i] >= 0 && g_settings.stick_deadzone[i] <= 0.5f))
             g_settings.stick_deadzone[i] = STICK_DEADZONE_DEFAULT;
@@ -212,11 +238,12 @@ void settings_save(void) {
     int u = g_settings.upscaler, uq = g_settings.upscale_quality;
     fprintf(f, "upscaler = %s\n", u >= 0 && u < UPSCALE_COUNT ? ups[u] : "off");
     fprintf(f, "upscaler_quality = %s\n", k_quality[uq >= 0 && uq < UPQ_COUNT ? uq : UPQ_QUALITY]);
-    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_SMAA ? "smaa" : "off");
+    fprintf(f, "antialias = %s\n", g_settings.antialias == AA_TAA ? "taa" : g_settings.antialias == AA_SMAA ? "smaa" : "off");
     int an = g_settings.anisotropy;
     if (an >= 1 && an <= 4) fprintf(f, "anisotropy = %dx\n", 1 << an);
     else fprintf(f, "anisotropy = game\n");
     fprintf(f, "sharpening = %d\n", g_settings.sharpening * 10);
+    fprintf(f, "frame_generation = %d\n", g_settings.frame_gen ? 1 : 0);
     fprintf(f, "dpad_move = %d\n", g_settings.dpad_move);
     fprintf(f, "left_stick_deadzone = %.0f\n", g_settings.stick_deadzone[0] * 100);
     fprintf(f, "right_stick_deadzone = %.0f\n", g_settings.stick_deadzone[1] * 100);
@@ -238,6 +265,13 @@ void settings_save(void) {
     fprintf(f, "hdr = %s\n", k_hdr[g_settings.hdr >= 0 && g_settings.hdr < HDR_COUNT ? g_settings.hdr : HDR_AUTO]);
     if (g_settings.hdr_white) fprintf(f, "hdr_paper_white = %d\n", g_settings.hdr_white);
     fprintf(f, "field_of_view = %d\n", g_settings.fov);
+    fprintf(f, "colour_exposure = %.1f\n", g_settings.color_exposure / 10.0);
+    fprintf(f, "colour_contrast = %d\n", g_settings.color_contrast);
+    fprintf(f, "colour_saturation = %d\n", g_settings.color_saturation);
+    fprintf(f, "colour_temperature = %d\n", g_settings.color_temperature);
+    fprintf(f, "colour_tint = %d\n", g_settings.color_tint);
+    fprintf(f, "colour_lut = %s\n", g_settings.color_lut[0] ? g_settings.color_lut : "none");
+    fprintf(f, "colour_lut_strength = %d\n", g_settings.color_lut_strength);
     int tl = g_settings.text_language, vl = g_settings.voice_language;
     fprintf(f, "text_language = %s\n", tl > 0 && tl < g_ntext_languages ? g_text_languages[tl].folder : "auto");
     fprintf(f, "voice_language = %s\n", vl > 0 && vl < g_nvoice_languages ? g_voice_languages[vl].folder : "text");

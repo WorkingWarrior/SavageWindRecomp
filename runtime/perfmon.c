@@ -49,8 +49,21 @@ void perfmon_frame(void) {
     pthread_mutex_unlock(&g_lock);
 }
 
+static uint64_t g_gen_at[512];  // when each generated frame was presented (the last 512)
+static unsigned g_gen_n;
+
+void perfmon_generated_frame(void) {
+    uint64_t now = plat_now_ns();
+    pthread_mutex_lock(&g_lock);
+    g_gen_at[g_gen_n++ % 512] = now;
+    pthread_mutex_unlock(&g_lock);
+}
+
 static void frames_summary(PerfStats *s) {  // (lock held)
     uint64_t now = plat_now_ns();
+    int gen = 0;
+    for (unsigned i = 0; i < 512 && i < g_gen_n && now - g_gen_at[(g_gen_n - 1 - i) % 512] <= 1000000000ull; i++) gen++;
+    s->fps_generated = (float)gen;
     double sum = 0, mx = 0;
     int n = 0;
     for (int i = 0; i < g_ring_n; i++) {
@@ -341,8 +354,51 @@ static float cpu_temp_linux(const char **src) {
     return v < 0 ? -1 : v / 1000.0f;
 }
 
-// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature)
-static void amdgpu_sample(PerfStats *s) {
+// Arm Mali and other devfreq GPUs (RK3588's Mali-G610: /sys/class/devfreq/fb000000.gpu): "load" is "<percent>@<Hz>",
+// cur_freq the clock; the temperature from the thermal zone whose type names the GPU. Unified memory: no VRAM.
+static bool devfreq_gpu_sample(PerfStats *s) {
+    static char dev[300], tz[300];
+    static bool tried;
+    if (!tried) {
+        tried = true;
+        DIR *d = opendir("/sys/class/devfreq");
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) && !dev[0])
+                if (strstr(e->d_name, "gpu") || strstr(e->d_name, "mali")) snprintf(dev, sizeof dev, "/sys/class/devfreq/%s", e->d_name);
+            closedir(d);
+        }
+        for (int i = 0; i < 32 && !tz[0]; i++) {
+            char p[200], t[64] = {0};
+            snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", i);
+            FILE *f = fopen(p, "r");
+            if (!f) continue;
+            if (fgets(t, sizeof t, f) && strstr(t, "gpu")) snprintf(tz, sizeof tz, "/sys/class/thermal/thermal_zone%d/temp", i);
+            fclose(f);
+        }
+        if (dev[0] && !s->gpu_name[0]) snprintf(s->gpu_name, sizeof s->gpu_name, "%s", g_gpu_hint[0] ? g_gpu_hint : "GPU");
+    }
+    if (!dev[0]) return false;
+    char p[400];
+    snprintf(p, sizeof p, "%s/load", dev);
+    FILE *f = fopen(p, "r");
+    if (f) {
+        int load = -1;
+        if (fscanf(f, "%d", &load) == 1 && load >= 0) s->gpu_pct = (float)load;
+        fclose(f);
+    }
+    snprintf(p, sizeof p, "%s/cur_freq", dev);
+    float hz = read_float_file(p);
+    if (hz > 0) s->gpu_clock_mhz = hz / 1e6f;
+    if (tz[0]) {
+        float t = read_float_file(tz);
+        if (t > 0) s->gpu_temp_c = t / 1000.0f;
+    }
+    return true;
+}
+
+// AMD GPUs: amdgpu's sysfs (busy percent, VRAM, hwmon temperature); false: no amdgpu device
+static bool amdgpu_sample(PerfStats *s) {
     static char dev[200];
     static bool tried;
     if (!tried) {
@@ -354,7 +410,7 @@ static void amdgpu_sample(PerfStats *s) {
         }
         if (dev[0] && !s->gpu_name[0]) snprintf(s->gpu_name, sizeof s->gpu_name, "%s", g_gpu_hint[0] ? g_gpu_hint : "AMD GPU");
     }
-    if (!dev[0]) return;
+    if (!dev[0]) return false;
     char p[300];
     snprintf(p, sizeof p, "%s/gpu_busy_percent", dev); s->gpu_pct = read_float_file(p);
     snprintf(p, sizeof p, "%s/mem_info_vram_used", dev); float u = read_float_file(p);
@@ -374,6 +430,7 @@ static void amdgpu_sample(PerfStats *s) {
             }
         closedir(d);
     }
+    return true;
 }
 
 static void platform_sample(PerfStats *s, double dt) {
@@ -423,7 +480,11 @@ static void platform_sample(PerfStats *s, double dt) {
         fclose(f);
     }
     s->cpu_temp_c = cpu_temp_linux(&s->cpu_temp_source);
-    if (!nv.ok) amdgpu_sample(s);
+    if (!nv.ok) {
+        // (no amdgpu: Mali and other devfreq GPUs. Decided by the device, not by gpu_pct: once a devfreq read had set it,
+        // a gpu_pct < 0 test stopped every later read, and load, clock and temperature froze at their first values)
+        if (!amdgpu_sample(s)) devfreq_gpu_sample(s);
+    }
 }
 #endif
 
