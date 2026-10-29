@@ -2194,6 +2194,15 @@ typedef struct { size_t from, to; int r; } IpaSpan;
 static void glsl_fold_ipa_w(Str *body) {
     if (!body->buf) return;
     char *text = body->buf;
+    // Unstructured bodies already have case labels, but glsl_body adds their for / switch wrapper later.
+    // A backward jump can revisit a varying read after its 1/w register was overwritten: textual spans are unsafe.
+    for (const char *line = text; line;) {
+        const char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!strncmp(p, "case ", 5)) return;
+        line = strchr(p, '\n');
+        if (line) line++;
+    }
     for (const char *p = text; (p = strstr(p, "} while (")); p++)
         if (strncmp(p + 9, "false);", 7)) return;
     if (strstr(text, "\n  for (") || strstr(text, "\n  switch (") || strstr(text, "\n  while (")) return;

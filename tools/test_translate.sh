@@ -16,6 +16,8 @@ MODE=${3:-glsl}
 OUT=build/test_translate
 mkdir -p "$OUT/old" "$OUT/dump"
 CC=${CC:-clang}
+$CC -O2 -Wall -Wextra tools/test_ipa_fold.c -lm -o "$OUT/test_ipa_fold"
+"$OUT/test_ipa_fold"
 OBJS="$OUT/new.o"
 DEFS=""
 $CC -O2 -Wall -c runtime/nvn/maxwell/translate.c -o "$OUT/new.o"
