@@ -68,7 +68,7 @@ bool upscale_modes_available(void) {
 #else
     if (on < 0) on = !getenv("SAVAGEWIND_NO_SCALE");
 #endif
-    return on;
+    return on && game_is_botw();  // (the render targets of other games keep their sizes: output_scale)
 }
 
 double upscale_factor(void) {

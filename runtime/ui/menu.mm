@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "i18n.h"
+#include "../game_profile.h"
 #include "imgui.h"
 #include "option_rows.h"
 #include "imgui_internal.h"  // (NavCursorVisible)
@@ -171,7 +172,7 @@ extern "C" bool menu_input_captured(void) {
 // window holds it again (runtime/hle/input.c).
 static bool overlay_enabled(void) {
     static const bool on = getenv("SAVAGEWIND_OVERLAY") && *getenv("SAVAGEWIND_OVERLAY") != '0';
-    return on;
+    return on || !game_is_botw();  // (only BOTW has the game's own Options screen to take its place)
 }
 static std::atomic<bool> g_cursor_free{false};
 extern "C" bool menu_cursor_free(void) { return g_cursor_free.load(); }
@@ -590,6 +591,9 @@ static void tab_colour(void) {
 
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
+    // (what rests on BOTW's code patches - wide views, the field of view, the frame rate, render-target scaling, motion
+    // vectors, shadow maps - is shown for BOTW only)
+    const bool botw = game_is_botw();
     opt_begin("##video", scale);
     opt_section("Display");
     bool fs = g_settings.fullscreen;
@@ -621,7 +625,7 @@ static void tab_display(void) {
             else menu_request_window_size_apply();  // (stepping: the size where it stops)
         }
     }
-    {   // Fill wide screens (runtime/nvn/output_scale.c rt_persp)
+    if (botw) {   // Fill wide screens (runtime/nvn/output_scale.c rt_persp)
         bool wv = g_settings.wide_view;
         if (opt_toggle("Fill wide screens", &wv, true,
                        "On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: "
@@ -630,7 +634,7 @@ static void tab_display(void) {
                        "16:9."))
             g_settings.wide_view = wv;
     }
-    {   // Field of view (runtime/nvn/output_scale.c rt_persp)
+    if (botw) {   // Field of view (runtime/nvn/output_scale.c rt_persp)
         static const int fov[] = FOV_CHOICES;
         enum { NV = sizeof fov / sizeof fov[0] };
         static char names_buf[NV][16];
@@ -647,7 +651,7 @@ static void tab_display(void) {
                        "conversations keep theirs.", false))
             g_settings.fov = fov[cur];
     }
-    {   // Frame rate (runtime/hle/framepace.c)
+    if (botw) {   // Frame rate (runtime/hle/framepace.c)
         static const int fps[] = FPS_CHOICES;
         enum { NF = sizeof fps / sizeof fps[0] };
         static char names_buf[NF][32];
@@ -742,7 +746,7 @@ static void tab_display(void) {
         static int shown = -1;
         int udef = 0;  // (the reset value: UPSCALE_DEFAULT)
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
-        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
+        if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, botw ? NU : 2, udef, ud)) g_settings.upscaler = ups_value[ui];
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
         const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
@@ -782,7 +786,7 @@ static void tab_display(void) {
                            "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
             " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
                      "smooth and stop shimmering; slightly softer, use it with Sharpening.");
-        opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
+        opt_choice("Anti-aliasing", &g_settings.antialias, aa, botw ? 3 : 2, AA_OFF, d.c_str());
     }
 #endif
 #ifndef __APPLE__
@@ -798,7 +802,7 @@ static void tab_display(void) {
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
         // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
-        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
+        if (botw) opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
                    "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
                    "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
                    "controls answer as at that rate, a little later. In play only: the menus and the map show the "
@@ -812,7 +816,7 @@ static void tab_display(void) {
                "can come out as garbage.");
     // shadow resolution (its own block)
     static const char *shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};
-    opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
+    if (botw) opt_choice("Shadow resolution", &g_settings.shadow_res, shadow, SHADOW_COUNT, SHADOW_CONSOLE,
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
