@@ -1294,7 +1294,6 @@ SERVICE("fsp-srv", fsp_srv) {
         break;
     }
     case 62:  // OpenSaveDataInfoReaderOnlyCacheStorage
-        if (game_is_botw()) { LOG("[fs] fsp-srv cmd %u (ok)\n", req->cmd); break; }
         ipc_return_object(resp, service_new("ISaveDataInfoReader", cache_save_info_reader, NULL));
         LOG("[fs] OpenSaveDataInfoReaderOnlyCacheStorage -> empty isolated cache reader\n");
         break;
