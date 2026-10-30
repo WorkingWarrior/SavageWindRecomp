@@ -237,6 +237,49 @@ concurrent logs show partial WriteTexels missing for texture #214, 5120x5120,
 level 0, regions 1024x64x1. CPU texture-region I/O is the next repair. Protected
 inputs remain untouched; 75 GiB free before both builds.
 
+### Session 2 (Claude): texel copy, region table, rasterizer discard, hwopus
+
+Commits after fix 06: `e016bb5` (helper `totk_texels_2d`; `tools/test_texture_region.py`
+passes under ASan/UBSan against an independent layout oracle), region table
+1024 -> 65536 entries (observed 954 live disjoint physical intervals, smallest one
+page, ~2.9 GB mapped: the limit was only the table size), TotK
+`SetRasterizerDiscard` (draws/clears skipped while enabled; the reference only logs
+it), and `runtime/services/hwopus.c` (libopus decode of the SDK's hwopus service;
+BOTW keeps the logging stub; `-lopus` added on Linux when `opus.h` exists).
+
+**Observed (headless gamescope, `claude-06`, 300 s, no fatal error, no crash):**
+- `window_00060.png` "Nintendo Presents"; `claude-03/.../window_00060.png` same.
+- `claude-04/.../window_00600.png` title text "Tears of the Kingdom".
+- `claude-05/.../window_01200.png` opening-cutscene subtitle "This strange gloom keeps
+  getting thicker...", 1889 frames, up to ~60k draws per 2 s interval.
+- `claude-06/.../window_04500.png` **gameplay HUD**: hearts and the "Move / Controls /
+  Camera" hints, frame ~4500 (~290 s). So the guest left the intro and entered the
+  world state with `SAVAGEWIND_NO_USER_INPUT`.
+
+**Not working:** the 3D scene is black in every captured frame (mean brightness 1/255;
+only HUD/text pixels differ). Draw calls are issued and executed (not skipped), so the
+fault is in scene rendering (deferred/G-buffer passes, shaders, texture contents or
+GPU-owned texel readback) rather than in guest progress. Not diagnosed. Hearts show 30
+(unverified whether that is correct for a new save). No title menu was observed because
+a new save goes straight to the intro. Frame rate here is 13-30 fps with a software
+chain of ~2 GB uploads per interval; no performance conclusion.
+
+**Not exercised:** the GPU-owned partial ReadTexels/WriteTexels path (`needs image
+readback` FATAL never fired), the "[compute] translate failed: unknown instruction 0"
+log seen once before the hwopus fix, audio output correctness (hwopus decodes; sink
+unverified), 32-bit/multistream Opus, saving.
+
+**BOTW:** no generator, lifter or Cpu change in this session, so the 997 generated
+files are unchanged by construction (not re-diffed). BOTW rebuilt; `claude-botw-01`
+renders "Open your eyes..." at frame 3100 with 295k draws/interval.
+
+Cost: kernel.c (1 constant), cmdbuf.c and exec.c (rasterizer discard, TotK-gated),
+objects.c (helper), 1 new service file, Makefile link flag. No Cpu/dispatcher change.
+
+**Recommendation:** next target is the black 3D scene. Start by dumping a G-buffer
+attachment and the first scene pass with `SAVAGEWIND` trace tools, and compare shader
+compile/draw state with the reference. The reference remains the playable option.
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in
