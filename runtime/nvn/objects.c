@@ -7,6 +7,7 @@
 #include "../kernel.h"
 #include "../perfmon.h"
 #include "nvn.h"
+#include "renderer.h"
 
 void renderer_sync(void);
 
@@ -768,7 +769,65 @@ NVN(nvnTextureViewGetDepthStencilMode) { *(uint32_t *)AP(1) = TV->ds_mode; RET(!
 NVN(nvnTextureViewGetTarget) { *(uint32_t *)AP(1) = TV->target; RET(!!(TV->setmask & 32)); }
 NVN(nvnTextureViewCompare) { RET(memcmp(AP(0), AP(1), sizeof(NvnTextureView)) == 0); }
 
+// TotK's CPU-updated atlas uses subrectangles. Keep the existing BOTW whole-level
+// path below; support the observed 2D case without assuming GPU-owned storage is
+// a current CPU copy. A GPU-owned read/patch needs an explicit image readback.
+static void totk_texels_2d(NvnTexture *t, const NvnTextureView *v, const int32_t *r, uint8_t *data, bool write) {
+    if (!t || !r || !data || !t->addr || !t->layout.fmt) FATAL("[nvn] invalid TotK texel-copy arguments\n");
+    uint32_t level = v && (v->setmask & 1) ? v->base_level : 0;
+    if (t->target != 1 || t->layout.layers > 1 || level >= t->layout.levels || level >= 32 ||
+        (v && (v->setmask & 2) && v->min_layer) || r[2] || r[5] != 1)
+        FATAL("[nvn] TotK texel copy target %u/layers %u/level %u is not implemented\n", t->target, t->layout.layers, level);
+    const FormatInfo *fi = t->layout.fmt;
+    if (!fi->bpb || !fi->bw || !fi->bh) FATAL("[nvn] invalid TotK texel-copy format\n");
+    LevelLayout l = tegra_level(&t->layout, level);
+    if (r[0] < 0 || r[1] < 0 || r[3] <= 0 || r[4] <= 0 ||
+        (uint64_t)r[0] + r[3] > l.w || (uint64_t)r[1] + r[4] > l.h ||
+        (uint32_t)r[0] % fi->bw || (uint32_t)r[1] % fi->bh ||
+        ((uint32_t)r[3] % fi->bw && (uint32_t)(r[0] + r[3]) != l.w) ||
+        ((uint32_t)r[4] % fi->bh && (uint32_t)(r[1] + r[4]) != l.h))
+        FATAL("[nvn] invalid TotK texel-copy rectangle\n");
+    uint32_t bx = (uint32_t)r[0] / fi->bw, by = (uint32_t)r[1] / fi->bh;
+    uint32_t nx = ((uint32_t)r[3] + fi->bw - 1) / fi->bw, ny = ((uint32_t)r[4] + fi->bh - 1) / fi->bh;
+    uint64_t row = (uint64_t)nx * fi->bpb, full_row = (uint64_t)l.wb * fi->bpb;
+    bool pitch = nvn_texture_flags_pitch(t->flags);
+    uint64_t stride = pitch && t->stride ? t->stride : full_row;
+    gpu_lock();
+    bool gpu_owned = renderer_is_gpu_owned(t);
+    bool full_write = write && !r[0] && !r[1] && (uint32_t)r[3] == l.w && (uint32_t)r[4] == l.h;
+    if (gpu_owned && !full_write) FATAL("[nvn] TotK texel copy of GPU-owned texture #%llu needs image readback\n",
+                                       (unsigned long long)t->debug_id);
+    static int logged;
+    if (logged++ < 8)
+        LOG("[nvn] TotK %sTexels %s-owned texture #%llu %ux%u f%#x target %u level %u rect %d,%d %dx%d\n",
+            write ? "Write" : "Read", gpu_owned ? "GPU" : "CPU", (unsigned long long)t->debug_id, t->width, t->height, t->format, t->target,
+            level, r[0], r[1], r[3], r[4]);
+    uint8_t *base = (uint8_t *)(uintptr_t)t->addr + l.offset;
+    uint8_t *linear = pitch ? base : malloc(full_row * l.hb);
+    if (!linear) FATAL("[nvn] TotK texel-copy scratch allocation failed\n");
+    if (!pitch) tegra_deswizzle(base, linear, l.wb, l.hb, 1, fi->bpb, l.block_height_log2, l.block_depth_log2);
+    if (write) kernel_watch_write("WriteTexels", t->addr, tegra_total_size(&t->layout));
+    for (uint32_t y = 0; y < ny; y++) {
+        uint8_t *image_row = linear + (uint64_t)(by + y) * stride + (uint64_t)bx * fi->bpb;
+        if (write) memcpy(image_row, data + (uint64_t)y * row, row);
+        else memcpy(data + (uint64_t)y * row, image_row, row);
+    }
+    if (write) {
+        if (!pitch) tegra_swizzle(linear, base, l.wb, l.hb, 1, fi->bpb, l.block_height_log2, l.block_depth_log2);
+        __atomic_fetch_or(&t->cpu_levels, 1u << level, __ATOMIC_RELEASE);
+        backend_pool_written(t->addr, tegra_total_size(&t->layout));
+    }
+    if (!pitch) free(linear);
+    gpu_unlock();
+}
+
 NVN(nvnTextureWriteTexels) {
+    if (!game_is_botw()) {
+        NvnTexture *copy_t = HOST(NvnTexture, A(0));
+        if (copy_t && copy_t->target == 1 && copy_t->layout.layers <= 1) {
+            totk_texels_2d(copy_t, AP(1), AP(2), AP(3), true); return;
+        }
+    }
     // (texture, view, region, data): tightly packed linear texels into the storage (block-linear, or rows at the stride
     // for pitch textures) of one whole level (the view's base level), for the region's slices (3D) or layers (arrays:
     // z, plus the view's first layer; 1D arrays: y).
@@ -822,7 +881,10 @@ NVN(nvnTextureWriteTexels) {
     backend_pool_written(t->addr, tegra_total_size(&t->layout));
 }
 NVN(nvnTextureWriteTexelsStrided) { LOG("[nvn] WriteTexelsStrided not implemented\n"); (void)c; }
-NVN(nvnTextureReadTexels) { LOG("[nvn] ReadTexels not implemented\n"); (void)c; }
+NVN(nvnTextureReadTexels) {
+    if (!game_is_botw()) { totk_texels_2d(HOST(NvnTexture, A(0)), AP(1), AP(2), AP(3), false); return; }
+    LOG("[nvn] ReadTexels not implemented\n");
+}
 NVN(nvnTextureReadTexelsStrided) { (void)c; }
 
 // ================================================================== samplers
