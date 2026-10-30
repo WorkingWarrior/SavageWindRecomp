@@ -219,7 +219,6 @@ bool vk_shadow_direct(void) {
 bool vk_shadow_scaled(const NvnTexture *t) { return t && g_shadow_size > t->width; }
 
 static uint8_t tex_scale_group(const NvnTexture *t) {
-    if (!game_is_botw()) return RS_NONE;
     static int on = -1;
     if (on < 0) on = getenv("SAVAGEWIND_NO_SCALE") == NULL;
     if (!on) return RS_NONE;

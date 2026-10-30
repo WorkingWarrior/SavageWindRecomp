@@ -7274,7 +7274,10 @@ static bool grade_wanted(VkImageView *lut, float pc[16]) {
 // sampling a full-size scene target (not one of its reduced steps: bloom, blur). Its scene texture, or NULL.
 static NvnTexture *scene_composite(Prog *pr, CmdRec *r) {
     NvnTexture *rt = st.rt.ncolor ? st.rt.color[0] : NULL;
-    if (!rt || r->x[2] > 6 || !pr->fi->ntex || vk_texture_scale_group(rt) != RS_OUT) return NULL;
+    // (BOTW's final image is a display / render-target-flagged 16:9 image; TotK composites the scene into a plain
+    // 1920x1080 one, and presents it after its own last pass)
+    bool final_image = rt && (vk_texture_scale_group(rt) == RS_OUT || (!game_is_botw() && rt->width == 1920 && rt->height == 1080));
+    if (!rt || r->x[2] > 6 || !pr->fi->ntex || !final_image) return NULL;
     const float *vp = st.viewport[0];
     if (vp[2] < rt->width * 0.5f || vp[3] < rt->height * 0.5f) return NULL;  // (a composite fills most of the image)
     for (int i = 0; i < pr->fi->ntex && i < 64; i++) {
