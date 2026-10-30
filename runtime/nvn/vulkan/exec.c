@@ -20,7 +20,7 @@
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
-static bool totk_render_off;
+static bool totk_render_off, totk_discard;
 static uint64_t totk_cond_evals, totk_cond_skips;
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
@@ -3313,7 +3313,7 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
-    totk_render_off = false;
+    totk_render_off = totk_discard = false;
     totk_cond_evals = totk_cond_skips = 0;
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
@@ -5813,7 +5813,7 @@ static void exec_list(uint64_t handle, int depth) {
             LOG("[op] %u depth %d: %llx %llx %llx %llx %llx\n", r->op, depth, (unsigned long long)r->x[0], (unsigned long long)r->x[1],
                 (unsigned long long)r->x[2], (unsigned long long)r->x[3], (unsigned long long)r->x[4]);
         if (lst_on) { lst_op(depth, r); lst_depth = depth; }
-        if (!game_is_botw() && totk_render_off &&
+        if (!game_is_botw() && (totk_render_off || totk_discard) &&
             (r->op == CMD_DRAW_ARRAYS || r->op == CMD_DRAW_ELEMENTS || r->op == CMD_DRAW_ARRAYS_INDIRECT ||
              r->op == CMD_DRAW_ELEMENTS_INDIRECT || r->op == CMD_DRAW_TEXTURE || r->op == CMD_CLEAR_COLOR ||
              r->op == CMD_CLEAR_DEPTH_STENCIL || r->op == CMD_CLEAR_TEXTURE)) {
@@ -5969,6 +5969,7 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
         case CMD_SET_RENDER_ENABLE: {
             if (game_is_botw()) break;  // preserve BOTW's existing command behavior
+            if (r->x[0] >= 4) { totk_discard = r->x[0] == 5; break; }
             if (r->x[0] < 2) { totk_render_off = !r->x[0]; break; }
             if (!r->x[1]) FATAL("[vk] null TotK conditional-render counters\n");
             // Unlike a bare host load, complete preceding GPU writes and apply
