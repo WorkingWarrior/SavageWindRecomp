@@ -17,14 +17,19 @@ straight to the intro; the reference shows the menu only once a save exists.
   It did not occur in 72 consecutive 25 s starts through the plain runner (24 serial, 48 as four parallel loops, 24 more
   with `SAVAGEWIND_AUDIO_LOG=1`), but it did occur once in a headless-gamescope run of the same branch (`u6-totk`), so
   the rate is low and may depend on timing. The cause is still not identified.
+  What is known (session 3): the faulting function varies: `nn::audio::ApplyLightLimiterEffect` (reads address 0, its
+  input pointer array from `Process` holds a null) or `ApplyI3dl2ReverbEffect4ch` (reads -4), both called from
+  `CommandListProcessor::Process`, ~8 s into the run, in the first frames whose command list has the reverb (0x16) and
+  limiter (0x1b) commands. In a frame where it works those commands' states are all zero at first and `Process`
+  itself initialises them (the next frame shows delay-line pointers). The earlier theory (a null `list + 0xf30` table:
+  skip the frame) is WRONG: that field takes other values (`4b000001c20`) and skipping the frames before the first
+  update kept the states from being initialised, so the very next frame crashed every time (6 of 6). The same frames
+  run fine without the skip. The renderer's mutex (`system + 0x1f0`) is the one `AudioRenderSystem::Update` takes for
+  its whole body. 0 crashes in 27 gamescope starts with diagnostics (3 right after a rebuild, 10 under full CPU load);
+  the earlier ones had all come in runs with extra `--env` switches. Under load one start crashed elsewhere: a null
+  dereference in the game's own `main` code (`f_70007a5078`, called from `0x70024067d4`) after 22 s.
 - TotK's audio renderer runs (about 265 us per frame, no underruns) but its output peak is 0.000 for the first 60 s in
   the opening cave, with the code before and after the unification commits alike: no sound is produced there yet.
-  Original analysis of the crash:
-  Cause so far: the mix command runs with a null buffer-table field (`list + 0xf30`, set only about 3 s into the run,
-  after the game's first renderer update). CORRECTION: an earlier version of this report claimed a fix that waited for
-  the first `AudioRenderSystem::Update`; the hook never fired (the SDK calls that function directly), so it only
-  stopped all audio rendering, which also blacked out the picture (the game's audio events were never signalled).
-  It was reverted. A working guard needs a place that is actually called indirectly.
 - Audio output, input, saving, performance (10-30 fps headless), a physical display, anything past the
   opening cave. 20 more minutes of play or the open world were not exercised.
 
