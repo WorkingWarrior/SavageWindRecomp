@@ -170,6 +170,44 @@ crash/core handling and is not a boot-to-menu time. No TotK frame/menu yet.
 Subsequent isolated launches disable core-file output (`ulimit -c 0`) while
 preserving the runtime's text crash diagnostics.
 
+### Fix 05 verified: cache-storage info-reader object
+
+Command 62 is OpenSaveDataInfoReaderOnlyCacheStorage, returning an
+ISaveDataInfoReader. The SDK's `f_7004deb36c` zeroes its reader output pointer,
+calls the proxy method, and on success dereferences that reader's vtable. The
+old fsp handler returned success without an object. TotK now receives a reader
+for the isolated namespace's empty cache inventory; command 0 returns a 64-bit
+zero count. This matches the [ISaveDataInfoReader wire contract in libnx](https://github.com/switchbrew/libnx/blob/master/nx/source/services/fs.c)
+and the [service command definitions](https://switchbrew.org/wiki/Filesystem_services#ISaveDataInfoReader).
+Persistent/cache-registration metadata is not implemented by this bounded
+reader and remains a limitation; no existing user cache is claimed supported.
+BOTW command 62 retains its old behavior.
+
+`fix05-cache-reader-run` logs the returned object and reader count, passes the
+null-reader crash and stops prematurely on a valid OpenFile PathNotFound.
+A separate read-only strace (`fix05-open-files.trace`) identifies the missing
+path as `state/save/save_0/storage/CacheStorageKey.dat`, expected absent in the
+new test namespace. The runner now retains and logs PathNotFound for host
+IFileSystem GetEntryType/OpenFile/OpenDirectory without stopping; the actual
+guest-visible response is unchanged. The guest demonstrably handles the absent
+key and proceeds. Required missing-resource failures remain guest errors, not
+fabricated successful file opens.
+
+`fix05-cache-reader-observe` then reaches **NVN
+CommandBufferSetRenderEnableConditional not implemented** after 7.544 s. No
+TotK renderer frame/draw summary or screenshot was produced. The earlier
+crash and audio symbol failure are absent. Additional preceding generic
+fallbacks in this longer run: acc:u0 160, aoc:u 50, hwopus 5 (12 calls),
+IApplicationFunctions 27, IAudioController 0/1/2, prepo:u 10105 (7 calls),
+IStaticService 400, ISelfController 62, plus the eleven earlier gaps. These are
+preserved in the full transcript; their later semantic adequacy is unverified.
+
+Both builds pass. `fix05-botw-headless` still renders "Open your eyes…" at
+frame 3100 (visually checked), with draw summaries in its 100-second run. The
+997 generated BOTW files remain byte-identical. Cost: `runtime/services/fs.c`
+(new reader handler, fsp command 62), runner negative-poll classification, this
+report. No generator/Cpu changes. 75 GiB free before builds.
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in

@@ -814,6 +814,17 @@ static Service *open_host_fs(const char *sub) {
 }
 
 // ------------------------------------------------------------------ fsp-srv
+// This runtime's isolated save namespace has no cache-storage registrations.
+// Return a real reader object: success without one leaves the SDK with a null
+// ISaveDataInfoReader. ReadSaveDataInfo returns a 64-bit entry count (command 0).
+static void cache_save_info_reader(Service *s, IpcReq *req, IpcResp *resp) {
+    (void)s;
+    if (req->cmd != 0) FATAL("[fs] cache save info reader command %u is not implemented\n", req->cmd);
+    OUT(int64_t, 0) = 0;
+    resp_size(resp, 8);
+    LOG("[fs] cache save info reader: 0 entries\n");
+}
+
 SERVICE("fsp-srv", fsp_srv) {
     (void)s;
     switch (req->cmd) {
@@ -827,6 +838,11 @@ SERVICE("fsp-srv", fsp_srv) {
         ipc_return_object(resp, open_host_fs(sub));
         break;
     }
+    case 62:  // OpenSaveDataInfoReaderOnlyCacheStorage
+        if (game_is_botw()) { LOG("[fs] fsp-srv cmd %u (ok)\n", req->cmd); break; }
+        ipc_return_object(resp, service_new("ISaveDataInfoReader", cache_save_info_reader, NULL));
+        LOG("[fs] OpenSaveDataInfoReaderOnlyCacheStorage -> empty isolated cache reader\n");
+        break;
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
     case 202:  // OpenDataStorageByDataId (system data archives)
         LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));

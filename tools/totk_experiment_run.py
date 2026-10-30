@@ -34,6 +34,12 @@ def blocking_ipc_error(line):
     return (name, command, result) not in {
         ('ICommonStateGetter', 1, 0x680),  # AM_NO_MESSAGE, ReceiveMessage
         ('IApplicationFunctions', 1, 0x480),  # AM_NO_DATA, PopLaunchParameter
+        # Host save/SD namespaces may lack queried paths on first boot (observed:
+        # storage/CacheStorageKey.dat). Keep the actual PathNotFound response and
+        # log; let guest code decide whether an absent path is required.
+        ('IFileSystem', 7, 0x202),  # GetEntryType
+        ('IFileSystem', 8, 0x202),
+        ('IFileSystem', 9, 0x202),  # OpenDirectory
     }
 
 
