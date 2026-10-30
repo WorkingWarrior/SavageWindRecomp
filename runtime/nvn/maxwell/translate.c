@@ -1243,18 +1243,39 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         for (int i = 0; i < n; i++) attr_store(c, d + i, addr + 4 * i);
     } else if (OPM(0xef90000000000000ull, 0xfff8000000000000ull)) {  // LD c[idx][reg + imm]
         int idx = (int)bits(w, 36, 5);
-        int64_t off = (int64_t)bits(w, 20, 16);  // unsigned (Ryujinx InstLdc.CbufOffset)
+        // Address = Ra + sign-extended imm16 (Eden load_constant.cpp: BitField<20, 16, s64> offset, IAdd(reg, s32 imm)).
+        // TotK skinning shaders index bone palettes with negative offsets (cbr(cb5, r76 + 65504u) read 64 KB past the
+        // palette: spiky, flat-textured skinned meshes, run116). With RZ the offset stays unsigned (same below 0x8000).
+        int64_t off = a == RZ ? (int64_t)bits(w, 20, 16) : sbits(w, 20, 16);
         int sz = (int)bits(w, 48, 3);
         int n = sz == 5 ? 2 : 1;
         char rb[16];
         const char *dyn = a == RZ ? NULL : reg(c, a, rb);
+        // LDC.64 R12, c[R12 + 8]: the address register is also the first destination. Latch it before writing, or the
+        // second word is read from the just-loaded value (TotK fs afe3834a: one 50-px cell looped 100000 times, 23 ms
+        // of a 31 ms GPU frame on Sky Island, run261)
+        bool latch = dyn && n > 1 && a >= d && a < d + n;
+        if (latch) { sp(&c->body, "    { uint ldc_a = %s;\n", dyn); dyn = "ldc_a"; }
+        if (sz > 5 || bits(w, 44, 2)) {  // IL/IS/ISL index modes: not seen yet
+            static int nlog;
+            if (nlog++ < 8) printf("[shader] LDC size %d mode %d not handled (read as 32-bit)\n", sz, (int)bits(w, 44, 2));
+        }
         for (int i = 0; i < n; i++) {
             char cb[256];
             cbuf_ref(c, idx, off + 4 * i, dyn, cb);
-            if (!dyn && (off + 4 * i) & 0) {}
             if (dyn) c->info->cbuf_size[idx] = 0x10000;
+            if (sz < 4) {  // U8 / S8 / U16 / S16 (Eden: size 0-3): the byte / halfword at the address inside its word
+                char sh[300], t2[800];
+                if (dyn) sprintf(sh, "int((((%s) + %uu) & 3u) * 8u)", dyn, (uint32_t)off);
+                else sprintf(sh, "%d", (int)((off & 3) * 8));
+                if (sz & 1) sprintf(t2, "uint(bitfieldExtract(int(%s), %s, %d))", cb, sh, sz < 2 ? 8 : 16);
+                else sprintf(t2, "bitfieldExtract(%s, %s, %d)", cb, sh, sz < 2 ? 8 : 16);
+                set_reg(c, d, t2);
+                break;
+            }
             set_reg(c, d + i, cb);
         }
+        if (latch) sp(&c->body, "    }\n");
     } else if (OPM(0xd000000000000000ull, 0xf600000000000000ull)) {  // TEXS
         emit_texs(c, w, false);
     } else if (OPM(0xd200000000000000ull, 0xf600000000000000ull)) {  // TLDS

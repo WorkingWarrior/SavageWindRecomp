@@ -10,9 +10,9 @@ Presents", "Tears of the Kingdom", the opening cutscene in the textured cave (to
 straight to the intro; the reference shows the menu only once a save exists.
 
 **What did not work / is not verified**
-- Zelda's close-up: head with a patterned face, body as large flat yellow/cyan polygons (a skinned or
-  compute-built mesh is wrong; Link is fine). White streaks on a mesh near the debris in gameplay. Both
-  undiagnosed (the picks and per-draw logs are in place: `SAVAGEWIND_DEBUG_PICK`, `LOG_DRAW_TEX`).
+- (Fixed after the first version of this report: Zelda's broken body and the white streaks were `LDC c[reg + imm]`
+  read with an unsigned imm16, so skinning shaders read their bone palette 64 KB off; now sign-extended as in
+  the reference. `claude-67`: Zelda and Link render correctly in the cutscene, close-up and gameplay.)
 - An intermittent SIGSEGV (about 1 start in 12) in SDK audio mixing `f_7004f31b50`, early in boot.
 - Audio output, input, saving, performance (10-30 fps headless), a physical display, anything past the
   opening cave. 20 more minutes of play or the open world were not exercised.
@@ -28,6 +28,7 @@ straight to the intro; the reference shows the menu only once a save exists.
 | Compute shaders with the 0x100-byte TotK header | translate.c |
 | VOTE, LEA, VMNMX, RED, ATOM, DADD, DMUL, DFMA, F2F.F64; `shaderFloat64` | translate.c, device.c |
 | `nvnTextureGetViewOffset` (the cause of the magenta terrain) | objects.c, TotK only |
+| LDC with register address: signed imm16, LDC.64 latch, sub-word loads (broken skinned meshes) | translate.c, shared with BOTW (semantics now as hardware) |
 | Diagnostics: per-draw texture log, page watch, big-read log, RomFS check, runner `--env` | opt-in |
 No change to Cpu, dispatcher, lifter or the BOTW generated code (997 files unchanged by construction).
 BOTW rechecked after every shared change; last run `claude-botw-06` ("Open your eyes..." frame 3100,
