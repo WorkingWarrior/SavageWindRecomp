@@ -280,6 +280,32 @@ objects.c (helper), 1 new service file, Makefile link flag. No Cpu/dispatcher ch
 attachment and the first scene pass with `SAVAGEWIND` trace tools, and compare shader
 compile/draw state with the reference. The reference remains the playable option.
 
+### Session 2, part 2: the black 3D scene (diagnosed and fixed)
+
+Pass dumps of a gameplay frame (`SAVAGEWIND_DEBUG_FRAME`, `claude-17`) showed the
+G-buffer (normals, Link and the cave) rendered correctly and the lit result almost
+black, so lighting was missing, not geometry. Two causes, both in Maxwell shader
+translation, both observed in `translate failed` logs:
+
+1. **TotK compute binaries** carry a 0x100-byte header (magic 0x12345679); Savage
+   started decoding at byte 0, so every compute translation failed at the first
+   instruction (stats showed `0 dispatches`). Fixed (`translate.c`, same rule as the
+   reference); dispatches then ran (~100-400 per interval).
+2. **Missing instructions** in lighting fragment/compute shaders: VOTE (0x50d8),
+   LEA lo/hi (0x36d0, 0x1800), VMNMX (0x3a), RED (0xebf8), ATOM (0xed). Ported from
+   the reference without its device-memory window; subgroup ballot/vote extensions
+   added to the GLSL prelude.
+
+**Observed:** `claude-18/.../window_02000.png` shows the 3D world with Link (sword on
+back), cave geometry and the HUD (mean brightness ~100 instead of ~1). Before: black.
+
+**Still wrong / open:** the whole image is heavily tinted magenta (G channel near 0);
+may be the intended gloom fog overexposed, not verified. One vertex shader still fails:
+DMUL (0x5c80, FP64); the reference needs F64 support (DADD/DMUL/DFMA, F2F.F64) for 32
+"material" vertex shaders; not ported. Speed dropped to ~3-10 fps while compute
+pipelines compile. BOTW rechecked after these changes (`claude-botw-02`,
+"Open your eyes..." at frame 3100, 296k draws/interval).
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in
