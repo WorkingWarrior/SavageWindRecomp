@@ -48,6 +48,57 @@ to remove the observation time bound. Two incremental builds, byte comparison,
 one meaningful TotK startup and one BOTW opening run. Disk free before builds:
 75 GiB. No generated-code, Cpu layout, dispatcher or reference-source change.
 
+### Fix 02 verified: local ADR/BR continuations
+
+The reference's `tools/recomp/gen.py:238-258` explicitly recognizes local ADR
+continuations (including its measured `f_8631a0`). Savage's short straight-line
+`computed_target` lookback misses x19 being set to `0x700086344c` across branches
+and loops. `Module.scan` now supplements otherwise plain indirect BRs with
+in-function ADR targets for the same register, **only with `--game totk`**. Known
+jump tables and the existing all-instruction fallback retain priority. Unknown
+targets retain the existing fallback. No global dispatch entry, Cpu field or
+ABI change was needed.
+
+The final TotK regeneration changes only `main/main_105.c` and
+`main/main_395.c`; function counts and layout stay unchanged. A direct scan of
+the input code with the option off/on confirms four newly local BR sites in two
+functions: `f_700023b890` (BR `0x700023b940`, targets `0x700023b944`,
+`0x700023bc2c`) and `f_70008631a0` (BR `0x70008634e4`, `0x700086351c`,
+`0x7000863534`, targets `0x700086344c`, `0x7000863548`). The first trial
+prioritized ADR over the existing computed-table path; that build was interrupted
+before any game run, and the generator was refined to preserve that path. Its
+seven stale main chunks (8,562,181 bytes, all inside our build directory) were
+removed explicitly; reference artifacts and all game inputs remain untouched.
+
+The focused test compiles the actual emitted C and compares its continuation
+result against Unicorn, with controls for default-off behavior, register/range,
+signed backward ADR, existing computed-table priority, and unknown external
+dispatch. The 59 synthetic layout checks also pass. The final fresh BOTW
+generation again has 997 byte-identical files; its build and 100-second
+`fix02-botw-headless-verified` run pass the opening check (frame 3100 visually
+inspected, "Open your eyes…", draw counts present). An earlier BOTW launch
+rejected mismatched library build IDs after a generator edit during compilation;
+metadata objects were rebuilt together before the verified run. This was not a
+guest gameplay failure. TotK `fix02-adr-continuation-run` passes the old
+continuation failure, starts three additional worker threads, and reaches 256
+RomFS reads (62954 KB) before **FATAL: too many regions** after 2.595 s. No
+TotK draw/menu is observed. The fixed continuation is accepted for this startup;
+the kernel region table is the next blocker.
+
+The final link reuses the earlier `main_755.o`: its input SHA256 equals the
+pre-change manifest (`89cf192e2621995a25b4b07489310b0ee97b54cc53c6e301fe32aee715adfce3`),
+and its 01:14 object postdates all Cpu/SIMD headers and unchanged build flags.
+Only the source timestamp had changed through the discarded intermediate
+generation. Its unnecessary compiler job was interrupted, the validated object
+was retained, and final make/link completed with exit 0. Interrupted build logs
+are separate from `fix02-totk-build.log`. Both library/runtime build IDs are
+`76a24b23175e3da7`.
+
+Cost so far: `tools/gen.py` (`Module.__init__`, `Module.scan`, `generate`, 19 added
+lines), plus `tools/test_local_continuation.py`; two generated TotK chunks differ.
+No instruction family, HLE replacement, Cpu or runtime behavior was added by
+this generator fix. The generated chunks themselves are not committed.
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in

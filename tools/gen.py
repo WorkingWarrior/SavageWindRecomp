@@ -85,6 +85,7 @@ class Module:
         self.jt_cache = {}
         self.setjmps = self.setjmp_targets()
         self.sites, self.patches = {}, {}  # (main: tools/game_sites.py, tools/patches.py)
+        self.local_adr_continuations = False  # opt-in TotK's hand-written decoder continuations
 
     def in_text(self, a):
         return self.lo <= a < self.hi and a % 4 == 0
@@ -355,6 +356,19 @@ class Module:
     def scan(self, entry, end):
         """Collect labels and external entries referenced by a function."""
         labels, ext, tables = {entry}, set(), {}
+        adr_targets = {}
+        if self.local_adr_continuations:
+            # ADR xN, local_label; ... branches/loops ...; BR xN is a local continuation.
+            # It can be well beyond computed_target's straight-line lookback window.
+            # Keep only targets in this piece, indexed by destination register; the
+            # existing indirect-dispatch fallback still handles any other value.
+            for a in range(entry, end, 4):
+                w = self.word(a)
+                if (w & 0x9F000000) == 0x10000000:
+                    imm = sext(((w >> 5) & 0x7FFFF) << 2 | ((w >> 29) & 3), 21)
+                    t = a + imm
+                    if entry <= t < end and t % 4 == 0:
+                        adr_targets.setdefault(w & 31, set()).add(t)
         terminated = False
         for a in range(entry, end, 4):
             ins = self.lift(a)
@@ -369,6 +383,10 @@ class Module:
                     ext.add(ins.target)
             elif ins.kind == 'br':
                 jt = self.jump_table(a, entry, end)
+                # Preserve the existing all-instruction path for unresolved jump
+                # tables; ADR continuations only supplement plain indirect BRs.
+                if not jt and adr_targets and not self.computed_target(a, (self.fde(a) or (entry,))[0]):
+                    jt = sorted(adr_targets.get(bits(self.word(a), 5, 5), ()))
                 if jt:
                     tables[a] = jt
                     # (a target outside this piece of a split function is a boundary, reached by a tail call)
@@ -615,6 +633,7 @@ def main_sites(nso, base, opts):
 def generate(name, nso, base, outdir, opts, sites=None):
     t0 = time.time()
     m = Module(name, nso, base, opts.simd)
+    m.local_adr_continuations = getattr(opts, 'game', 'botw') == 'totk'
     if name == 'main':
         m.sites = sites if sites is not None else main_sites(m.nso, base, opts)[1]
         m.patches = patches.table(m.sites) if m.sites else {}
