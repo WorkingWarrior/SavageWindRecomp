@@ -12,6 +12,7 @@ set scene    SAVAGEWIND_PATCH_SCENE    0
 set fps60    SAVAGEWIND_PATCH_FPS60    1
 set realtime SAVAGEWIND_PATCH_REALTIME 1
 set bounce   SAVAGEWIND_PATCH_BOUNCE   1
+set cloth    SAVAGEWIND_PATCH_CLOTH    1
 
 # Scene render size: the renderer's +0xcc4 / +0xcc8, which size every scene render target, take two floats from page +16
 # instead of the graphics parameters' docked 1600x900 (1.2.1 main+0xcc3f68..74).
@@ -44,3 +45,18 @@ site realtime main 8f68d0 1e210800 d503201f   # fmul s0, s0, s1 -> nop
 # Slow-motion check (a trampoline): compares time object +0x28 * +0x38 (30 / time scale) with 100, the same value at 30 Hz
 # and independent of the frame rate.
 site bounce main ce3fec bd402900 bd402900 bd403901 1e210800   # ldr s0, [x8, #0x28]; ldr s1, [x8, #0x38]; fmul s0, s0, s1
+
+# Hair and cloth: the actor animation update builds a second clock {seconds = factor / 30, ratio = factor} every rendered
+# frame, so above 30 fps hair and cloth swing too fast (2x at 60). Three places have the update inlined and one calls the
+# shared update (1.0.0 main+0x82c224); each inline place gets two replacements (at the fmul: seconds = measured seconds *
+# factor; at the store of the factor into the clock's ratio slot: ratio = measured 30 Hz ratio * factor) and the call
+# gets s2 / s3 scaled by the measured ratio. The sites are MacNativeGames' for 1.0.0 (game_patches.c, cloth_inline for the
+# builds before 1.1.2), the words follow its veneers and totk-pc-recomp's patches-v121.txt (both MIT); the two places that
+# store the pair with stp [x29, #-0x40] differ from the 1.2.1 table. Needs realtime (it reads the same page values).
+site cloth main 7b5988 1e200900 f81f0fe9 @page:x9 bd400520 1e200900 f84107e9   # seconds: s0 = measured seconds * s8
+site cloth main 7b598c 2d3823a0 d10083ff f90003e9 3d8007ff @page:x9 bd40013f 1e3f091f 2d387fa0 3dc007ff f94003e9 910083ff   # ratio: measured 30 Hz ratio * s8 into the slot
+site cloth main 7b6b28 1e200900 f81f0fe9 @page:x9 bd400520 1e200900 f84107e9   # seconds: s0 = measured seconds * s8
+site cloth main 7b6b2c 2d3823a0 d10083ff f90003e9 3d8007ff @page:x9 bd40013f 1e3f091f 2d387fa0 3dc007ff f94003e9 910083ff   # ratio: measured 30 Hz ratio * s8 into the slot
+site cloth main 7f5ec4 1e210801 f81f0fe9 @page:x9 bd400521 1e210801 f84107e9   # seconds: s1 = measured seconds * s0
+site cloth main 7f5ed0 bd0117e0 d10083ff f90003e9 3d8007ff @page:x9 bd40013f 1e3f081f bd0137ff 3dc007ff f94003e9 910083ff   # ratio: measured 30 Hz ratio * s0 into the slot
+site cloth main 7b6358 9401d7b3 @page:x8 bd400104 1e240842 1e240863 9401d7b3   # the call: s2 = factor / 30, s3 = factor, times the measured ratio

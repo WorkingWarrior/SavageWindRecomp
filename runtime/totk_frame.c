@@ -1,4 +1,4 @@
-// TotK's frame rate and game clock: the host half of the patch sets fps60, realtime and bounce
+// TotK's frame rate and game clock: the host half of the patch sets fps60, realtime, bounce and cloth
 // (tools/patches-totk-100.txt; the sites, the page layout and the stepping follow totk-pc-recomp's runtime/frame_rate.c
 // and MacNativeGames' game_patches.c, both MIT).
 //
@@ -28,7 +28,7 @@
 #define STEP_FIRST_S (1.0 / 30.0)
 
 static _Atomic uint64_t *step_word;  // patch page +0: ratio (low float), seconds (high float)
-static int set_fps60 = -1, set_realtime = -1, set_bounce = -1;
+static int set_fps60 = -1, set_realtime = -1, set_bounce = -1, set_cloth = -1;
 static int limit_now = 30;
 static uint64_t last_ns;
 static double samples[STEP_SAMPLES];
@@ -58,7 +58,7 @@ static void limit_apply(void) {
 }
 
 void totk_frame_init(void) {
-    set_fps60 = rt_patch_set("fps60"), set_realtime = rt_patch_set("realtime"), set_bounce = rt_patch_set("bounce");
+    set_fps60 = rt_patch_set("fps60"), set_realtime = rt_patch_set("realtime"), set_bounce = rt_patch_set("bounce"), set_cloth = rt_patch_set("cloth");
     uint8_t *page = rt_patch_page();
     if (set_fps60 < 0 || set_realtime < 0 || !page) {
         LOG("[frame] the game library has no frame rate patch sets: the game's own 30 fps, whole-vsync steps\n");
@@ -68,7 +68,8 @@ void totk_frame_init(void) {
         step_word = (_Atomic uint64_t *)page;
         step_store((float)STEP_FIRST_S);
     } else {
-        rt_patch_switch(set_fps60, 0);  // (above 30 fps needs the real-time step)
+        rt_patch_switch(set_fps60, 0);  // (above 30 fps needs the real-time step, and so does the cloth clock)
+        rt_patch_switch(set_cloth, 0);
     }
     limit_now = rt_patch_enabled(set_fps60) ? 60 : 30;
     limit_apply();

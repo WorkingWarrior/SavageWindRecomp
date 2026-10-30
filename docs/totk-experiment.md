@@ -468,13 +468,15 @@ divided by the FSR 1 mode's factor) and switches the set on when it differs. Mea
 window: scene 640x360 (Performance) brightness 33.0, 852x480 (Quality) 32.9, against 32.8 at the game's size; BOTW
 unchanged (298k draws/interval, "Open your eyes..."). Not done: sizes above 1600x900 (the game's texture heap is sized
 for the shipped scene; totk-pc-recomp grows it through the HeapDef table), the final-image size (the host still scales
-that), the hair/cloth clock (its 7 sites have no 1.0.0 mapping here: hair and cloth still move at the console's rate
-at 60 fps) and the dynamic resolution controller (its scale is still the game's).
+that) and the dynamic resolution controller (its scale is still the game's).
 
-**60 fps** (sets `fps60`, `realtime`, `bounce`; `runtime/totk_frame.c`): the present-interval controller's minimum goes from 2
+**60 fps** (sets `fps60`, `realtime`, `bounce`, `cloth`; `runtime/totk_frame.c`): the present-interval controller's minimum goes from 2
 to 1, the game's step comes from the page (average of the last 5 display intervals, at most 1/15 s) instead of whole vsyncs, and
 the pacer holds the limit (Video > Frame rate: 30 or 60). Headless: 60.0 fps for 100 s; at 80 s of wall time the game is in
-the same place (Link at the cave entrance, controllable) as at 30 fps, so its speed is right. Higher rates are not offered.
+the same place (Link at the cave entrance, controllable) as at 30 fps, so its speed is right. Higher rates are not offered. The `cloth` set (hair and cloth clock: three inlined places and one call, sites and
+formulas from MacNativeGames' per-version table; the 1.0.0 words differ from the 1.2.1 ones where the factor is stored with
+`stp`) is on with realtime; all seven original words match. Its effect on the hair and cloak speed is not measured: a
+frame-difference test (1.82 on, 1.72 off) cannot separate it from the character's own motion.
 
 ## Historical bounded feasibility phase
 
