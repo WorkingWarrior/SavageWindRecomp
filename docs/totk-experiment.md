@@ -362,6 +362,31 @@ New debugging aids: `tools/check_romfs_image.py`, `SAVAGEWIND_WATCH_PAGE=<addr>:
 `_DELAY`, with `SAVAGEWIND_WATCH_WRITES`), `[fs] big read` and `GetEntryType` missing-path logs for TotK.
 BOTW rechecked (`claude-botw-04`, 294k draws/interval).
 
+### Session 2, part 5: the magenta terrain is fixed (`nvnTextureGetViewOffset`)
+
+Cause: Savage's `nvnTextureGetViewOffset` was a stub returning 0. TotK derives the destination of every
+layer and mip of its material arrays (`TexToGo/MaterialAlb.txtg`, `MaterialCmb.txtg`, zstd-packed) from it:
+`f_70026235f0` loops over layers/mips and calls the zstd decompressor (`f_7000860b40`, identified by its
+`-N` error codes and the `0x78` threshold) with the destination `base + ViewOffset(layer, mip)`. With 0,
+all 121 layers were decompressed over the first layer (logged: identical `dst 728591e000` for every call),
+layers 1..120 stayed zero, and an all-zero ASTC block decodes as magenta. It was not the file read, the
+RomFS, thread scheduling or a lifted instruction. Found by: reference comparison (arrays full at first use),
+a page watch showing the unpack loop running, and a temporary log of the decompress calls (an edit of a local
+generated chunk, since restored; nothing generated is committed).
+
+Fix: implement it as the reference does (layer * layer size + level offset), TotK only; BOTW keeps 0.
+
+**Observed after the fix** (`claude-60`, 150 s, headless): textured cave walls, torch light, Link, Zelda
+with the "Zelda, Princess of Hyrule" caption, then gameplay with HUD hearts and control hints at frames
+2500 and 3000 (`state/build/frames/window_0{1500,2000,2500,3000}.png`). BOTW rechecked
+(`claude-botw-05`: "Open your eyes..." at frame 3100, 296k draws/interval).
+
+**Still wrong:** overbright white streaks near the debris at the right of the gameplay frame; the face
+of Zelda in the close-up looks patterned (a texture probably still missing); one vertex shader needs FP64
+(DMUL, not ported); an intermittent crash (about 1 start in 12) in SDK audio mixing `f_7004f31b50` early in
+boot; no title menu (a clean save goes straight to the intro; the reference shows it only once a save exists).
+Frame rate 10-30 fps headless; unmeasured otherwise.
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in
