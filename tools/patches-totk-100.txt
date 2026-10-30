@@ -1,0 +1,16 @@
+# Code patches for TotK 1.0.0 main (tools/wordpatches.py, gen.py --patches).
+#
+# Sites and replacement words are those of totk-pc-recomp's recomp/patches-v121.txt (MIT), which took them from
+# MacNativeGames games/totk/runtime/game_patches.c (MIT, Copyright (c) 2026 MacNativeGames contributors); the 1.0.0
+# offsets are MacNativeGames' game_version.h mapping of each 1.2.1 site. Each original word is checked against this
+# module by the generator (all of them matched).
+#
+# The patch page (wordpatches.PAGE_ADDR) holds what the sets read: +16 the scene size {w, h} as two floats.
+
+set scene SAVAGEWIND_PATCH_SCENE 0
+
+# Scene render size: the renderer's +0xcc4 / +0xcc8, which size every scene render target, take two floats from page +16
+# instead of the graphics parameters' docked 1600x900 (1.2.1 main+0xcc3f68..74).
+site scene main c630bc 5e21d900 @page:x9    # scvtf s0, s8 -> adrp x9, page
+site scene main c630c4 bd0cc660 2d420520    # str s0, [x19, #0xcc4] -> ldp s0, s1, [x9, #16]
+site scene main c630c8 5e21d921 bd0cc660    # scvtf s1, s9 -> str s0, [x19, #0xcc4]

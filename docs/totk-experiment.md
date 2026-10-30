@@ -442,6 +442,35 @@ of Zelda in the close-up looks patterned (a texture probably still missing); one
 boot; no title menu (a clean save goes straight to the intro; the reference shows it only once a save exists).
 Frame rate 10-30 fps headless; unmeasured otherwise.
 
+## Render size and code patch sets (session 3)
+
+Scaling the 3D scene's render targets from the host (what BOTW does) does not suit TotK: its shaders see the guest's
+1600x900, so the lighting came out 10-40% darker the further the scene was from that (frame brightness 32.8 at the
+game's size, 29.4 at the window's size, 20-23 with FSR 1 modes). The game has to render the scene at the wanted size
+itself, so the generator now supports **instruction-word patch sets** (`tools/wordpatches.py`, `gen.py --patches`; the
+format, the idea and the TotK sites come from totk-pc-recomp's `recomp/patches.py` and `patches-v121.txt` (MIT), which took
+them from MacNativeGames' `game_patches.c` (MIT); the 1.0.0 offsets are MacNativeGames' `game_version.h` mapping, and every
+original word was checked against this module: 25 of 26 matched, the last was the `bl` word its table lists for 1.0.0).
+At a site the generated C reads `if (rt_patch_on[set]) { replacement } else { original }`; `runtime/patches.c` owns the
+switches (`SAVAGEWIND_PATCH_<NAME>`) and the patch page (guest `0x707ff00000`, within ADRP's reach of main).
+
+Generation command for TotK now:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 tools/venv/bin/python tools/gen.py all ../totk-recomp/totk-build/data/exefs \
+  build/totk-experiment/totk-gen --game totk --simd c --hle runtime/hle/hle_symbols.txt \
+  --patches tools/patches-totk-100.txt
+```
+
+`tools/patches-totk-100.txt` has one set so far, `scene`: the renderer's `+0xcc4/+0xcc8` read two floats from the page
+(`+16`) instead of 1600x900. `output_scale.c` writes the size the Video settings ask for (window size for Upscaler Off,
+divided by the FSR 1 mode's factor) and switches the set on when it differs. Measured in the cave scene at a 1280x720
+window: scene 640x360 (Performance) brightness 33.0, 852x480 (Quality) 32.9, against 32.8 at the game's size; BOTW
+unchanged (298k draws/interval, "Open your eyes..."). Not done: sizes above 1600x900 (the game's texture heap is sized
+for the shipped scene; totk-pc-recomp grows it through the HeapDef table), the final-image size (the host still scales
+that), the 60 fps and real-time-step sets (their sites map the same way), the hair/cloth clock (its 7 sites have no
+1.0.0 mapping here) and the dynamic resolution controller (its scale is still the game's).
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in

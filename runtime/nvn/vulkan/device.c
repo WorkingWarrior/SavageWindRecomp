@@ -1715,6 +1715,14 @@ static void present_locked(NvnTexture *t) {
         float crop[4] = {(float)os.crop[0], (float)os.crop[1], (float)os.crop[2], (float)os.crop[3]};  // (uv origin, size)
         renderer_set_scale((float)sx, (float)sy);
         renderer_set_scene_scale((float)os.scene_sx, (float)os.scene_sy);
+        {   // (a line each time the sizes the render targets are made at change)
+            static double last[4];
+            if (fabs(sx - last[0]) > 0.001 || fabs(sy - last[1]) > 0.001 || fabs(os.scene_sx - last[2]) > 0.001 || fabs(os.scene_sy - last[3]) > 0.001) {
+                last[0] = sx, last[1] = sy, last[2] = os.scene_sx, last[3] = os.scene_sy;
+                LOG("[scale] final image x%.3f x%.3f (%.0f x %.0f), scene x%.3f x%.3f (%.0f x %.0f of 1600 x 900)\n", sx, sy, 1920 * sx, 1080 * sy,
+                    os.scene_sx, os.scene_sy, 1600 * os.scene_sx, 900 * os.scene_sy);
+            }
+        }
         renderer_set_shadow_size(shadow_map_size(total_frames + 1));
         VkCommandBuffer cb = vk_cmd();
         float pv[8] = {renderer_origin_lower_left() ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};

@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../code_patches.h"
 #include "../framepace.h"
 #include "../game_profile.h"
 #include "../hle.h"
@@ -68,7 +69,7 @@ bool upscale_modes_available(void) {
 #else
     if (on < 0) on = !getenv("SAVAGEWIND_NO_SCALE");
 #endif
-    return on && game_is_botw();  // (the render targets of other games keep their sizes: output_scale)
+    return on;
 }
 
 double upscale_factor(void) {
@@ -82,15 +83,35 @@ double upscale_factor(void) {
 static volatile float g_view_shape = 1, g_fov = 1;
 static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the world camera's last matrix (rt_persp), float bits
 
-void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
-    if (!game_is_botw()) {
-        double fit = fmin(dw / 16.0, dh / 9.0);
-        *o = (OutScale){.sx = 1, .sy = 1, .scene_sx = 1, .scene_sy = 1, .shape = 1,
-                        .vx = (dw - 16 * fit) / 2, .vy = (dh - 9 * fit) / 2,
-                        .vw = 16 * fit, .vh = 9 * fit, .crop = {0, 0, 1, 1}};
-        g_view_shape = g_fov = 1;
-        return;
+// TotK: the game renders its 3D scene at the size the patch set `scene` (tools/patches-totk-100.txt) reads from the patch
+// page (+16: width, height as floats), not at the graphics parameters' docked 1600x900, and sizes every scene target
+// from it, so its own shaders see the size they are drawn at (scaling the targets from the host left them wrong: the
+// lighting came out 10-40% darker). Only up to the shipped 1600x900: the game's texture heap is sized for that (a
+// bigger scene needs the heap definition grown, as totk-pc-recomp does). The library generated without the set: the
+// host scales the scene targets, as for BOTW.
+static void totk_scene_size(double w, double h, OutScale *o) {
+    static int set = -2;
+    if (set == -2) set = rt_patch_set("scene");
+    uint8_t *page = rt_patch_page();
+    if (set < 0 || !page) return;
+    double k = fmin(1.0, fmin(1600.0 / w, 900.0 / h));
+    unsigned pw = (unsigned)lround(w * k) & ~1u, ph = (unsigned)lround(h * k) & ~1u;
+    if (pw < 320) pw = 320;
+    if (ph < 180) ph = 180;
+    static unsigned last_w, last_h;
+    if (pw != last_w || ph != last_h) {
+        float f[2] = {(float)pw, (float)ph};
+        memcpy(page + 16, f, sizeof f);
+        rt_patch_switch(set, pw != 1600 || ph != 900);
+        last_w = pw, last_h = ph;
+        LOG("[scale] the game's scene %u x %u%s\n", pw, ph, pw != 1600 || ph != 900 ? "" : " (its own)");
     }
+    o->scene_sx = o->scene_sy = 1;
+}
+
+void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
+    // (TotK: the same sizes as BOTW's docked 1920x1080 final image and 1600x900 scene; no widening: the camera isn't patched)
+    if (!game_is_botw()) reshape_allowed = false;
     double fit = fmin(dw / 1920.0, dh / 1080.0);
     static double forced = -1, wide_test = -1;
     if (forced < 0) forced = getenv("SAVAGEWIND_SCALE") ? atof(getenv("SAVAGEWIND_SCALE")) : 0;
@@ -120,6 +141,7 @@ void output_scale(double dw, double dh, bool reshape_allowed, OutScale *o) {
     o->scene_sx = sx * k; o->scene_sy = sy * k;
     double scap = fmin(MAX_TEX / (1920.0 * o->scene_sx), MAX_TEX / (1080.0 * o->scene_sy));
     if (scap < 1.0) { o->scene_sx *= scap; o->scene_sy *= scap; }
+    if (!game_is_botw()) totk_scene_size(1600.0 * o->scene_sx, 900.0 * o->scene_sy, o);
     // where the image goes in the window: fills it when reshaped, else a fitted 16:9 box
     if (reshape) { o->vw = dw; o->vh = dh; }
     else { o->vw = 1920.0 * fit; o->vh = 1080.0 * fit; }
