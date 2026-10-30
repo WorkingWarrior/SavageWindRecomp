@@ -838,7 +838,7 @@ static bool writes_gpr(uint64_t w) {
         {0x5b60, 0xfff0}, {0x4b60, 0xfff0}, {0x3660, 0xfef0},  // ISETP
         {0x5d20, 0xfff8}, {0x5090, 0xfff8}, {0x50a0, 0xfff8},  // HSETP2, PSETP, CSETP
         {0x38f0, 0xfef8}, {0x5cf0, 0xfff8}, {0x4cf0, 0xfff8},  // R2P
-        {0xeff0, 0xfff8}, {0xeed8, 0xfff8}, {0xef50, 0xfff8}, {0xef58, 0xfff8},  // ST attribute, STG, STL, STS
+        {0xeff0, 0xfff8}, {0xeed8, 0xfff8}, {0xef50, 0xfff8}, {0xef58, 0xfff8}, {0xebf8, 0xfff8},  // ST attribute, STG, STL, STS, RED
         {0xe300, 0xfff0}, {0xe330, 0xfff0}, {0xe240, 0xfff0}, {0xe250, 0xfff0},  // EXIT, KIL, BRA, BRX
         {0xe290, 0xfff0}, {0xe2a0, 0xfff0}, {0xe2b0, 0xfff0}, {0xe340, 0xfff0}, {0xe350, 0xfff0},  // SSY PBK PCNT BRK CONT
         {0xf0f8, 0xfff8}, {0xf0f0, 0xfff8}, {0x50b0, 0xfff8}, {0xef98, 0xfff8}, {0xf0a8, 0xfff8},  // SYNC DEPBAR NOP MEMBAR BAR
@@ -1911,6 +1911,121 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
         sp(&c->body, "    }\n");
     } else if (OPM(0x5098000000000000ull, 0xfff8000000000000ull)) {  // CSET
         fail(c, "cset");
+    } else if (c->glsl && OPM(0xebf8000000000000ull, 0xfff8000000000000ull)) {
+        // RED (global reduction, no result): addr = (E bit 48 ? R[a+1]:R[a] : zext R[a]) + off (bits 28-47; signed
+        // unless Ra == RZ); size bits 20-22 (U32 S32 U64 F32 ...), op bits 23-25 (ADD MIN MAX INC DEC AND OR XOR).
+        int size = (int)bits(w, 20, 3), op = (int)bits(w, 23, 3);
+        bool e = bits(w, 48, 1);
+        int64_t off = a == RZ ? (int64_t)bits(w, 28, 20) : sbits(w, 28, 20);
+        if (size > 1 || op == 3 || op == 4) { fail(c, "red size %d op %d", size, op); return; }
+        c->info->uses_gmem = true;
+        c->uses_gmem_store = true;
+        char addr[256];
+        if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
+        else if (e) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
+        else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
+        sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul;\n", addr,
+           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size);
+        static const char *const fn[] = {"atomicAdd", "atomicMin", "atomicMax", "", "", "atomicAnd", "atomicOr", "atomicXor"};
+        Str saved = c->body;
+        c->body = (Str){0};
+        if (size == 1 && (op == 1 || op == 2))   // signed min/max on the uint buffer: compare-and-swap loop
+            sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint n = uint(%s(int(o), int(%s))); "
+                         "if (n == o) break; uint p = atomicCompSwap(gmem_.w[wi], o, n); if (p == o) break; o = p; } }\n",
+               op == 1 ? "min" : "max", R(d));
+        else sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); %s(gmem_.w[wi], %s); }\n", fn[op], R(d));
+        Str lines = c->body;
+        c->body = saved;
+        sp(&c->body, "%s", lines.buf ? lines.buf : "");
+        free(lines.buf);
+        sp(&c->body, "    }\n");
+    } else if (c->glsl && OPM(0xed00000000000000ull, 0xff00000000000000ull)) {
+        // ATOM (global atomic with result; Eden atomic_operations_global_memory.cpp): Rd = old value, operand R[20-27],
+        // address as RED (Ra, E bit 48, off bits 28-47), size bits 49-51 (U32 S32 ...), op bits 52-55 (ADD MIN MAX INC DEC AND OR XOR EXCH)
+        int size = (int)bits(w, 49, 3), op = (int)bits(w, 52, 4), rb = (int)bits(w, 20, 8);
+        bool e = bits(w, 48, 1);
+        int64_t off = a == RZ ? (int64_t)bits(w, 28, 20) : sbits(w, 28, 20);
+        if (size > 1 || op == 3 || op == 4 || op > 8) { fail(c, "atom size %d op %d", size, op); return; }
+        c->info->uses_gmem = true;
+        c->uses_gmem_store = true;
+        char addr[256];
+        if (a == RZ) sprintf(addr, "ulong(%lld)", (long long)off);
+        else if (e) sprintf(addr, "((ulong(%s) << 32 | ulong(%s)) + ulong(%lld))", R(a + 1), R(a), (long long)off);
+        else sprintf(addr, "(ulong(%s) + ulong(%lld))", R(a), (long long)off);
+        sp(&c->body, "    { ulong ga = %s - 0x%llxul; bool ok = ga < 0x%llxul; uint av = 0u; uint ao = %s;\n", addr,
+           (unsigned long long)maxwell_gmem_base, (unsigned long long)maxwell_gmem_size, R(rb));
+        static const char *const fn[] = {"atomicAdd", "atomicMin", "atomicMax", "", "", "atomicAnd", "atomicOr", "atomicXor", "atomicExchange"};
+        Str saved = c->body;
+        c->body = (Str){0};
+        if (size == 1 && (op == 1 || op == 2))   // signed min/max on the uint buffer: compare-and-swap loop, av = old value
+            sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); uint o = gmem_.w[wi]; for (int it = 0; it < 64; it++) { uint n = uint(%s(int(o), int(ao))); "
+                         "if (n == o) break; uint p = atomicCompSwap(gmem_.w[wi], o, n); if (p == o) break; o = p; } av = o; }\n",
+               op == 1 ? "min" : "max");
+        else sp(&c->body, "      if (ok) { uint wi = uint(ga >> 2); av = %s(gmem_.w[wi], ao); }\n", fn[op]);
+        Str lines = c->body;
+        c->body = saved;
+        sp(&c->body, "%s", lines.buf ? lines.buf : "");
+        free(lines.buf);
+        if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = av;\n", d); }
+        sp(&c->body, "    }\n");
+    } else if (c->glsl && OPM(0x3a00000000000000ull, 0xfe00000000000000ull)) {
+        // VMNMX (video min/max), Eden video_minimum_maximum.cpp layout (research/sweep/maxwell_more_opcodes.md; the
+        // selector/width fields overlap there and are copied as is): A = Ra (sel 36-37, width 37-38, sign 48); B = bit 50 ?
+        // Rb (20-27, sel 28-29, width 29-30, sign 49) : uimm16 (20-35, Short, sel 0); C = R39.
+        // Rd = (op 51-53: MIN 5 / MAX 6, sign 54)((bit 56 ? max : min)(A', B', sign of B), C). CC (47) and SAT (55) unsupported.
+        int op = (int)bits(w, 51, 3);
+        bool breg = bits(w, 50, 1), sa = bits(w, 48, 1), sb = bits(w, 49, 1), sd = bits(w, 54, 1), mx = bits(w, 56, 1);
+        if (bits(w, 47, 1) || bits(w, 55, 1) || (op != 5 && op != 6)) { fail(c, "vmnmx cc/sat/op %d", op); return; }
+        char ea[160], eb[160], t2[700];
+        for (int k = 0; k < 2; k++) {   // ExtractVideoOperandValue: Byte/Unknown -> 8 bits at sel*8, Short -> 16 at sel*16, Word -> all
+            char *o = k ? eb : ea;
+            int width = k ? (breg ? (int)bits(w, 29, 2) : 2) : (int)bits(w, 37, 2);
+            int sel = k ? (breg ? (int)bits(w, 28, 2) : 0) : (int)bits(w, 36, 2);
+            bool sg = k ? sb : sa;
+            char src[64];
+            if (k && !breg) sprintf(src, "%uu", (uint32_t)bits(w, 20, 16));
+            else sprintf(src, "%s", R(k ? (int)bits(w, 20, 8) : a));
+            if (width == 3) sprintf(o, "%s", src);
+            else {
+                int n = width == 2 ? 16 : 8;
+                if (sg) sprintf(o, "uint(bitfieldExtract(int(%s), %d, %d))", src, sel * n, n);
+                else sprintf(o, "bitfieldExtract(%s, %d, %d)", src, sel * n, n);
+            }
+        }
+        char lhs[400];
+        if (sb) sprintf(lhs, "uint(%s(int(%s), int(%s)))", mx ? "max" : "min", ea, eb);
+        else sprintf(lhs, "%s(%s, %s)", mx ? "max" : "min", ea, eb);
+        if (sd) sprintf(t2, "uint(%s(int(%s), int(%s)))", op == 6 ? "max" : "min", lhs, R((int)bits(w, 39, 8)));
+        else sprintf(t2, "%s(%s, %s)", op == 6 ? "max" : "min", lhs, R((int)bits(w, 39, 8)));
+        set_reg(c, d, t2);
+    } else if (c->glsl && OPM(0x50d8000000000000ull, 0xfff8000000000000ull)) {
+        // VOTE: Rd = ballot of the source predicate (bits 39-41, neg 42); pred_b (45-47) = ALL/ANY/EQ (op 48-49)
+        int pa = (int)bits(w, 39, 3), pb = (int)bits(w, 45, 3), vop = (int)bits(w, 48, 2);
+        bool na = bits(w, 42, 1);
+        sp(&c->body, "    { bool vp = %s;\n", P(pa, na));
+        if (d != RZ) { c->reg_used[d] = 1; sp(&c->body, "      r%d = subgroupBallot(vp).x;\n", d); }
+        if (pb != PT) {
+            c->pred_used[pb] = 1;
+            sp(&c->body, "      p%d = %s;\n", pb, vop == 0 ? "subgroupAll(vp)" : vop == 1 ? "subgroupAny(vp)" : "subgroupAllEqual(vp)");
+        }
+        sp(&c->body, "    }\n");
+    } else if (c->glsl && OPM(0x36d0000000000000ull, 0xfef8000000000000ull)) {
+        // LEA (lo, imm): Rd = imm19 (bits 20-38, minus 2^19 if bit 56) + ((neg 45 ? -Ra : Ra) << scale 39-43)
+        int64_t imm = (int64_t)bits(w, 20, 19) - (bits(w, 56, 1) ? (1ll << 19) : 0);
+        int scale = (int)bits(w, 39, 5);
+        if (bits(w, 46, 2) || bits(w, 48, 3) != 7) { fail(c, "lea lo with x/cc/pred"); return; }
+        char t2[160];
+        sprintf(t2, "(%uu + ((%s%s) << %du))", (uint32_t)imm, bits(w, 45, 1) ? "0u - " : "", R(a), scale);
+        set_reg(c, d, t2);
+    } else if (c->glsl && OPM(0x1800000000000000ull, 0xfc00000000000000ull)) {
+        // LEA (hi, cbuf): Rd = c[idx][off] + low32(pack64(Ra, R39) (negated if bit 56) >> (32 - scale 51-55))
+        int scale = (int)bits(w, 51, 5), hi = (int)bits(w, 39, 8);
+        if (bits(w, 57, 1) || bits(w, 47, 1) || bits(w, 48, 3) != 7) { fail(c, "lea hi with x/cc/pred"); return; }
+        char cb[96], t2[400];
+        cbuf_ref(c, (int)bits(w, 34, 5), (int64_t)bits(w, 20, 14) * 4, NULL, cb);
+        sprintf(t2, "(as_u(%s) + uint((%s(ulong(%s) << 32 | ulong(%s))) >> %du))", cb, bits(w, 56, 1) ? "0ul - " : "", R(hi), R(a),
+                32 - scale);
+        set_reg(c, d, t2);
     } else if (OPM(0xf0a8000000000000ull, 0xfff8000000000000ull)) {  // BAR
         if (!c->glsl) sp(&c->body, "    threadgroup_barrier(mem_flags::mem_threadgroup);\n");
         else if (c->stage == STAGE_COMPUTE) sp(&c->body, "    barrier();\n");
@@ -2023,6 +2138,8 @@ static const char glsl_prelude[] =
     "#extension GL_KHR_shader_subgroup_basic : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle : require\n"
     "#extension GL_KHR_shader_subgroup_shuffle_relative : require\n"
+    "#extension GL_KHR_shader_subgroup_ballot : require\n"
+    "#extension GL_KHR_shader_subgroup_vote : require\n"
     "#extension GL_EXT_texture_shadow_lod : require\n"
     "#define cbr(cb, off) cb[min((off) >> 4, uint(cb.length() - 1))][((off) >> 2) & 3u]\n"
     "uint as_u(float x) { return floatBitsToUint(x); }\n"
