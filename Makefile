@@ -105,8 +105,10 @@ OSFLAGS  := -D_FILE_OFFSET_BITS=64 -D_POSIX_THREAD_SAFE_FUNCTIONS -D_CRT_RAND_S 
 GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA for the lifted FP/SIMD code (simd.h)
 GENARCH_COMPAT ?= -march=x86-64-v2  # CPUs without them (GAMELIB_ID_COMPAT below)
 GENFLAGS += -D_FILE_OFFSET_BITS=64 $(GENARCH)
-LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
-            -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -l:libz.a \
+# --stack: every thread's default stack, reserved (committed as it grows): 256 MB, the guest threads' recursion runs on
+# it (runtime/kernel.c thread_start)
+LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
+            -lvulkan-1 -lwinmm -lole32 -lshell32 -lcomdlg32 -luuid -lshaderc_shared -lpdh -l:libz.a \
             $(if $(RELEASE),-Wl$(comma)--subsystem$(comma)windows)  # release: no console window (log -> savagewind.log)
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
@@ -129,7 +131,7 @@ GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools
                 tools/simd_c.py tools/gamelib_entry.c runtime/hle/hle_symbols.txt \
                 runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h runtime/gamelib.h
 GAMELIB_SRCS += tools/layout.py tools/game_sites.py tools/game_profiles.py runtime/game_profile.h
-GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)'; echo '$(GENFLAGS_ZIG)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(strip $(GENFLAGS))'; echo '$(GENFLAGS_ZIG)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 # The compatible target (#9): x86-64 CPUs without AVX2 / FMA / BMI2 get the game code built with GENARCH_COMPAT in
 # place of GENARCH (no -mfma: simd.h's fma is runtime/simd_softfma.h, slower). The start screen builds the one the CPU
 # runs (runtime/gamelib.h gamelib_compat); its id differs, so neither library is ever loaded in place of the other.
@@ -137,7 +139,7 @@ GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)'; echo '$(GENFLAGS
 ifneq ($(strip $(GENARCH)),)
 ifneq ($(strip $(GENARCH_COMPAT)),)
 GENFLAGS_COMPAT := $(subst $(strip $(GENARCH)),$(strip $(GENARCH_COMPAT)),$(GENFLAGS))
-GAMELIB_ID_COMPAT := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS_COMPAT)'; echo '$(GENFLAGS_ZIG)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
+GAMELIB_ID_COMPAT := $(shell (cat $(GAMELIB_SRCS); echo '$(strip $(GENFLAGS_COMPAT))'; echo '$(GENFLAGS_ZIG)') | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-16)
 GAMELIB_TARGETS := -DGAMELIB_ARCH='"$(strip $(GENARCH))"' -DGAMELIB_ARCH_COMPAT='"$(strip $(GENARCH_COMPAT))"' \
                    -DGAMELIB_ID_COMPAT='"$(GAMELIB_ID_COMPAT)"'
 endif
@@ -154,6 +156,31 @@ RT_OBJ   := $(patsubst runtime/%.c,$(B)/rt/%.o,$(RT_SRC))
 RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Iruntime/nvn -isystem third_party -isystem third_party/stb $(DEPINC) $(OSFLAGS)
 CXXFLAGS := -O2 -g -std=c++17 -I$(IMGUI) -I$(IMGUI)/backends -Iruntime -Iruntime/nvn -isystem third_party -Ithird_party/stb $(DEPINC)
 
+.DEFAULT_GOAL := all
+
+# AMD FidelityFX SDK 1.1.4 (third_party/FidelityFX, MIT): FSR 3 frame interpolation and optical flow
+# (runtime/nvn/vulkan/framegen.cpp) and the FSR 3 upscaler (runtime/nvn/vulkan/fsr3.cpp) on its Vulkan backend. Its
+# sources unchanged, with ffx_compat.h for what MSVC's headers bring; the shaders are tools/ffx_shaders.py's
+# (third_party/FidelityFX/spirv).
+FFX      := third_party/FidelityFX
+FFX_SRC  := $(FFX)/sdk/src/components/frameinterpolation/ffx_frameinterpolation.cpp \
+            $(FFX)/sdk/src/components/opticalflow/ffx_opticalflow.cpp \
+            $(FFX)/sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp $(FFX)/sdk/src/backends/vk/ffx_vk.cpp \
+            $(wildcard $(FFX)/sdk/src/shared/*.cpp)
+FFX_OBJ  := $(patsubst $(FFX)/sdk/src/%.cpp,$(B)/ffx/%.o,$(FFX_SRC))
+FFX_INC  := -I$(FFX)/sdk/include -I$(FFX)/sdk/src/components -I$(FFX)/sdk/src/shared -I$(FFX)/sdk/src/backends/shared
+ifneq ($(PLATFORM),macos)
+BACKEND_OBJ += $(FFX_OBJ)
+$(B)/rt/nvn/vulkan/fsr3.o: CXXFLAGS := -DSW_FSR3=1 -include $(FFX)/ffx_compat.h $(FFX_INC) $(CXXFLAGS)
+endif
+$(B)/ffx/%.o: $(FFX)/sdk/src/%.cpp $(FFX)/ffx_compat.h
+	@mkdir -p $(dir $@)
+	$(CXX) -O2 -g -std=c++17 -w -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/sdk/include/FidelityFX/gpu $(DEPINC) -c $< -o $@
+# (the SDK's headers ahead of $(DEPINC)'s: another copy of them there, from a build of the SDK, has other context
+# sizes, and a context smaller than the SDK's own code writes overran the next one in memory)
+$(B)/rt/nvn/vulkan/framegen.o: CXXFLAGS := -include $(FFX)/ffx_compat.h $(FFX_INC) -I$(FFX)/spirv $(CXXFLAGS)
+$(B)/rt/nvn/vulkan/framegen.o: $(FFX)/spirv/ffx_shaders_vk.h $(FFX)/spirv/ffx_fsr3upscaler_vk.h $(FFX)/ffx_compat.h
+
 all: $(EXE) $(CONFIG_EXE) $(if $(strip $(GEN_SRC)),$(GAMELIB))  # (GEN_SRC is a space when there is no generated/)
 
 $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/simd_softfma.h  # (cpu.h includes them)
@@ -161,7 +188,7 @@ $(B)/obj/%.o: $(GEN)/%.c runtime/cpu.h runtime/simd.h runtime/simd_fp.h runtime/
 	@$(CC) $(GENFLAGS) -c $< -o $@
 $(B)/obj/layout.o: runtime/gamelib.h
 
-$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS)
+$(B)/obj/tools/gamelib_entry.o: tools/gamelib_entry.c $(GAMELIB_SRCS) Makefile  # (the id: the flags are in here too)
 	@mkdir -p $(dir $@)
 	$(CC) $(GENFLAGS) -DGAMELIB_ID='"$(GAMELIB_ID)"' -c $< -o $@
 $(B)/rt/nvn/maxwell/translate.o: RTFLAGS += -DTRANSLATOR_ID='"$(TRANSLATOR_ID)"'
@@ -301,6 +328,8 @@ dist:
 	cp third_party/fonts/FiraSans/OFL.txt "$(DIST)/FiraSans-OFL.txt"
 	cp third_party/fonts/NotoSansThai/NotoSansThai-Medium.ttf "$(DIST)/"  # (Thai menus, OFL)
 	cp third_party/fonts/NotoSansThai/OFL.txt "$(DIST)/NotoSansThai-OFL.txt"
+	cp third_party/FidelityFX/LICENSE.txt "$(DIST)/FidelityFX-LICENSE.txt"  # (AMD FidelityFX SDK, MIT: README "License")
+	mkdir "$(DIST)/colour-luts" && cp third_party/luts/*.cube third_party/luts/README.md "$(DIST)/colour-luts/"  # (CC0: Video > Colour)
 	cp README.md LICENSE "$(DIST)/"  # (licenses and source links of the bundled components: README "License")
 	PATH="$(CURDIR)/build/deps-win/bin:$$PATH" ldd $(WIN_B)/savagewind.exe | awk '(/ucrt64/ || /deps-win/) && !/vulkan-1/ {print $$3}' | sort -u | \
 	    xargs -I{} cp -u {} "$(DIST)/"
@@ -351,3 +380,27 @@ appimages:
 
 build/test_shaders: tools/test_shaders.m runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
 	clang -O1 -fobjc-arc -framework Metal -framework Foundation -o $@ tools/test_shaders.m runtime/nvn/maxwell/translate.c
+
+build/test_romfs: tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c runtime/romfs_build.h runtime/romfs_image.h
+	clang -O1 -Iruntime -o $@ tools/test_romfs.c runtime/romfs_build.c runtime/romfs_image.c -lpthread
+
+$(B)/test_bind_capture: tools/test_bind_capture.c runtime/hle/bindings.c runtime/input_bind.h
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_bind_capture.c runtime/hle/bindings.c -lSDL3
+
+test-bind-capture: $(B)/test_bind_capture
+	$(B)/test_bind_capture
+
+.PHONY: test-bind-capture
+$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
+	@mkdir -p $(B)
+	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
+
+test-vibration: $(B)/test_vibration
+	SAVAGEWIND_VIBRATION=1 SAVAGEWIND_VIBRATION_SHAPE=0 $(B)/test_vibration
+	env -u SAVAGEWIND_VIBRATION -u SAVAGEWIND_VIBRATION_SHAPE $(B)/test_vibration shaped
+	env -u SAVAGEWIND_VIBRATION SAVAGEWIND_VIBRATION_SHAPE=0 $(B)/test_vibration raw
+	env -u SAVAGEWIND_VIBRATION_SHAPE SAVAGEWIND_VIBRATION=0 $(B)/test_vibration off
+	SAVAGEWIND_VIBRATION=1 SAVAGEWIND_VIBRATION_SHAPE=1 $(B)/test_vibration shaped
+
+.PHONY: test-vibration

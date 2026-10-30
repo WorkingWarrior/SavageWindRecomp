@@ -49,6 +49,7 @@ extern "C" {
 #include "game_versions.h"
 #include "romfs_build.h"
 #include "settings.h"
+#include "color_grade.h"
 #include "input_bind.h"
 #ifndef __APPLE__
 #include "nvn/precompile.h"
@@ -225,8 +226,15 @@ static std::string check_copied_files(const std::string &root) {
         if (v) g_files_version = v->name;
         return v ? NOT_SUPPORTED_YET : NOT_SUPPORTED;
     }
-    if (!is_dir(root + "/romfs") || !file_exists(root + "/romfs.bin")) return "Game data missing";
+    if (!is_dir(root + "/romfs")) return "Game data missing";
     return "";
+}
+
+// An older version's data image: the game reads the romfs/ folder itself now (runtime/romfs_image.h), 15 GB back
+static void remove_old_image(const std::string &root) {
+    if (file_exists(root + "/romfs.bin") && check_copied_files(root).empty() &&
+        rt_remove_game_file(root.c_str(), "romfs.bin"))
+        fprintf(stderr, "[launcher] removed the old game data image (romfs.bin)\n");
 }
 
 // "" = ready to play, else what is wrong
@@ -240,7 +248,10 @@ static std::string check_game_files(const std::string &root) {
 }
 
 // (runtime/main.c) a plain start goes straight into the game when this is true
-extern "C" bool launcher_game_ready(const char *root) { return check_game_files(root).empty(); }
+extern "C" bool launcher_game_ready(const char *root) {
+    remove_old_image(root);
+    return check_game_files(root).empty();
+}
 
 #ifdef __APPLE__
 // (runtime/main.c) macOS: Option held while the app opens asks for the configuration screen - what "Savage Wind
@@ -251,8 +262,7 @@ extern "C" bool launcher_config_key_held(void) { return (NSEvent.modifierFlags &
 
 // ------------------------------------------------------------------ setup (background thread)
 // The player brings their own game files: a folder holding exefs/ and romfs/. They're copied into the data root (APFS
-// clones / hard links where the file system allows) and the data image the game reads is built from romfs/
-// (runtime/romfs_build.c).
+// clones / hard links where the file system allows); the game reads romfs/ in place (runtime/romfs_image.h).
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::string g_src;           // the picked folder
 static std::string g_job;           // current setup step / result for the status line
@@ -332,17 +342,23 @@ static void explain_status(const std::string &st) {
 }
 
 // exefs: the folder with main and main.npdm; romfs: a folder named romfs, or one holding System/Version.txt (the
-// game's data root: some tools name it after the game). Found in the picked folder or a few levels below it
-// (extraction tools nest them).
+// game's data root: some tools name it after the game); dlc: the RomFS folders of downloadable content
+// (System/AocVersion.txt and no Version.txt; dumps keep them next to the game's, and "dlc1" sorts before "main").
+// Found in the picked folder or a few levels below it (extraction tools nest them).
 static bool is_romfs_dir(const std::string &dir) {
     size_t sl = dir.find_last_of("/\\");
     std::string n = sl == std::string::npos ? dir : dir.substr(sl + 1);
     for (auto &ch : n) ch = (char)tolower((unsigned char)ch);
     return n == "romfs" || file_exists(dir + "/System/Version.txt");
 }
-static void find_game(const std::string &dir, int depth, std::string &exefs, std::string &romfs, bool &unusable) {
-    if (depth > 4 || (!exefs.empty() && !romfs.empty())) return;
+static bool is_dlc_romfs(const std::string &dir) {
+    return file_exists(dir + "/System/AocVersion.txt") && !file_exists(dir + "/System/Version.txt");
+}
+static void find_game(const std::string &dir, int depth, std::string &exefs, std::string &romfs,
+                      std::vector<std::string> &dlc, bool &unusable) {
+    if (depth > 4) return;
     if (exefs.empty() && file_exists(dir + "/main") && file_exists(dir + "/main.npdm")) exefs = dir;
+    if (is_dlc_romfs(dir)) { dlc.push_back(dir); return; }            // (a DLC's own tree)
     if (romfs.empty() && is_romfs_dir(dir)) { romfs = dir; return; }  // (not searched further: the game's own tree)
     DIR *d = opendir(dir.c_str());
     if (!d) return;
@@ -357,16 +373,15 @@ static void find_game(const std::string &dir, int depth, std::string &exefs, std
     }
     closedir(d);
     std::sort(sub.begin(), sub.end());
-    for (auto &s : sub) find_game(s, depth + 1, exefs, romfs, unusable);
+    for (auto &s : sub) find_game(s, depth + 1, exefs, romfs, dlc, unusable);
 }
 
-// progress (the overlay's bar): the romfs copy, then the image build - each about the size of romfs/
+// progress (the overlay's bar): the romfs copy (bytes)
 static std::atomic<unsigned long long> g_done, g_total;
-// The bar: copying and the data image are the first tenth, building the game code (runtime/gamebuild.c) the rest
-static unsigned long long g_phase_base;
+// The bar: copying is the first tenth, building the game code (runtime/gamebuild.c) the rest
 static std::atomic<float> g_build_frac{-1};  // -1: not building
 static bool g_copy_skipped;                  // (only the game code to build: the bar is all of that)
-static void setup_progress(uint64_t done, uint64_t) { g_done = g_phase_base + done; }
+static void setup_progress(uint64_t done, uint64_t) { g_done = done; }
 static void build_progress(double f, const char *step) {
     g_build_frac = (float)f;
     static const char *last;
@@ -407,7 +422,7 @@ static void run_precompile(void) {
     atomic_store(&g_pc.cancel, false);
     g_precompiling = true;
     set_job("Precompiling shaders...");
-    bool ok = shader_precompile_run(&g_pc, (g_root + "/romfs.bin").c_str());
+    bool ok = shader_precompile_run(&g_pc, (g_root + "/romfs").c_str());
     g_precompiling = false;
     if (ok) set_job("Shaders precompiled.");
     else if (atomic_load(&g_pc.state) == SP_CANCELLED) set_job("Shader precompilation stopped.");
@@ -449,21 +464,102 @@ static bool pc_only_finished(void) {  // (a precompilation alone just finished: 
 #endif
 }
 
+// ---- downloadable content (runtime/services/fs.c): each DLC's RomFS is copied to aoc<index>/ and gets its own image,
+// aoc<index>.bin, which the game mounts by itself as on the console. On the Switch the first DLC (01007EF00011F001, The
+// Master Trials) holds the data of both; the second's RomFS has only its version: the one with more files is 1.
+static const int DLC_MAX = 8;
+#define AOC_DIR "aoc%d"
+#define AOC_IMAGE "aoc%d.bin"  // (images older setups built: removed with the folder)
+static std::string aoc_name(const char *fmt, int i) {
+    char n[32];
+    snprintf(n, sizeof n, fmt, i);
+    return n;
+}
+static std::string aoc_version(const std::string &dir) {
+    char v[32] = "";
+    if (FILE *f = fopen((dir + "/System/AocVersion.txt").c_str(), "rb")) {
+        size_t n = fread(v, 1, sizeof v - 1, f);
+        fclose(f);
+        v[n] = 0;
+        for (char *c = v; *c; c++)
+            if (!isprint((unsigned char)*c)) { *c = 0; break; }
+    }
+    return v;
+}
+
+// The DLC set up: "" none, else e.g. "1 + 2 (3.0)"
+static std::string dlc_installed(const std::string &root) {
+    std::string list;
+    for (int i = 1; i <= DLC_MAX; i++)
+        if (is_dir(root + "/" + aoc_name(AOC_DIR, i))) list += (list.empty() ? "" : " + ") + std::to_string(i);
+    std::string v = aoc_version(root + "/aoc1");
+    return list.empty() || v.empty() ? list : list + " (" + v + ")";
+}
+
+static void remove_dlc(const std::string &root) {
+    for (int i = 1; i <= DLC_MAX; i++) {
+        rt_remove_game_file(root.c_str(), aoc_name(AOC_DIR, i).c_str());
+        rt_remove_game_file(root.c_str(), aoc_name(AOC_IMAGE, i).c_str());
+    }
+}
+
+static unsigned long long dlc_bytes(const std::vector<std::string> &dlc) {
+    unsigned long long n = 0;
+    for (auto &d : dlc) n += romfs_dir_bytes(d.c_str());
+    return n;
+}
+
+// Copies the DLCs' RomFS folders in place of the ones set up before (the game reads each from its folder, as its
+// own romfs/). false: failed (the DLC set up so far is removed again)
+static bool setup_dlc(std::vector<std::string> dlc) {
+    std::vector<std::pair<unsigned, std::string>> by_files;
+    for (auto &d : dlc) by_files.push_back({count_files(d, ~0u), d});
+    std::stable_sort(by_files.begin(), by_files.end(), [](auto &a, auto &b) { return a.first > b.first; });
+    remove_dlc(g_root);
+    for (size_t i = 0; i < by_files.size() && (int)i < DLC_MAX; i++) {
+        const std::string &d = by_files[i].second, n = aoc_name(AOC_DIR, (int)i + 1);
+        std::string to = g_root + "/" + n;
+        if (file_exists(to) || rt_is_link(to.c_str())) {  // (still there: a link, left alone - never copied into)
+            fprintf(stderr, "[launcher] DLC: %s/%s is in the way (a link?)\n", g_root.c_str(), n.c_str());
+            remove_dlc(g_root);
+            return false;
+        }
+        fprintf(stderr, "[launcher] DLC %zu: %s (%u files, version \"%s\")\n", i + 1, d.c_str(), by_files[i].first,
+                aoc_version(d).c_str());
+        if (!romfs_copy_tree(d.c_str(), (g_root + "/" + n).c_str(), setup_progress)) { remove_dlc(g_root); return false; }
+    }
+    return true;
+}
+
 static void *extract_thread(void *) {
     std::string src;
     pthread_mutex_lock(&g_lock);
     src = g_src;
     pthread_mutex_unlock(&g_lock);
-    g_done = 0, g_total = 0, g_phase_base = 0, g_build_frac = -1, g_copy_skipped = false;
+    g_done = 0, g_total = 0, g_build_frac = -1, g_copy_skipped = false;
     std::string exefs, romfs;
+    std::vector<std::string> dlc;
     bool unusable = false;  // (game packages rather than its files)
+    bool dlc_only = false;  // (the shaders precompiled are the game's: nothing new to precompile)
     if (src.empty() && check_copied_files(g_root).empty()) {  // copied already (an update needs new game code)
         g_copy_skipped = true;
         if (!build_game_code()) goto done;
         goto check;
     }
     set_job("Looking for the game files...");
-    find_game(src, 0, exefs, romfs, unusable);
+    find_game(src, 0, exefs, romfs, dlc, unusable);
+    if (exefs.empty() && romfs.empty() && !dlc.empty()) {  // DLC alone: added to the game files set up
+        if (!check_copied_files(g_root).empty()) {
+            set_job("Set up the game files first", true, "Choose the folder with the game files (exefs and romfs) and set "
+                    "them up, then the one with the downloadable content.");
+            goto done;
+        }
+        g_total = dlc_bytes(dlc);
+        set_job("Setting up the downloadable content...");
+        if (!setup_dlc(dlc)) { set_failure(FAIL_COPY); goto done; }
+        g_copy_skipped = dlc_only = true;
+        goto check;
+    }
     if (exefs.empty() || romfs.empty()) { set_failure(unusable ? FAIL_UNUSABLE : FAIL_NOT_FOUND); goto done; }
     {
         std::string id;
@@ -492,20 +588,16 @@ static void *extract_thread(void *) {
         rt_remove_game_files(g_root.c_str());  // (an earlier or interrupted setup's; removes the folder too)
         mkdir(g_root.c_str(), 0755);
         unsigned long long rbytes = romfs_dir_bytes(romfs.c_str());
-        g_total = 2 * rbytes;
+        g_total = rbytes;
         set_job("Copying the game files...");
         if (!romfs_copy_tree(exefs.c_str(), (g_root + "/exefs").c_str(), NULL) ||
             !romfs_copy_tree(romfs.c_str(), (g_root + "/romfs").c_str(), setup_progress)) {
             set_failure(FAIL_COPY);
             goto done;
         }
-        g_phase_base = rbytes, g_done = rbytes;
-        set_job("Building the game data image...");
-        char why[256] = "";
-        if (!romfs_build((g_root + "/romfs").c_str(), (g_root + "/romfs.bin").c_str(), setup_progress, why, sizeof why)) {
-            fprintf(stderr, "[launcher] romfs image: %s\n", why);
-            set_failure(FAIL_COPY);
-            goto done;
+        if (!dlc.empty()) {
+            set_job("Setting up the downloadable content...");
+            if (!setup_dlc(dlc)) { set_failure(FAIL_COPY); goto done; }
         }
         if (!build_game_code()) goto done;
     }
@@ -513,9 +605,9 @@ check:
     {
         std::string why = check_game_files(g_root);
 #ifndef __APPLE__
-        if (why.empty() && g_settings.precompile_shaders && shader_precompile_available()) run_precompile();
+        if (why.empty() && !dlc_only && g_settings.precompile_shaders && shader_precompile_available()) run_precompile();
 #endif
-        if (why.empty()) set_job("Game files ready.");
+        if (why.empty()) set_job(dlc_only ? "Downloadable content ready." : "Game files ready.");
         else set_failure(why.find("NSO") != std::string::npos ? FAIL_VERSION
                          : version_failure(why) ? version_failure(why) : FAIL_MISSING);
     }
@@ -982,6 +1074,7 @@ extern "C" void launcher_run(const char *root, int mode) {
     io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     splash_load();
 
+    remove_old_image(g_root);
     std::string status = check_game_files(g_root);
     Page page = status.empty() && !g_setup_only ? MAIN : SETUP;
     set_job("");  // (an earlier visit's result)
@@ -1005,6 +1098,15 @@ extern "C" void launcher_run(const char *root, int mode) {
         if (pg && !strncmp(pg + 1, "settings", 8) && pg[9] == ':') g_tab_request_ext = atoi(pg + 10);  // settings:<tab>
         if (pg && !strcmp(pg + 1, "delete")) page = SETUP, g_confirm_delete = true;
         if (pg && !strcmp(pg + 1, "tip")) g_settings.menu_tip_seen = false, g_tip_test = true;
+    }
+    // SAVAGEWIND_SETUP_FROM=<folder> (test): the game files page, set up from that folder at once (as choosing it and Set up)
+    if (const char *from = getenv("SAVAGEWIND_SETUP_FROM")) {
+        page = SETUP;
+        g_src = from;
+        g_busy = true;
+        pthread_t t;
+        pthread_create(&t, NULL, extract_thread, NULL);
+        pthread_detach(t);
     }
 
     static int runs;  // (test: =once - only the first time, so a "Title screen" reboot lands on the start screen)
@@ -1343,6 +1445,19 @@ extern "C" void launcher_run(const char *root, int mode) {
                         }
                         if (opt_action("Cancel", "", "Keeps the game files.", true)) g_confirm_delete = false;
                     }
+                    if (!g_confirm_delete) {  // the DLC set up (added from the folder chosen below), and removing it
+                        std::string dl = dlc_installed(g_root);
+                        opt_section("Downloadable content");
+                        if (dl.empty()) opt_disable_next();
+                        if (opt_action("Remove downloadable content", dl.empty() ? tr("Not set up") : dl.c_str(),
+                                       tr("The Master Trials and The Champions' Ballad, from your own copy of them. To add "
+                                          "them, choose the folder with their extracted RomFS (or the game's folder, if "
+                                          "they're in it) below and set up. Removing them keeps your saves."), true)) {
+                            remove_dlc(g_root);
+                            set_job("Downloadable content removed.");
+                            files_gb = -1;
+                        }
+                    }
 #ifndef __APPLE__
                     if (!g_confirm_delete && shader_precompile_available()) {  // all the shaders, now (or again)
                         char date[32] = "";
@@ -1391,10 +1506,28 @@ extern "C" void launcher_run(const char *root, int mode) {
                                        "files page of Savage Wind Configuration."))
                             settings_save();
                     }
+                    {   // Savage Wind's own colour look (runtime/color_grade.h): on at the first setup unless the player
+                        // chose a LUT before; Options > Colour changes it later
+                        if (!ready && !g_settings.color_lut_set) {
+                            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", COLOR_LUT_RECOMMENDED);
+                            g_settings.color_lut_strength = COLOR_LUT_RECOMMENDED_STRENGTH;
+                            g_settings.color_lut_set = true;
+                        }
+                        bool look = !strcmp(g_settings.color_lut, COLOR_LUT_RECOMMENDED);
+                        if (busy) opt_disable_next();
+                        if (opt_toggle("Savage Wind colour look", &look, true,
+                                       "Recommended. The game's picture with Savage Wind's own colour look. Change it or turn it off any time in the game's Options > "
+                                       "Colour (LUT).")) {
+                            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", look ? COLOR_LUT_RECOMMENDED : "");
+                            g_settings.color_lut_strength = look ? COLOR_LUT_RECOMMENDED_STRENGTH : 100;
+                            settings_save();
+                        }
+                    }
 #endif
                     if (busy || (src.empty() && !check_copied_files(g_root).empty())) opt_disable_next();
                     if (opt_action("Set up game files", busy ? tr("Working...") : "", ready ? again_d.c_str() : ex_d.c_str(),
                                    true)) {
+                        settings_save();  // (the colour look as chosen above)
                         pthread_mutex_lock(&g_lock);
                         g_busy = true;
                         pthread_mutex_unlock(&g_lock);
@@ -1577,6 +1710,16 @@ extern "C" void launcher_run(const char *root, int mode) {
             vk_frame_end(shot ? getenv("SAVAGEWIND_SHOT_PATH") ? getenv("SAVAGEWIND_SHOT_PATH") : "build/launcher.png" : NULL);
             if (shot) exit(0);
 #endif
+        }
+        // At most 60 frames a second, 20 without focus (#131): the present mode is the game's (Video > VSync), and with
+        // Fast (mailbox) or Off nothing else held this screen back, so it drew at the display's rate or faster (half a
+        // GPU on a 240 Hz display) for a picture that moves slowly, also while the setup builds the game code.
+        if (!shot_at) {
+            static uint64_t next;
+            uint64_t now = plat_now_ns(), period = 1000000000ull / (SDL_GetWindowFlags(win) & SDL_WINDOW_INPUT_FOCUS ? 60 : 20);
+            if (next > now + period) next = now;  // (focus came back, or the clock jumped)
+            if (next > now) plat_sleep_until_ns(next);
+            next = (next > now ? next : now) + period;
         }
     }
     // play: hand the window to the game

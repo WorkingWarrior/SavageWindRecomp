@@ -99,8 +99,12 @@ static bool screen_up(uint32_t id) {
 // (screens: 1 the start screen, 0x38 its load and confirmation menus)
 bool framepace_title_ui(void) { return game_is_botw() && (screen_up(1) || screen_up(0x38)); }
 
+// (screen 0x55: the loading screen with its tip, up from a load's start until its fade into the game is over)
+bool framepace_loading_ui(void) { return screen_up(0x55); }
+
 // (pause state 2: the pause menu's pages and the map; 4 is the quick menus over the game)
 bool framepace_menu_ui(void) { return game_is_botw() && *(uint32_t *)(uintptr_t)PAUSE_STATE == 2; }
+bool framepace_paused(void) { return game_is_botw() && in_menu(); }
 
 int framepace_target(void) {
     if (!game_is_botw()) return 30;
@@ -146,11 +150,15 @@ static double on_refresh(double fps) {
     return n >= 1 && fabs(hz / n - fps) < fps * 0.01 ? hz / n : fps;
 }
 
+// With frame generation (Video > Frame generation, vulkan/framegen.cpp) a frame is made between each two the game
+// draws: the frame rate counts the presented frames, so the game draws at half of it (60 with 120 chosen).
+volatile int g_fg_active;  // (vulkan/device.c: the last frame was generated)
+
 uint64_t framepace_period_ns(void) {
     int target = framepace_target();
     double fps = target > 0 ? target : FPS_CEILING, cap = vsync_cap();
     if (cap > 0 && fps > cap) fps = cap;
-    return (uint64_t)(1e9 / on_refresh(fps) + 0.5);
+    return (uint64_t)((g_fg_active ? 2e9 : 1e9) / on_refresh(fps) + 0.5);
 }
 
 // The frame loop's vsync wait: the present keeps the pace instead (1: skipped; 0: the game's own wait).
@@ -204,7 +212,59 @@ float rt_gui_speed(float game) {
 static void clock_probe(uint64_t vfr);
 static void log_screens(void);
 
+// The frame's length in console frames (VFR's interval ratio as set below: 1 at 30 fps, 0.5 at 60), for game code
+// patched to scale a per-update step it doesn't scale itself
+static volatile float g_frame_ratio = 1;
+
+// An arrow's gravity in its fall, added once per update (tools/patches.py _arrow_gravity, #144): per console frame.
+// SAVAGEWIND_LOG_ARROW=1 logs each falling arrow's update (time, velocity before it).
+float rt_arrow_gravity(uint64_t arrow, float g) {
+    static int log = -1;
+    if (log < 0) log = env_int("SAVAGEWIND_LOG_ARROW", 0);
+    if (log > 0)
+        LOG("[arrow] %.3f s %#llx ratio %.3f gravity %.2f velocity %.2f %.2f %.2f\n", plat_now_ns() / 1e9,
+            (unsigned long long)arrow, g_frame_ratio, g, VF(float, arrow, 0x110), VF(float, arrow, 0x114),
+            VF(float, arrow, 0x118));
+    return g * g_frame_ratio;
+}
+
+// The physics step's solver microsteps (tools/patches.py _solver_steps, #161): the game asks for delta frame x 6 (6 at
+// 30 fps, 2 at 120), the same microstep length at any frame rate; the runtime gives 6 / sqrt(delta frame) on shorter
+// steps (8.5 at 60 fps, 12 at 120). With the game's count the solver gave way to what touches Link more and more as the
+// steps got shorter: a held cucco over his head cut his jump to 0.25 m at ~90 fps (0.63 at 30); 6 a step still left
+// 0.56, 6 / sqrt the 0.64 of 30 fps (SAVAGEWIND_SOLVER_STEPS=0: the game's count).
+float rt_solver_steps(float delta_frame, float per_frame) {
+    static int keep = -1;
+    if (keep < 0) keep = env_int("SAVAGEWIND_SOLVER_STEPS", 1) != 0;
+    return keep && delta_frame > 0 && delta_frame < 1 ? per_frame / sqrtf(delta_frame) : delta_frame * per_frame;
+}
+
+// The sound system's frame (tools/patches.py _snd_frame_floor, #145): the game gives it the delta frame, at least 0.5
+// (a 60 fps frame), and every sound timer and fade steps by it: above 60 fps the sound's clock ran ahead of the game's
+// (x1.6 at ~95 fps, x2 at 120), and the field battle music started each segment while the last one still played. The
+// floor is 0.5 x the frame's length in console frames: the console's at 30 fps (slow motion floored as there), the
+// frame's own length above. SAVAGEWIND_SND_FRAME_FLOOR=0: the game's 0.5.
+float rt_snd_frame_floor(void) {
+    static int keep = -1;
+    if (keep < 0) keep = env_int("SAVAGEWIND_SND_FRAME_FLOOR", 1) != 0;
+    return keep && framepace_on() ? 0.5f * g_frame_ratio : 0.5f;
+}
+
+static uint64_t game_frames;  // rt_vfr_update calls: the game's frames (framepace_game_frame)
+uint64_t framepace_game_frame(void) { return __atomic_load_n(&game_frames, __ATOMIC_RELAXED); }
+// The game's frames that were presented: one step per presented frame, where game frames step twice while paused
+// (output_scale.c's jitter sequence: each presented frame gets the next phase)
+static uint64_t shown_frames;
+uint64_t framepace_shown_frame(void) { return __atomic_load_n(&shown_frames, __ATOMIC_RELAXED); }
+
 void rt_vfr_update(uint64_t vfr) {
+    __atomic_fetch_add(&game_frames, 1, __ATOMIC_RELAXED);
+    {
+        extern uint64_t renderer_present_count(void);
+        static uint64_t presented = ~0ull;
+        uint64_t n = renderer_present_count();
+        if (n != presented) presented = n, __atomic_fetch_add(&shown_frames, 1, __ATOMIC_RELAXED);
+    }
     if (!game_is_botw()) return;
     extern bool nvn_timeline(void);
     if (nvn_timeline()) LOG("[tl] %.3f %x vfr\n", plat_now_ns() / 1e6, kernel_current_thread_handle());
@@ -212,7 +272,12 @@ void rt_vfr_update(uint64_t vfr) {
     g_fs_vfr = plat_now_ns();
     clock_probe(vfr);
     log_screens();
-    if (!framepace_on()) return;
+    extern void input_cam_frame(float ratio);  // runtime/hle/input.c: the mouse's motion in the frame, for the cameras
+    if (!framepace_on()) {
+        g_frame_ratio = VF(float, vfr, VFR_RATIO);
+        input_cam_frame(VF(float, vfr, VFR_RATIO));
+        return;
+    }
     static uint64_t last_t;
     static double real, given;  // seconds of real time and of game time handed out (only their gap matters)
     static double smooth;       // seconds between updates, averaged over about 20
@@ -269,9 +334,11 @@ void rt_vfr_update(uint64_t vfr) {
     else if (iv == 3 && slow < 1.15) iv = 2;
     VF(float, vfr, VFR_RATIO) = ratio;
     VF(float, vfr, VFR_NEW_RATIO) = ratio;
+    if (!paused) g_frame_ratio = ratio;
     VF(uint32_t, vfr, VFR_INTERVAL) = iv;
     VF(uint8_t, vfr, VFR_CHANGED) = last_iv && iv != last_iv;
     last_iv = iv;
+    input_cam_frame(ratio);
     if (log_every > 0 && nframe++ % (uint64_t)log_every == 0) {
         uint64_t pinfo = *(uint64_t *)(uintptr_t)g_site.player_info;  // (Link's position: PlayerInfo +0x88)
         LOG("[framepace] target %d fps, %.2f ms since the last update (avg %.2f), ratio %.3f, interval %u, owed "

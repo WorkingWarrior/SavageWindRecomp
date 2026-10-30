@@ -79,7 +79,8 @@ body:
       description: >-
         Drag the file here. On Windows it's next to savagewind.exe, in the Savage Wind folder; on Linux, in
         ~/.local/share/savagewind/. The game writes a new one each time it starts, so take it right after the bug
-        happened, before starting the game again. Screenshots or a short video help too.
+        happened, before starting the game again; if you already did, savagewind.prev.log next to it is the run
+        before. Screenshots or a short video help too.
       placeholder: Drag savagewind.log here
     validations:
       required: true

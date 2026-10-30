@@ -13,10 +13,12 @@ straight to the intro; the reference shows the menu only once a save exists.
 - (Fixed after the first version of this report: Zelda's broken body and the white streaks were `LDC c[reg + imm]`
   read with an unsigned imm16, so skinning shaders read their bone palette 64 KB off; now sign-extended as in
   the reference. `claude-67`: Zelda and Link render correctly in the cutscene, close-up and gameplay.)
-- (Fixed afterwards: the intermittent SIGSEGV in SDK audio mixing `f_7004f31b50` happened when our render thread
-  generated a frame before the game's first `AudioRenderSystem::Update` had set the mixes' buffer table (field
-  +0x88 of the processor state was still 0). TotK rendering now waits for that first Update; 14 of 14 consecutive
-  starts passed, against about 1 in 12 failing before.)
+- An intermittent SIGSEGV (about 1 start in 12) in SDK audio mixing `f_7004f31b50`, early in boot, **is not fixed**.
+  Cause so far: the mix command runs with a null buffer-table field (`list + 0xf30`, set only about 3 s into the run,
+  after the game's first renderer update). CORRECTION: an earlier version of this report claimed a fix that waited for
+  the first `AudioRenderSystem::Update`; the hook never fired (the SDK calls that function directly), so it only
+  stopped all audio rendering, which also blacked out the picture (the game's audio events were never signalled).
+  It was reverted. A working guard needs a place that is actually called indirectly.
 - Audio output, input, saving, performance (10-30 fps headless), a physical display, anything past the
   opening cave. 20 more minutes of play or the open world were not exercised.
 

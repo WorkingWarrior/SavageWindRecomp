@@ -540,12 +540,7 @@ NVN(nvnCommandBufferSetRenderEnableConditional) {
     r->x[1] = s.x[2];      // two value/timestamp counter records, 16 bytes apart
 }
 PLAIN(nvnCommandBufferSetDepthClamp, CMD_SET_DEPTH_CLAMP)
-NVN(nvnCommandBufferSetRasterizerDiscard) {
-    if (game_is_botw()) { UNIMPLEMENTED_ONCE("SetRasterizerDiscard"); return; }
-    Snap s = snap(c);
-    CmdRec *r = record(c, CMD_SET_RENDER_ENABLE, 0, &s);
-    r->x[0] = 4 + !!s.x[1];  // 4/5: rasterizer discard off/on, tracked apart from the render condition
-}
+PLAIN(nvnCommandBufferSetRasterizerDiscard, CMD_SET_RASTERIZER_DISCARD)
 NVN(nvnCommandBufferSetConservativeRasterEnable) { (void)c; }
 NVN(nvnCommandBufferSetConservativeRasterDilate) { (void)c; }
 NVN(nvnCommandBufferSetSubpixelPrecisionBias) { (void)c; }

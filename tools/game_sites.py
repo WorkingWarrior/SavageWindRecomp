@@ -104,6 +104,10 @@ SITES = [
          'f900015f/ffc003ff a9002d28 a8c17bfd d65f03c0', 2),
     Site('title_version_format', 'ref', '90000001/9f00001f 91000021/ffc003ff d103c3a0 94000000/fc000000 '
          'f9400294/ffffffdf b940da88 35000008/ff00001f 90000001/9f00001f', 1),
+    # BOTW's streaming Yaz0 decoder: its entry and its return (tools/patches.py; runtime/hle/yaz0.c)
+    Site('yaz0_stream', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 39406808 2a0203f4 aa0103f5 aa0003f3', 0),
+    Site('yaz0_stream_ret', 'code', 'd65f03c0 7100869f 54000003/ff00001f b9400e68 35000008/ff00001f 12800000 '
+         '14000000/fc000000 12800020', 0),
     # frame rate (runtime/hle/framepace.c, runtime/nvn/objects.c)
     Site('frame_wait', 'code', 'a9bd7bfd f9000bf5 a9024ff4 910003fd 91078014 aa0003f3 aa1403e0 94000000/fc000000', 0),
     Site('frame_loop_interval_ret', 'code', 'f9400268 aa1303e0 f9409908 d63f0100 14000000/fc000000 1100052a '
@@ -124,8 +128,19 @@ SITES = [
     # tan(fovy / 2) (y) and of it with the aspect ratio (x)
     Site('persp_unproject_y', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 6),
     Site('persp_unproject_x', 'code', 'bd409800 f900003f 1e201004 1e214000 bd000820 bd409800 bd40ac01 bd400442', 18),
+    # arrows' fall (tools/patches.py _arrow_gravity): the load of the gravity added to an arrow's velocity per update
+    Site('arrow_fall_gravity', 'code', 'bd410a81 1e212849 bd410e81 1e21280a 94000000/fc000000 36000000/fff8001f f9404288 2d400500', 0),
+    # the physics step's solver microsteps (tools/patches.py _solver_steps): the delta frame times 6
+    Site('phys_solver_steps', 'code', '1e231002 1e3c1004 f9401a68 1e2c1009 1e220822 f9400108 1e202048 f9400514', 4),
+    # the sound system's frame (tools/patches.py _snd_frame_floor): the delta frame, at least 0.5, its timers' step
+    Site('snd_frame_floor', 'code', '1e2c1001 1e212000 1e204c28 94000000/fc000000 b4000000/ff00001f bd415660 '
+         'aa0003f4 7e21d800', 0),
     Site('gui_speed', 'code', 'bd0b2100 94000000/fc000000 f9400260 94000000/fc000000 52800020 94000000/fc000000 '
          'a9414ff4 a8c27bfd', 0),
+    # MainShortCut's HoldShortCutBg: repair P_Capture_00's alpha after a fractional opening frame (#173).
+    Site('quick_menu_capture_alpha', 'code', 'f9400268/ffc003ff bd405100 1e202008 54000000/ff00001f '
+         'bd402100 1e2e1001 1e212000 54000001/ff00001f 90000001/9f00001f 91000021/ffc003ff '
+         'aa1303e0 94000000/fc000000 52801fe8 39016408', 7),
     Site('pause_state', 'ref', '90000013/9f00001f b9400268/ffc003ff 35000008/ff00001f 90000008/9f00001f '
          'b9400108/ffc003ff 35000008/ff00001f b9400268/ffc003ff 34000008/ff00001f', 1),
     Site('event_mgr', 'ref', '9000000d/9f00001f 910001ad/ffc003ff f94001a0 aa1703e1 94000000/fc000000 aa1703e0 '
@@ -137,9 +152,44 @@ SITES = [
          '7100001f 5400000c/ff00001f 91314260', 1),
     Site('world_mgr', 'ref', '90000008/9f00001f 91000108/ffc003ff f9400108 b4000008/ff00001f b946b908 7100051f '
          '54000001/ff00001f a9bf7bfd', 1),
+    # the mouse camera (tools/patches.py _cam_stick, _cam_pitch, _cam_pitch_aim; runtime/hle/input.c): the camera's
+    # stick input, which every camera action reads, and the square that the chase-like cameras apply to its vertical
+    # part
+    Site('cam_stick', 'code', 'd100c3ff fd000be8 f90017f3 a901fbfd 910063fd aa0003f3 f900001f 52800060', 0),
+    Site('cam_pitch_chase', 'code', '1e208803 1e202008 bd41ce80 1e23cc2b bd41d281 1e212000 54000001/ff00001f '
+         '52800039', 0),
+    Site('cam_pitch_surf', 'code', '1e208803 1e202008 bd430260 1e23cc2d bd430661 1e212000 54000001/ff00001f '
+         '2f00e400', 0),
+    Site('cam_pitch_wakeboard', 'code', '1e208803 1e202008 bd433260 1e23cc2f bd433661 1e212000 54000001/ff00001f '
+         '2f00e400', 0),
+    # CameraAiming (the bow, its zoom, the scope): the load of its latStickScale for the vertical part
+    Site('cam_pitch_aim', 'code', 'f9400268/ffc003ff 1e200923 910083e0 910063a1 bd400101 1e210860 bd4057e1 1e210809',
+         4),
+    # ... and CameraAiming2's (the camera for a held item)
+    Site('cam_pitch_item', 'code', '94000000/fc000000 1e20400b 94000000/fc000000 f9400268/ffc003ff 1e200960 bd400101 '
+         '90000008/9f00001f 1e210800', 5),
+    # the cameras' controller turning its right stick around for the game's Camera X-axis / Y-axis options (Inverted:
+    # the flags CameraRLReverse, CameraUpDownReverse): the calls that read them
+    Site('cam_reverse_x', 'code', '94000000/fc000000 36000000/fff8001f bd413260 1e214000 bd013260 2a1f03e0 '
+         '94000000/fc000000 36000000/fff8001f', 0),
+    Site('cam_reverse_y', 'code', '94000000/fc000000 36000000/fff8001f bd413660 1e214000 bd013660 a9424ff4 a9417bfd '
+         '9100c3ff', 0),
     Site('main_data', 'data', '', 0),
     Site('main_end', 'end', '', 0),
 ]
+
+# Sites a version may lack, as a group: when one of them is neither found by its pattern nor listed in the version's
+# KNOWN table, the whole group is left out (with its patches) instead of refusing the version. The mouse camera's
+# sites go together: the stick input without the linear vertical part would square the mouse's (unclamped) motion.
+# Without them the mouse turns the camera through the right stick, as before (runtime/hle/input.c); without the
+# second group it turns it without the game's camera inversion options.
+OPTIONAL_GROUPS = [
+    ('quick_menu_capture_alpha',),
+    ('yaz0_stream', 'yaz0_stream_ret'),
+    ('cam_stick', 'cam_pitch_chase', 'cam_pitch_surf', 'cam_pitch_wakeboard', 'cam_pitch_aim', 'cam_pitch_item'),
+    ('cam_reverse_x', 'cam_reverse_y'),
+]
+OPTIONAL = {n for g in OPTIONAL_GROUPS for n in g}
 
 KNOWN = {
     '1.8.2': {
@@ -175,6 +225,9 @@ KNOWN = {
         'frame_loop_interval_ret': 0x7001012a34,
         'vfr_ratio': 0x70014092f4,
         'gui_speed': 0x700116d0e8,
+        'arrow_fall_gravity': 0x70004db204,
+        'phys_solver_steps': 0x700145b790,
+        'snd_frame_floor': 0x700143ce64,
         'persp_matrix': 0x7000da1400,
         'persp_matrix_offset': 0x7000da1408,
         'persp_unproject_y': 0x7000da14d8,
@@ -193,6 +246,8 @@ KNOWN = {
         'main_end': 0x7001d37000,
     },
     '1.9.0': {
+        'yaz0_stream': 0x700131d674,
+        'yaz0_stream_ret': 0x700131d7e8,
         'opt_create_rows': 0x7000e2f0a8,
         'opt_row_init_flag_type': 0x7000e2f538,
         'gdt_flag_type': 0x7001136dc8,
@@ -225,6 +280,10 @@ KNOWN = {
         'frame_loop_interval_ret': 0x70011267c4,
         'vfr_ratio': 0x700151d494,
         'gui_speed': 0x7001280ee8,
+        'quick_menu_capture_alpha': 0x7000e26a38,
+        'arrow_fall_gravity': 0x70005ee734,
+        'phys_solver_steps': 0x700156f930,
+        'snd_frame_floor': 0x7001551004,
         'persp_matrix': 0x7000eb4a50,
         'persp_matrix_offset': 0x7000eb4a58,
         'persp_unproject_y': 0x7000eb4b28,
@@ -239,6 +298,14 @@ KNOWN = {
         'controller_step': 0x7001dad0e0,
         'player_info': 0x7001e13ed0,
         'world_mgr': 0x7001e57580,
+        'cam_stick': 0x7000d57fe0,
+        'cam_pitch_chase': 0x7000bf5334,
+        'cam_pitch_surf': 0x7000c1a52c,
+        'cam_pitch_wakeboard': 0x7000c22104,
+        'cam_pitch_aim': 0x7000bf0bfc,
+        'cam_pitch_item': 0x7000bf2c0c,
+        'cam_reverse_x': 0x7000d17024,
+        'cam_reverse_y': 0x7000d1703c,
         'main_data': 0x7001b7a000,
         'main_end': 0x7001e98000,
     },
@@ -486,6 +553,8 @@ def resolve(main, known=None, log=None):
         if found is not None and k is not None and found != k:
             raise SiteError(f'{s.name}: the pattern finds {found:#x}, the table says {k:#x}')
         if found is None and k is None:
+            if s.name in OPTIONAL:
+                continue
             problems.append(f'{s.name}: the pattern matches {hits} places' + (' or more' if hits > 1 else ''))
             continue
         if found is None and log:
@@ -493,6 +562,14 @@ def resolve(main, known=None, log=None):
         out[s.name] = found if found is not None else k
     if problems:
         raise SiteError('; '.join(problems))
+    for g in OPTIONAL_GROUPS:
+        missing = [n for n in g if n not in out]
+        if not missing:
+            continue
+        if log:
+            log(f'game_sites: {", ".join(missing)} not found: {", ".join(g)} left out')
+        for n in g:
+            out.pop(n, None)
     return out
 
 

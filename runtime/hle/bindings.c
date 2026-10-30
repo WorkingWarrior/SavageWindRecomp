@@ -15,8 +15,8 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
 // camera (I / J / K / L too, runtime/hle/input.c), Space = X (jump), Left Shift = B (sprint, back), E = A
 // (interact, confirm), left click = Y (attack), right click = ZL (shield, lock on), F = ZR (bow), Q = L (rune),
 // R = R (throw), Left Ctrl = left stick press (crouch), middle click = right stick press (look), Tab = Plus
-// (inventory), M = Minus (map), arrows = d-pad, T held = the mouse tilts the controller (motion puzzles,
-// runtime/hle/motion.c). Esc and F1 stay the overlay menu's (runtime/ui/menu.mm).
+// (inventory), M = Minus (map), 1 / 2 / 3 / 4 = d-pad right / left / up / down (weapons, shields, runes, whistle:
+// the quick menus), T held = the mouse tilts the controller (motion puzzles, runtime/hle/motion.c). Esc and F1 stay the overlay menu's (runtime/ui/menu.mm).
 #define DEF_PAD { \
     SDL_GAMEPAD_BUTTON_EAST, SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_NORTH, SDL_GAMEPAD_BUTTON_WEST, \
     SDL_GAMEPAD_BUTTON_LEFT_STICK, SDL_GAMEPAD_BUTTON_RIGHT_STICK, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, \
@@ -26,7 +26,7 @@ _Static_assert(PADB_LTRIGGER == SDL_GAMEPAD_BUTTON_COUNT, "trigger pseudo-button
     SDL_SCANCODE_E, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_SPACE, BIND_MOUSE + SDL_BUTTON_LEFT, SDL_SCANCODE_LCTRL, \
     BIND_MOUSE + SDL_BUTTON_MIDDLE, SDL_SCANCODE_Q, SDL_SCANCODE_R, BIND_MOUSE + SDL_BUTTON_RIGHT, SDL_SCANCODE_F, \
     SDL_SCANCODE_TAB, SDL_SCANCODE_M, \
-    SDL_SCANCODE_LEFT, SDL_SCANCODE_UP, SDL_SCANCODE_RIGHT, SDL_SCANCODE_DOWN, \
+    SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_1, SDL_SCANCODE_4, \
     SDL_SCANCODE_W, SDL_SCANCODE_S, SDL_SCANCODE_A, SDL_SCANCODE_D, SDL_SCANCODE_I, SDL_SCANCODE_K, \
     SDL_SCANCODE_J, SDL_SCANCODE_L, SDL_SCANCODE_C, SDL_SCANCODE_T}
 static const int16_t k_def_pad[BIND_PAD_COUNT] = DEF_PAD, k_def_key[BIND_KEY_COUNT] = DEF_KEY;
@@ -187,7 +187,11 @@ bool bind_capture_event(const SDL_Event *e) {
         cap_dev = -1;
         assign(dev, cap_slot, e->key.scancode);
         return true;
-    case SDL_EVENT_KEY_UP: case SDL_EVENT_TEXT_INPUT:
+    // Keep host held-state current even while capturing. Swallowing the release of the confirm key / button left
+    // it down in input.c, so ending a capture pressed confirm again and reopened the binding row (#175).
+    case SDL_EVENT_KEY_UP:
+        return false;
+    case SDL_EVENT_TEXT_INPUT:
         return true;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:  // a keyboard binding can be a mouse button (a controller capture ignores it)
         if (dev != BIND_DEV_KEY || e->button.button < SDL_BUTTON_LEFT || e->button.button > SDL_BUTTON_X2) return true;
@@ -195,7 +199,7 @@ bool bind_capture_event(const SDL_Event *e) {
         assign(dev, cap_slot, BIND_MOUSE + e->button.button);
         return true;
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        return true;
+        return false;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
         // Home / Guide opens the menu; a keyboard capture ignores the controller (it times out, or Esc)
         if (dev != BIND_DEV_PAD || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE || e->gbutton.button >= SDL_GAMEPAD_BUTTON_COUNT) return true;
@@ -203,8 +207,10 @@ bool bind_capture_event(const SDL_Event *e) {
         assign(dev, cap_slot, e->gbutton.button);
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_UP:
-        return true;
+        return false;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        if ((e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) &&
+            e->gaxis.value <= 16000) return false;  // a trigger may also have been bound to confirm
         if (dev == BIND_DEV_PAD && e->gaxis.value > 16000 &&
             (e->gaxis.axis == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || e->gaxis.axis == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)) {
             cap_dev = -1;

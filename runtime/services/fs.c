@@ -16,6 +16,7 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../romfs_image.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -23,45 +24,55 @@
 #define FS_NOT_EMPTY MAKE_RESULT(2, 8)
 
 const char *g_save_dir = "save";
-static int romfs_fd = -1;
 
 // ------------------------------------------------------------------ RomFS file index (offset -> path)
 typedef struct { uint64_t start, size; char *path; int fd; const uint8_t *mem; } Overlay;
 // in-image patches (copies of RomFS tables with changes): header, dir meta, file hash, file meta
 typedef struct { uint64_t off, size; uint8_t *data; } Patch;
-static Patch patches[8];
-static int npatches;
-static Overlay *ov;
-static int ov_n, ov_cap;
-static uint8_t *ov_meta;
-static uint64_t ov_meta_off, ov_meta_size, ov_end;
 // Lets the runtime see which game files are being streamed (e.g. which level is loading).
 typedef struct { uint64_t off, size; char *path; uint32_t meta; } RomFile;
-static RomFile *rom_files;
-static int rom_nfiles;
-static uint64_t rom_data_off;
 // Redirected voice files that got bigger than the game's own (voice_redirect), for rstb_patch
 typedef struct { const char *path; uint64_t grow; } GrownFile;
-static GrownFile *grown;
-static int ngrown;
-static uint8_t *rstb_blob;  // the patched ResourceSizeTable served from memory (rstb_patch)
+// A RomFS image the game reads and what Savage Wind changes in it: the game's own (base + update, extracted/romfs)
+// and each add-on content's (extracted/aoc<index>). Both get the same changes (voices, overlay folder,
+// ResourceSizeTable, HUD letters); the functions below work on R, the image being indexed.
+typedef struct {
+    RomfsImage *img;         // (runtime/romfs_image.h; NULL: not opened)
+    const char *ov_sub;      // where its files are in the overlay folder ("": the game's own)
+    Patch patches[8];
+    int npatches;
+    Overlay *ov;
+    int ov_n, ov_cap;
+    uint8_t *ov_meta;
+    uint64_t ov_meta_off, ov_meta_size, ov_end;
+    RomFile *rom_files;
+    int rom_nfiles;
+    uint64_t rom_data_off;
+    GrownFile *grown;
+    int ngrown;
+    uint8_t *rstb_blob;      // the patched ResourceSizeTable served from memory (rstb_patch)
+    uint8_t *hud_pack;       // Pack/Bootup.pack with the HUD letters patched (hud_letters_patch)
+    uint8_t *voice_banks;    // the text language's voice banks with the chosen voices' lengths (bars_hybrid)
+} RomImage;
+#define AOC_MAX 8
+static RomImage images[1 + AOC_MAX];  // [0] the game's, [index] add-on content
+static RomImage *R = &images[0];
 
 // Reboot: the next boot builds its own index / overlay when the game opens the RomFS again.
 RT_ON_RESET(fs_reset) {
-    for (int i = 0; i < ov_n; i++) {
-        if (ov[i].fd >= 0) close(ov[i].fd);
-        free(ov[i].path);
+    for (int k = 0; k <= AOC_MAX; k++) {
+        RomImage *m = &images[k];
+        for (int i = 0; i < m->ov_n; i++) {
+            if (m->ov[i].fd >= 0) close(m->ov[i].fd);
+            free(m->ov[i].path);
+        }
+        for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
+        for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
+        free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
+        romfs_image_close(m->img);
+        *m = (RomImage){0};
     }
-    for (int i = 0; i < npatches; i++) free(patches[i].data);  // (ov_meta and the extended table are among these)
-    for (int i = 0; i < rom_nfiles; i++) free(rom_files[i].path);
-    free(ov), free(rom_files), free(grown), free(rstb_blob);
-    grown = NULL, ngrown = 0, rstb_blob = NULL;
-    ov = NULL, ov_n = ov_cap = 0;
-    ov_meta = NULL, ov_meta_off = ov_meta_size = ov_end = 0;
-    npatches = 0;
-    rom_files = NULL, rom_nfiles = 0, rom_data_off = 0;
-    if (romfs_fd >= 0) close(romfs_fd);
-    romfs_fd = -1;
+    R = &images[0];
     g_save_dir = "save";
 }
 
@@ -71,11 +82,12 @@ static const char *overlay_dir(void) {
     return e && *e ? e : NULL;
 }
 
-// Host path of the overlay's replacement for RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml")
+// Host path of the overlay's replacement for RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml"); an
+// add-on content's files are in the folder's aoc/0010/
 static bool overlay_file(const char *path, char *out, size_t cap) {
     const char *dir = overlay_dir();
     if (!dir) return false;
-    snprintf(out, cap, "%s/%s", dir, path);
+    snprintf(out, cap, "%s/%s%s", dir, R->ov_sub ? R->ov_sub : "", path);
     struct stat sb;
     return stat(out, &sb) == 0 && S_ISREG(sb.st_mode);
 }
@@ -124,6 +136,7 @@ static void walk_new(const char *root, const char *rel, char **known, int nknown
     struct dirent *e;
     while ((e = readdir(d))) {
         if (e->d_name[0] == '.') continue;
+        if (!rel[0] && R == &images[0] && !strcmp(e->d_name, "aoc")) continue;  // (the add-on contents' files)
         char r2[1024], h2[1200];
         snprintf(r2, sizeof r2, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
         snprintf(h2, sizeof h2, "%s/%s", root, r2);
@@ -161,26 +174,28 @@ static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
     return cur;
 }
 
-static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
-    const char *root = overlay_dir();
-    if (!root) return;
-    char **known = malloc(sizeof *known * rom_nfiles);
-    for (int i = 0; i < rom_nfiles; i++) known[i] = rom_files[i].path;
-    qsort(known, rom_nfiles, sizeof *known, path_cmp);
+static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
+    if (!overlay_dir()) return;
+    char root[1100];
+    snprintf(root, sizeof root, "%s/%s", overlay_dir(), R->ov_sub ? R->ov_sub : "");
+    char **known = malloc(sizeof *known * R->rom_nfiles);
+    for (int i = 0; i < R->rom_nfiles; i++) known[i] = R->rom_files[i].path;
+    qsort(known, R->rom_nfiles, sizeof *known, path_cmp);
     NewFile *nf = NULL;
     int n = 0, cap = 0;
-    walk_new(root, "", known, rom_nfiles, &nf, &n, &cap);
+    walk_new(root, "", known, R->rom_nfiles, &nf, &n, &cap);
     free(known);
     if (!n) return;
-    rom_files = realloc(rom_files, sizeof(RomFile) * (rom_nfiles + n));
+    R->rom_files = realloc(R->rom_files, sizeof(RomFile) * (R->rom_nfiles + n));
     uint64_t hoff = h[5], hsz = h[6];
     uint8_t *dcopy = malloc(dsz), *hcopy = malloc(hsz), *head = malloc(0x50);
     memcpy(dcopy, dmeta, dsz);
-    if (pread(fd, hcopy, hsz, (off_t)hoff) != (ssize_t)hsz || pread(fd, head, 0x50, 0) != 0x50) return;
+    if (romfs_image_pread(R->img, hcopy, hsz, hoff) != (ssize_t)hsz || romfs_image_pread(R->img, head, 0x50, 0) != 0x50)
+        return;
     // the file-meta table to extend: the override-patched copy if there is one
-    const uint8_t *base_meta = ov_meta;
+    const uint8_t *base_meta = R->ov_meta;
     uint8_t *tmp = NULL;
-    if (!base_meta) { tmp = malloc(fsz); pread(fd, tmp, fsz, (off_t)h[7]); base_meta = tmp; }
+    if (!base_meta) { tmp = malloc(fsz); romfs_image_pread(R->img, tmp, fsz, h[7]); base_meta = tmp; }
     uint64_t extra = 0;
     for (int i = 0; i < n; i++) {
         const char *name = strrchr(nf[i].rel, '/');
@@ -191,12 +206,8 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
     uint8_t *meta = calloc(1, nsz);
     memcpy(meta, base_meta, fsz);
     free(tmp);
-    if (!ov_end) {
-        struct stat rs;
-        fstat(fd, &rs);
-        ov_end = (rs.st_size + 0xF) & ~0xFull;
-    }
-    uint64_t meta_at = ov_end;  // the new table first, then the new files' data
+    if (!R->ov_end) R->ov_end = (romfs_image_size(R->img) + 0xF) & ~0xFull;
+    uint64_t meta_at = R->ov_end;  // the new table first, then the new files' data
     uint64_t data_at = (meta_at + nsz + 0xF) & ~0xFull;
     uint32_t nb = (uint32_t)(hsz / 4);
     uint64_t o = fsz;
@@ -211,7 +222,7 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         if (dir < 0) { LOG("[fs] overlay file %s: directory not in the game's RomFS, skipped\n", nf[i].rel); continue; }
         uint32_t nl = (uint32_t)strlen(name), d32 = (uint32_t)dir, entry = (uint32_t)o, child;
         memcpy(&child, dcopy + dir + 0xC, 4);  // dir's first file -> becomes our sibling
-        uint64_t rel = data_at - rom_data_off, size = nf[i].size;
+        uint64_t rel = data_at - R->rom_data_off, size = nf[i].size;
         uint32_t bucket = romfs_hash(d32, name, nl) % nb, prev;
         memcpy(&prev, hcopy + 4 * bucket, 4);
         memcpy(meta + o, &d32, 4);
@@ -224,39 +235,37 @@ static void add_new_files(int fd, const uint64_t *h, const uint8_t *dmeta, uint6
         memcpy(dcopy + dir + 0xC, &entry, 4);
         memcpy(hcopy + 4 * bucket, &entry, 4);
         o += 0x20 + ((nl + 3) & ~3u);
-        if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-        ov[ov_n++] = (Overlay){data_at, size, strdup(nf[i].host), -1, NULL};
-        rom_files[rom_nfiles++] = (RomFile){data_at, size, strdup(nf[i].rel), entry};
+        if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+        R->ov[R->ov_n++] = (Overlay){data_at, size, strdup(nf[i].host), -1, NULL};
+        R->rom_files[R->rom_nfiles++] = (RomFile){data_at, size, strdup(nf[i].rel), entry};
         data_at = (data_at + size + 0xF) & ~0xFull;
         added++;
     }
     // the new table goes before the new data (keep the overlay list sorted by start)
-    if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-    memmove(ov + (ov_n - added) + 1, ov + (ov_n - added), sizeof *ov * added);
-    ov[ov_n - added] = (Overlay){meta_at, nsz, NULL, -1, meta};
-    ov_n++;
-    ov_end = data_at;
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    memmove(R->ov + (R->ov_n - added) + 1, R->ov + (R->ov_n - added), sizeof *R->ov * added);
+    R->ov[R->ov_n - added] = (Overlay){meta_at, nsz, NULL, -1, meta};
+    R->ov_n++;
+    R->ov_end = data_at;
     uint64_t fmeta_off = meta_at, fmeta_size = o;
     memcpy(head + 7 * 8, &fmeta_off, 8);
     memcpy(head + 8 * 8, &fmeta_size, 8);
-    patches[npatches++] = (Patch){0, 0x50, head};
-    patches[npatches++] = (Patch){h[3], dsz, dcopy};
-    patches[npatches++] = (Patch){hoff, hsz, hcopy};
+    R->patches[R->npatches++] = (Patch){0, 0x50, head};
+    R->patches[R->npatches++] = (Patch){h[3], dsz, dcopy};
+    R->patches[R->npatches++] = (Patch){hoff, hsz, hcopy};
     LOG("[fs] overlay: %d new romfs files\n", added);
 }
 
 // The copy of the file-meta table that replacements patch (made on first use)
-static uint8_t *meta_copy(int fd, const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
-    if (!ov_meta) {
-        ov_meta = malloc(fsz);
-        memcpy(ov_meta, fmeta, fsz);
-        ov_meta_off = foff;
-        ov_meta_size = fsz;
-        struct stat rs;
-        fstat(fd, &rs);
-        ov_end = (rs.st_size + 0xF) & ~0xFull;
+static uint8_t *meta_copy(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    if (!R->ov_meta) {
+        R->ov_meta = malloc(fsz);
+        memcpy(R->ov_meta, fmeta, fsz);
+        R->ov_meta_off = foff;
+        R->ov_meta_size = fsz;
+        R->ov_end = (romfs_image_size(R->img) + 0xF) & ~0xFull;
     }
-    return ov_meta;
+    return R->ov_meta;
 }
 
 static int by_name_after(const void *a, const void *b) {  // (RomFile * by the path after "Voice/<lang>/")
@@ -264,39 +273,123 @@ static int by_name_after(const void *a, const void *b) {  // (RomFile * by the p
     return strcmp(strchr(x->path + 6, '/') + 1, strchr(y->path + 6, '/') + 1);
 }
 
+static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
+
+// One AMTA (a line's metadata) of a little-endian BARS bank: its offset, line name, DATA and MARK sections, or false
+typedef struct { uint32_t at, data, mark; const char *name; } Amta;
+static bool bars_amta(const uint8_t *d, size_t n, uint32_t i, Amta *a) {
+    uint32_t cnt = rd32(d + 12);
+    if (16 + (uint64_t)cnt * 12 > n || i >= cnt) return false;
+    uint32_t at = rd32(d + 16 + cnt * 4 + i * 8), wave = rd32(d + 20 + cnt * 4 + i * 8);
+    if (wave != 0xFFFFFFFFu || (uint64_t)at + 0x1C > n || memcmp(d + at, "AMTA\xFF\xFE", 6)) return false;  // (streamed)
+    uint64_t data = at + (uint64_t)rd32(d + at + 0xC), mark = at + (uint64_t)rd32(d + at + 0x10);
+    uint64_t strg = at + (uint64_t)rd32(d + at + 0x18);
+    if (data + 0x24 > n || memcmp(d + data, "DATA", 4) || mark + 12 > n || memcmp(d + mark, "MARK", 4) ||
+        mark + 12 + (uint64_t)rd32(d + mark + 8) * 16 > n || strg + 9 > n || memcmp(d + strg, "STRG", 4) ||
+        !memchr(d + strg + 8, 0, n - strg - 8))
+        return false;
+    *a = (Amta){at, (uint32_t)data, (uint32_t)mark, (const char *)d + strg + 8};
+    return true;
+}
+
+// The game turns a cutscene subtitle's pages at the markers (AMTA MARK: {id, name, sample, length}) of the line in its
+// voice bank, Voice/<lang>/<Demo>.bars; the markers are timed for that folder's own text, tagged with the text languages
+// they serve ("USen,EUen", "EUnl"), and the banks hold no audio (that is in Stream_*/). Another language's bank has
+// other markers: pt-BR text with Japanese voices showed 5 of King Rhoam's 13 pages (Demo154_1, #169). So the bank
+// the game reads stays its own (`own`, patched in place) with each line's DATA (its length in samples, the only field
+// that differs) from the chosen voices' bank, and its markers moved by the ratio of the two lengths. Its size doesn't
+// change, so the ResourceSizeTable fits. False for a bank laid out otherwise (the NV_Custom_* ones carry their sounds):
+// that one is redirected whole.
+static bool bars_hybrid(uint8_t *own, size_t on, const uint8_t *vb, size_t vn) {
+    if (on < 16 || vn < 16 || memcmp(own, "BARS", 4) || memcmp(vb, "BARS", 4) || memcmp(own + 8, "\xFF\xFE", 2) ||
+        memcmp(vb + 8, "\xFF\xFE", 2))
+        return false;
+    uint32_t cnt = rd32(own + 12), vcnt = rd32(vb + 12);
+    Amta a, v;
+    for (uint32_t i = 0; i < vcnt; i++)
+        if (!bars_amta(vb, vn, i, &v)) return false;
+    for (uint32_t i = 0; i < cnt; i++) {
+        if (!bars_amta(own, on, i, &a)) return false;
+        uint32_t j = 0;
+        while (j < vcnt && bars_amta(vb, vn, j, &v) && strcmp(v.name, a.name)) j++;
+        if (j == vcnt) continue;  // (a line the voices don't have: left as is)
+        uint64_t dn = 8 + (uint64_t)rd32(vb + v.data + 4);
+        if (rd32(own + a.data + 4) != dn - 8 || a.data + dn > on || v.data + dn > vn) continue;
+        uint64_t len = rd32(own + a.data + 0x20), vlen = rd32(vb + v.data + 0x20);
+        memcpy(own + a.data, vb + v.data, dn);
+        if (!len) continue;
+        for (uint32_t m = 0, nm = rd32(own + a.mark + 8); m < nm; m++)
+            for (int f = 8; f <= 12; f += 4) {  // (sample, length)
+                uint8_t *p = own + a.mark + 12 + m * 16 + f;
+                uint32_t s = (uint32_t)((rd32(p) * vlen + len / 2) / len);
+                memcpy(p, &s, 4);
+            }
+    }
+    return true;
+}
+
 // Voices in another language than the text (runtime/language.c): every Voice/<lang>/<path> but Common's takes the
 // data of the chosen folder's <path> when it has one (the .bars banks and the Stream_*/ dialogue streams). (The game reads its text language's folder or a fallback;
-// whichever it is, it gets the chosen voices.) Only the file-meta entries change: the data stays in the image.
-static void voice_redirect(int fd, const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+// whichever it is, it gets the chosen voices.) Only the file-meta entries change: the data stays in the image, but
+// for the banks that keep their own subtitle markers (bars_hybrid), served from memory.
+static void voice_redirect(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     if (!game_is_botw()) return;
     const char *vf = language_voice_folder();
     if (!vf) return;
     char pre[64];
     snprintf(pre, sizeof pre, "Voice/%s/", vf);
     size_t pl = strlen(pre);
-    RomFile **chosen = malloc(sizeof *chosen * rom_nfiles);
+    RomFile **chosen = malloc(sizeof *chosen * R->rom_nfiles);
     int nc = 0;
-    for (int i = 0; i < rom_nfiles; i++)
-        if (!strncmp(rom_files[i].path, pre, pl)) chosen[nc++] = &rom_files[i];
+    for (int i = 0; i < R->rom_nfiles; i++)
+        if (!strncmp(R->rom_files[i].path, pre, pl)) chosen[nc++] = &R->rom_files[i];
     if (!nc) { LOG("[fs] voices: the RomFS has no %s folder, the game's own voices play\n", pre); free(chosen); return; }
     qsort(chosen, nc, sizeof *chosen, by_name_after);
-    int n = 0;
-    for (int i = 0; i < rom_nfiles; i++) {
-        const char *p = rom_files[i].path;
+    int n = 0, nh = 0;
+    struct Hybrid { int file; uint8_t *data; } *hy = malloc(sizeof *hy * R->rom_nfiles);
+    for (int i = 0; i < R->rom_nfiles; i++) {
+        const char *p = R->rom_files[i].path;
         if (strncmp(p, "Voice/", 6) || !strncmp(p, pre, pl) || !strncmp(p, "Voice/Common/", 13)) continue;
         if (!strchr(p + 6, '/')) continue;
-        RomFile *key = &rom_files[i], **hit = bsearch(&key, chosen, nc, sizeof *chosen, by_name_after);
+        RomFile *key = &R->rom_files[i], **hit = bsearch(&key, chosen, nc, sizeof *chosen, by_name_after);
         if (!hit) continue;
-        uint8_t *meta = meta_copy(fd, fmeta, foff, fsz);
-        memcpy(meta + rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
-        if ((*hit)->size > rom_files[i].size) {
-            grown = realloc(grown, sizeof *grown * (ngrown + 1));
-            grown[ngrown++] = (GrownFile){p, (*hit)->size - rom_files[i].size};
+        size_t pn = strlen(p), on = R->rom_files[i].size, vn = (*hit)->size;
+        if (pn > 5 && !strcmp(p + pn - 5, ".bars") && on < (1u << 20) && vn < (1u << 20)) {
+            uint8_t *own = malloc(on ? on : 1), *vb = malloc(vn ? vn : 1);
+            bool ok = romfs_image_pread(R->img, own, on, R->rom_files[i].off) == (ssize_t)on &&
+                      romfs_image_pread(R->img, vb, vn, (*hit)->off) == (ssize_t)vn && bars_hybrid(own, on, vb, vn);
+            free(vb);
+            if (ok) { hy[nh++] = (struct Hybrid){i, own}; n++; continue; }
+            free(own);
+        }
+        uint8_t *meta = meta_copy(fmeta, foff, fsz);
+        memcpy(meta + R->rom_files[i].meta + 8, fmeta + (*hit)->meta + 8, 16);  // (data offset, size)
+        if ((*hit)->size > R->rom_files[i].size) {
+            R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
+            R->grown[R->ngrown++] = (GrownFile){p, (*hit)->size - R->rom_files[i].size};
         }
         n++;
     }
     free(chosen);
-    LOG("[fs] voices: %d files play %s's voices\n", n, vf);
+    if (nh) {  // the banks, one after another past the end of the image
+        uint8_t *meta = meta_copy(fmeta, foff, fsz);
+        uint64_t total = 0;
+        for (int k = 0; k < nh; k++) total += (R->rom_files[hy[k].file].size + 0xF) & ~0xFull;
+        R->voice_banks = calloc(1, total);
+        for (uint64_t k = 0, at = 0; k < (uint64_t)nh; k++) {
+            RomFile *f = &R->rom_files[hy[k].file];
+            uint64_t rel = R->ov_end + at - R->rom_data_off;
+            memcpy(R->voice_banks + at, hy[k].data, f->size);
+            memcpy(meta + f->meta + 8, &rel, 8);
+            free(hy[k].data);
+            at += (f->size + 0xF) & ~0xFull;
+        }
+        if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+        R->ov[R->ov_n++] = (Overlay){R->ov_end, total, NULL, -1, R->voice_banks};
+        R->ov_end = (R->ov_end + total + 0xF) & ~0xFull;
+    }
+    free(hy);
+    LOG("[fs] voices: %d files play %s's voices (%d banks keep the text's subtitle markers)\n", n, vf, nh);
 }
 
 // The game sets aside memory for a resource by its path's entry in System/Resource/ResourceSizeTable (the RSTB: the
@@ -345,44 +438,306 @@ static uint8_t *yaz0_pack_literal(const uint8_t *d, size_t n, size_t *out_n) {
     return o;
 }
 
-static void rstb_patch(int fd, const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+// Yaz0 with back-references (greedy, hash chains over the 4 KB window): for files whose size the game holds to
+// (a pack's resources are read into buffers of about their size). hdr: the original's 16 bytes (its alignment).
+static uint8_t *yaz0_pack(const uint8_t *d, size_t n, const uint8_t *hdr, size_t *out_n) {
+    enum { WIN = 0x1000, MAXM = 0x111, HBITS = 16, DEPTH = 48 };
+    uint8_t *o = malloc(16 + n + (n + 7) / 8 + 16);
+    int32_t *head = malloc(sizeof *head << HBITS), *prev = malloc(sizeof *prev * WIN);
+    memset(head, 0xff, sizeof *head << HBITS);
+    memcpy(o, hdr, 16);
+    o[4] = (uint8_t)(n >> 24), o[5] = (uint8_t)(n >> 16), o[6] = (uint8_t)(n >> 8), o[7] = (uint8_t)n;
+    size_t w = 16, s = 0;
+#define YHASH(p) ((uint32_t)((d[p] << 16 | d[(p) + 1] << 8 | d[(p) + 2]) * 2654435761u) >> (32 - HBITS))
+#define YADD(p) do { if ((p) + 2 < n) { uint32_t h_ = YHASH(p); prev[(p) & (WIN - 1)] = head[h_]; head[h_] = (int32_t)(p); } } while (0)
+    while (s < n) {
+        size_t flag_at = w++;
+        uint8_t flag = 0;
+        for (int b = 0; b < 8 && s < n; b++) {
+            size_t best = 0, dist = 0;
+            if (s + 2 < n) {
+                size_t lim = n - s < MAXM ? n - s : MAXM;
+                int32_t c = head[YHASH(s)];
+                for (int k = 0; k < DEPTH && c >= 0 && s - (size_t)c <= WIN; k++) {
+                    size_t l = 0;
+                    while (l < lim && d[c + l] == d[s + l]) l++;
+                    if (l > best) { best = l, dist = s - (size_t)c; if (l == lim) break; }
+                    int32_t nx = prev[c & (WIN - 1)];
+                    if (nx >= c) break;  // (the ring slot was reused: older than the window)
+                    c = nx;
+                }
+            }
+            if (best < 3) {
+                flag |= (uint8_t)(0x80 >> b);
+                o[w++] = d[s];
+                YADD(s);
+                s++;
+                continue;
+            }
+            size_t dd = dist - 1;
+            if (best >= 0x12) {
+                o[w++] = (uint8_t)(dd >> 8), o[w++] = (uint8_t)dd, o[w++] = (uint8_t)(best - 0x12);
+            } else {
+                o[w++] = (uint8_t)((best - 2) << 4 | dd >> 8), o[w++] = (uint8_t)dd;
+            }
+            for (size_t i = 0; i < best; i++) YADD(s + i);
+            s += best;
+        }
+        o[flag_at] = flag;
+    }
+#undef YHASH
+#undef YADD
+    free(head);
+    free(prev);
+    *out_n = w;
+    return o;
+}
+
+// SARC (little-endian): the node of `name` (its index; start and end in the data, which begins at *data_off), or -1
+static int sarc_find(const uint8_t *d, size_t n, const char *name, uint32_t *data_off, uint32_t *start, uint32_t *end) {
+    if (n < 0x20 || memcmp(d, "SARC", 4) || d[6] != 0xFF || d[7] != 0xFE || memcmp(d + 0x14, "SFAT", 4)) return -1;
+    uint32_t doff, cnt = d[0x1A] | d[0x1B] << 8;
+    memcpy(&doff, d + 0xC, 4);
+    size_t names = 0x20 + (size_t)cnt * 16 + 8;
+    if (names > n || doff > n) return -1;
+    for (uint32_t i = 0; i < cnt; i++) {
+        uint32_t attr, s, e;
+        memcpy(&attr, d + 0x20 + i * 16 + 4, 4);
+        memcpy(&s, d + 0x20 + i * 16 + 8, 4);
+        memcpy(&e, d + 0x20 + i * 16 + 12, 4);
+        size_t at = names + (size_t)(attr & 0xFFFFFF) * 4;
+        if (!(attr >> 24) || at >= n || strncmp((const char *)d + at, name, n - at)) continue;
+        if (s > e || doff + (uint64_t)e > n) return -1;
+        *data_off = doff, *start = s, *end = e;
+        return (int)i;
+    }
+    return -1;
+}
+
+// The HUD's prompt with its diamond of the other buttons (Layout/Common.sblarc, PaDoCommandA/B/X/Y_00: "Pick up",
+// "Talk", the rune's "Activate", the paraglider) writes the dim A / B / X / Y around it as text in the HUD's normal
+// font: the Switch's letters with any button icons. They become the button characters of the icon font
+// (External_00.bffnt, U+E040..E043, which glyphs.c redraws for the device in use): the layouts get that font as a
+// second one, and those text panes use it. The patched layouts go at the end of the archive, the archive is
+// recompressed into Pack/Bootup.pack where it was (what follows it moves by a multiple of 0x2000, so every file keeps
+// its alignment) and the pack is served from memory; the archive's ResourceSizeTable entry grows with it.
+// SAVAGEWIND_NO_HUD_LETTERS=1: the game's letters.
+
+#define HUD_ICON_SCALE 1.5f
+
+// One layout (FLYT, little-endian, a single font), patched into out (room for n + 64 bytes); returns its size or 0
+static size_t hud_letters_flyt(const uint8_t *b, size_t n, uint8_t *out, int *panes) {
+    static const char icon_font[] = "External_00.bffnt";
+    if (n < 0x14 || memcmp(b, "FLYT", 4) || b[4] != 0xFF || b[5] != 0xFE) return 0;
+    size_t hs = b[6] | b[7] << 8, o = hs, w = hs;
+    if (hs > n) return 0;
+    memcpy(out, b, hs);
+    bool fonts = false;
+    while (o + 8 <= n) {
+        uint32_t sz;
+        memcpy(&sz, b + o + 4, 4);
+        if (sz < 8 || o + sz > n) return 0;
+        uint8_t *sec = out + w;
+        if (!memcmp(b + o, "fnl1", 4)) {
+            uint32_t first;
+            memcpy(&first, b + o + 12, 4);
+            if ((b[o + 8] | b[o + 9] << 8) != 1 || 12 + first >= sz) return 0;
+            const char *name0 = (const char *)b + o + 12 + first;
+            size_t l0 = strnlen(name0, sz - 12 - first) + 1, l1 = sizeof icon_font;
+            uint32_t total = (uint32_t)((12 + 8 + l0 + l1 + 3) & ~3u), off0 = 8, off1 = (uint32_t)(8 + l0);
+            memset(sec, 0, total);
+            memcpy(sec, "fnl1", 4);
+            memcpy(sec + 4, &total, 4);
+            sec[8] = 2;
+            memcpy(sec + 12, &off0, 4);
+            memcpy(sec + 16, &off1, 4);
+            memcpy(sec + 20, name0, l0);
+            memcpy(sec + 20 + l0, icon_font, l1);
+            w += total;
+            o += sz;
+            fonts = true;
+            continue;
+        }
+        memcpy(sec, b + o, sz);
+        if (!memcmp(sec, "txt1", 4) && sz >= 0x68) {
+            uint32_t toff;
+            memcpy(&toff, sec + 0x64, 4);
+            if (toff && toff + 4 <= sz && !sec[toff + 1] && !sec[toff + 2] && !sec[toff + 3]) {
+                const char *k = strchr("ABXY", sec[toff]);
+                if (k && *k) {
+                    sec[0x5A] = 1, sec[0x5B] = 0;  // (the font: the second)
+                    uint16_t c = (uint16_t)(0xE040 + (k - "ABXY"));
+                    memcpy(sec + toff, &c, 2);
+                    float fs[2];  // the font size: an icon fills less of its cell than a letter
+                    memcpy(fs, sec + 0x70, 8);
+                    fs[0] *= HUD_ICON_SCALE, fs[1] *= HUD_ICON_SCALE;
+                    memcpy(sec + 0x70, fs, 8);
+                    (*panes)++;
+                }
+            }
+        }
+        w += sz;
+        o += sz;
+    }
+    if (!fonts || w > n + 64) return 0;
+    uint32_t total = (uint32_t)w;
+    memcpy(out + 0xC, &total, 4);
+    return w;
+}
+
+static void hud_letters_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     if (!game_is_botw()) return;
-    static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
-    if (!ngrown) return;
+    static const char pack_path[] = "Pack/Bootup.pack";
+    static const char *const layouts[] = {"blyt/PaDoCommandA_00.bflyt", "blyt/PaDoCommandB_00.bflyt",
+                                          "blyt/PaDoCommandX_00.bflyt", "blyt/PaDoCommandY_00.bflyt"};
+    if (getenv("SAVAGEWIND_NO_HUD_LETTERS")) return;
     int k = 0;
-    while (k < rom_nfiles && strcmp(rom_files[k].path, rstb_path)) k++;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, pack_path)) k++;
     char host[1200];
-    if (k == rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, ngrown); return; }
-    if (overlay_file(rstb_path, host, sizeof host)) {
-        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", ngrown);
+    if (k == R->rom_nfiles || overlay_file(pack_path, host, sizeof host)) return;
+    uint64_t t0 = plat_now_ns();
+    size_t pn = R->rom_files[k].size, zn = 0, an = 0, nn = 0;
+    uint8_t *pack = malloc(pn), *arc = NULL, *arc2 = NULL, *z2 = NULL;
+    uint32_t pdoff, ps, pe, adoff, as, ae;
+    int node = -1, panes = 0;
+    if (romfs_image_pread(R->img, pack, pn, R->rom_files[k].off) == (ssize_t)pn)
+        node = sarc_find(pack, pn, "Layout/Common.sblarc", &pdoff, &ps, &pe);
+    if (node >= 0) arc = yaz0_unpack(pack + pdoff + ps, pe - ps, &an);
+    const char *why = node < 0 ? "no Layout/Common.sblarc" : !arc ? "archive not readable" : NULL;
+    if (!why) {
+        arc2 = malloc(an + 4 * (0x80 + 0x2000));
+        memcpy(arc2, arc, an);
+        nn = an;
+        for (int i = 0; i < 4 && !why; i++) {
+            int li = sarc_find(arc, an, layouts[i], &adoff, &as, &ae);
+            if (li < 0 || ae - as > 0x2000 - 64) { why = "layout not found"; break; }
+            size_t at = (nn + 0x7F) & ~(size_t)0x7F;
+            memset(arc2 + nn, 0, at - nn);
+            nn = at;
+            size_t ln = hud_letters_flyt(arc + adoff + as, ae - as, arc2 + nn, &panes);
+            if (!ln) { why = "layout not as expected"; break; }
+            uint32_t s = (uint32_t)(nn - adoff), e = (uint32_t)(nn - adoff + ln);
+            memcpy(arc2 + 0x20 + li * 16 + 8, &s, 4);
+            memcpy(arc2 + 0x20 + li * 16 + 12, &e, 4);
+            nn += ln;
+        }
+    }
+    if (!why && panes != 12) why = "letters not as expected";
+    if (why) {
+        LOG("[fs] HUD letters: %s, the game's letters stay\n", why);
+        free(pack), free(arc), free(arc2);
         return;
     }
-    size_t zn = rom_files[k].size, n = 0;
+    uint32_t total = (uint32_t)nn;
+    memcpy(arc2 + 8, &total, 4);
+    z2 = yaz0_pack(arc2, nn, pack + pdoff + ps, &zn);
+    // the pack: the new archive where the old one was, what follows moved by delta (a multiple of 0x2000)
+    uint64_t old = pe - ps, delta = zn > old ? (zn - old + 0x1FFF) & ~0x1FFFull : 0;
+    size_t qn = pn + delta;
+    free(R->hud_pack);
+    R->hud_pack = calloc(1, qn);
+    memcpy(R->hud_pack, pack, pdoff + ps);
+    memcpy(R->hud_pack + pdoff + ps, z2, zn);
+    memcpy(R->hud_pack + pdoff + pe + delta, pack + pdoff + pe, pn - pdoff - pe);
+    uint32_t cnt = pack[0x1A] | pack[0x1B] << 8, ne = (uint32_t)(ps + zn), q32 = (uint32_t)qn;
+    for (uint32_t i = 0; i < cnt; i++) {
+        uint32_t s, e;
+        memcpy(&s, R->hud_pack + 0x20 + i * 16 + 8, 4);
+        memcpy(&e, R->hud_pack + 0x20 + i * 16 + 12, 4);
+        if (i == (uint32_t)node) { memcpy(R->hud_pack + 0x20 + i * 16 + 12, &ne, 4); continue; }
+        if (s >= pe) s += (uint32_t)delta, e += (uint32_t)delta;
+        memcpy(R->hud_pack + 0x20 + i * 16 + 8, &s, 4);
+        memcpy(R->hud_pack + 0x20 + i * 16 + 12, &e, 4);
+    }
+    memcpy(R->hud_pack + 8, &q32, 4);
+    free(pack), free(arc), free(arc2), free(z2);
+    meta_copy(fmeta, foff, fsz);
+    uint64_t rel = R->ov_end - R->rom_data_off, size = qn;
+    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, R->hud_pack};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    R->grown = realloc(R->grown, sizeof *R->grown * (R->ngrown + 1));
+    R->grown[R->ngrown++] = (GrownFile){"Layout/Common.blarc", nn - an};
+    LOG("[fs] HUD letters: %d button letters use the icon font (archive %zu -> %zu bytes, pack +%llu KB, %.0f ms)\n",
+        panes, (size_t)old, zn, (unsigned long long)(delta >> 10), (plat_now_ns() - t0) / 1e6);
+}
+
+// An RSTB entry: names first (paths whose crc32 collides), then the crc32 table (sorted). NULL when it has none.
+static uint32_t *rstb_entry(uint8_t *d, uint32_t ncrc, uint32_t nname, const char *path) {
+    for (uint32_t i = 0; i < nname; i++)
+        if (!strncmp((const char *)d + 12 + ncrc * 8 + i * 132, path, 128))
+            return (uint32_t *)(d + 12 + ncrc * 8 + i * 132 + 128);
+    uint32_t crc = (uint32_t)crc32(0, (const Bytef *)path, (uInt)strlen(path));
+    for (uint32_t lo = 0, hi = ncrc; lo < hi;) {
+        uint32_t mid = (lo + hi) / 2, c;
+        memcpy(&c, d + 12 + mid * 8, 4);
+        if (c == crc) return (uint32_t *)(d + 12 + mid * 8 + 4);
+        if (c < crc) lo = mid + 1;
+        else hi = mid;
+    }
+    return NULL;
+}
+
+// A RomFS with the DLC merged into it (#188, #242): some dumping guides copy the DLC's RomFS over the game's, so its
+// main-map files (Map/MainField/D-7/D-7_Dynamic.smubin...) are the DLC's versions, a few KB bigger than the game's.
+// On the console the game reads those from the DLC (aoc:/0010/...), sized by their own "Aoc/0010/<path>" entries,
+// which the game's RSTB has. Read from the game's own paths, the game finds them bigger than those paths' entries,
+// can't load them and retries for ever: a white screen after "Open your eyes" (the Great Plateau's map sections).
+// Such a RomFS has the DLC's System/AocVersion.txt or Pack/AocMainField.pack; there each path's entry grows to its
+// Aoc/0010 entry when that one is bigger.
+static bool romfs_has_dlc_merged(void) {
+    static const char *const marks[] = {"System/AocVersion.txt", "Pack/AocMainField.pack"};
+    char host[1200];
+    for (int m = 0; m < 2; m++) {
+        if (overlay_file(marks[m], host, sizeof host)) return true;
+        for (int i = 0; i < R->rom_nfiles; i++)
+            if (!strcmp(R->rom_files[i].path, marks[m])) return true;
+    }
+    return false;
+}
+
+// The RSTB's name for a RomFS path: Yaz0-compressed files drop the 's' their extension starts with
+// (D-7_Dynamic.smubin -> D-7_Dynamic.mubin); .sarc is the one extension that really starts with an 's'.
+static void rstb_name(const char *path, char *out, size_t cap) {
+    snprintf(out, cap, "%s", path);
+    char *dot = strrchr(out, '.');
+    if (dot && dot[1] == 's' && strcmp(dot, ".sarc") && !strchr(dot, '/')) memmove(dot + 1, dot + 2, strlen(dot + 2) + 1);
+}
+
+static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    if (!game_is_botw()) return;
+    static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
+    bool merged = R == &images[0] && romfs_has_dlc_merged();
+    if (!R->ngrown && !merged) return;
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles && R != &images[0]) {  // (an add-on content's voices are streams: sized from the file)
+        LOG("[fs] voices: %d bigger files, none in a ResourceSizeTable\n", R->ngrown);
+        return;
+    }
+    if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
+    if (overlay_file(rstb_path, host, sizeof host)) {
+        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", R->ngrown);
+        return;
+    }
+    size_t zn = R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
-    if (pread(fd, z, zn, (off_t)rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
+    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
     free(z);
     uint32_t ncrc = 0, nname = 0;
     if (d && n >= 12) memcpy(&ncrc, d + 4, 4), memcpy(&nname, d + 8, 4);
     if (!d || memcmp(d, "RSTB", 4) || 12 + (uint64_t)ncrc * 8 + (uint64_t)nname * 132 > n) {
-        LOG("[fs] voices: ResourceSizeTable not as expected, %d bigger banks left as they are\n", ngrown);
+        LOG("[fs] voices: ResourceSizeTable not as expected, %d bigger banks left as they are\n", R->ngrown);
         free(d);
         return;
     }
-    int changed = 0;
-    uint64_t added = 0;
-    for (int g = 0; g < ngrown; g++) {
-        uint32_t grow = (uint32_t)((grown[g].grow + 31) & ~31ull) + 32, *size = NULL;
-        for (uint32_t i = 0; i < nname && !size; i++)  // (names first: paths whose crc32 collides)
-            if (!strncmp((const char *)d + 12 + ncrc * 8 + i * 132, grown[g].path, 128))
-                size = (uint32_t *)(d + 12 + ncrc * 8 + i * 132 + 128);
-        uint32_t crc = (uint32_t)crc32(0, (const Bytef *)grown[g].path, (uInt)strlen(grown[g].path));
-        for (uint32_t lo = 0, hi = ncrc; !size && lo < hi;) {
-            uint32_t mid = (lo + hi) / 2, c;
-            memcpy(&c, d + 12 + mid * 8, 4);
-            if (c == crc) size = (uint32_t *)(d + 12 + mid * 8 + 4);
-            else if (c < crc) lo = mid + 1;
-            else hi = mid;
-        }
+    int changed = 0, dlc_changed = 0;
+    uint64_t added = 0, dlc_added = 0;
+    for (int g = 0; g < R->ngrown; g++) {
+        uint32_t grow = (uint32_t)((R->grown[g].grow + 31) & ~31ull) + 32, *size = rstb_entry(d, ncrc, nname, R->grown[g].path);
         if (!size) continue;  // (no entry: the game sizes it from the file, the dialogue streams)
         uint32_t v;
         memcpy(&v, size, 4);
@@ -391,31 +746,51 @@ static void rstb_patch(int fd, const uint8_t *fmeta, uint64_t foff, uint64_t fsz
         changed++;
         added += grow;
     }
+    if (merged) {
+        char name[300], aoc[320];
+        for (int i = 0; i < R->rom_nfiles; i++) {
+            rstb_name(R->rom_files[i].path, name, sizeof name);
+            snprintf(aoc, sizeof aoc, "Aoc/0010/%s", name);
+            uint32_t *base = rstb_entry(d, ncrc, nname, name), *dlc = base ? rstb_entry(d, ncrc, nname, aoc) : NULL;
+            if (!dlc) continue;
+            uint32_t bv, dv;
+            memcpy(&bv, base, 4), memcpy(&dv, dlc, 4);
+            if (dv <= bv) continue;
+            memcpy(base, &dv, 4);
+            dlc_changed++;
+            dlc_added += dv - bv;
+        }
+        LOG("[fs] the RomFS has the DLC merged into it: %d ResourceSizeTable entries grown to the DLC's (%llu KB)\n",
+            dlc_changed, (unsigned long long)(dlc_added >> 10));
+    }
     size_t bn = 0;
-    free(rstb_blob);
-    rstb_blob = yaz0_pack_literal(d, n, &bn);
+    free(R->rstb_blob);
+    R->rstb_blob = yaz0_pack_literal(d, n, &bn);
     free(d);
-    meta_copy(fd, fmeta, foff, fsz);
-    uint64_t rel = ov_end - rom_data_off, size = bn;
-    memcpy(ov_meta + rom_files[k].meta + 8, &rel, 8);
-    memcpy(ov_meta + rom_files[k].meta + 0x10, &size, 8);
-    if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-    ov[ov_n++] = (Overlay){ov_end, size, NULL, -1, rstb_blob};
-    ov_end = (ov_end + size + 0xF) & ~0xFull;
-    LOG("[fs] voices: %d files bigger than the game's own, %d ResourceSizeTable entries grown (%llu KB in all)\n",
-        ngrown, changed, (unsigned long long)(added >> 10));
+    meta_copy(fmeta, foff, fsz);
+    uint64_t rel = R->ov_end - R->rom_data_off, size = bn;
+    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, R->rstb_blob};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    if (R->ngrown)
+        LOG("[fs] voices: %d files bigger than the game's own, %d ResourceSizeTable entries grown (%llu KB in all)\n",
+            R->ngrown, changed, (unsigned long long)(added >> 10));
 }
 
-static void rom_index(int fd) {
+static void rom_index(void) {
     uint64_t h[10];
-    if (pread(fd, h, sizeof h, 0) != (ssize_t)sizeof h) return;
+    if (romfs_image_pread(R->img, h, sizeof h, 0) != (ssize_t)sizeof h) return;
     // header: size, dir hash (off,size), dir meta (off,size), file hash (off,size), file meta (off,size), data off
     uint64_t doff = h[3], dsz = h[4], foff = h[7], fsz = h[8];
-    rom_data_off = h[9];
+    R->rom_data_off = h[9];
     uint8_t *dmeta = malloc(dsz), *fmeta = malloc(fsz);
-    if (pread(fd, dmeta, dsz, (off_t)doff) != (ssize_t)dsz || pread(fd, fmeta, fsz, (off_t)foff) != (ssize_t)fsz) return;
+    if (romfs_image_pread(R->img, dmeta, dsz, doff) != (ssize_t)dsz ||
+        romfs_image_pread(R->img, fmeta, fsz, foff) != (ssize_t)fsz)
+        return;
     int cap = 4096;
-    rom_files = malloc(sizeof(RomFile) * cap);
+    R->rom_files = malloc(sizeof(RomFile) * cap);
     for (uint64_t o = 0; o + 0x20 <= fsz;) {
         uint32_t parent, namelen;
         uint64_t data, size;
@@ -428,65 +803,66 @@ static void rom_index(int fd) {
         uint32_t nl = namelen > 255 ? 255 : namelen;
         memcpy(name, fmeta + o + 0x20, nl);
         name[nl] = 0;
-        if (rom_nfiles == cap) { cap *= 2; rom_files = realloc(rom_files, sizeof(RomFile) * cap); }
+        if (R->rom_nfiles == cap) { cap *= 2; R->rom_files = realloc(R->rom_files, sizeof(RomFile) * cap); }
         char *path = malloc(strlen(dir) + nl + 1);
         strcpy(path, dir);
         strcat(path, name);
-        rom_files[rom_nfiles++] = (RomFile){rom_data_off + data, size, path, (uint32_t)o};
+        R->rom_files[R->rom_nfiles++] = (RomFile){R->rom_data_off + data, size, path, (uint32_t)o};
         o += 0x20 + ((namelen + 3) & ~3u);
     }
-    voice_redirect(fd, fmeta, foff, fsz);
+    voice_redirect(fmeta, foff, fsz);
     // Overlay: replacement files are served from the overlay folder. The file-meta table is patched
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
-    for (int i = 0; i < rom_nfiles; i++) {
+    for (int i = 0; i < R->rom_nfiles; i++) {
         char host[1200];
-        if (!overlay_file(rom_files[i].path, host, sizeof host)) continue;
+        if (!overlay_file(R->rom_files[i].path, host, sizeof host)) continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
-        meta_copy(fd, fmeta, foff, fsz);
-        uint64_t rel = ov_end - rom_data_off, size = (uint64_t)sb.st_size;
-        memcpy(ov_meta + rom_files[i].meta + 8, &rel, 8);
-        memcpy(ov_meta + rom_files[i].meta + 0x10, &size, 8);
-        if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-        ov[ov_n].start = ov_end;
-        ov[ov_n].size = size;
-        ov[ov_n].path = strdup(host);
-        ov[ov_n].fd = -1;
-        ov[ov_n].mem = NULL;
-        ov_n++;
-        ov_end = (ov_end + size + 0xF) & ~0xFull;
+        meta_copy(fmeta, foff, fsz);
+        uint64_t rel = R->ov_end - R->rom_data_off, size = (uint64_t)sb.st_size;
+        memcpy(R->ov_meta + R->rom_files[i].meta + 8, &rel, 8);
+        memcpy(R->ov_meta + R->rom_files[i].meta + 0x10, &size, 8);
+        if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+        R->ov[R->ov_n].start = R->ov_end;
+        R->ov[R->ov_n].size = size;
+        R->ov[R->ov_n].path = strdup(host);
+        R->ov[R->ov_n].fd = -1;
+        R->ov[R->ov_n].mem = NULL;
+        R->ov_n++;
+        R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
     }
     // The title screen's version line shows System/Version.txt ("1.8.2") through "Ver.%s": it reads "Savage Wind
     // <major>.<minor>" instead (the "Ver." goes in fs_title_version_patch), unless the overlay folder replaces the
     // file. The line's text box holds 15 characters, so the full version is only in Savage Wind Configuration.
-    for (int i = 0; game_is_botw() && i < rom_nfiles; i++) {
-        if (strcmp(rom_files[i].path, "System/Version.txt")) continue;
+    for (int i = 0; game_is_botw() && i < R->rom_nfiles; i++) {
+        if (strcmp(R->rom_files[i].path, "System/Version.txt")) continue;
         char host[1200];
         struct stat sb;
-        if (overlay_file(rom_files[i].path, host, sizeof host) && !stat(host, &sb)) break;
+        if (overlay_file(R->rom_files[i].path, host, sizeof host) && !stat(host, &sb)) break;
         extern const char *rt_version(void);  // (runtime/ui/launcher.mm)
         static char text[64];
         const char *v = rt_version(), *dot = strchr(v, '.');
         int n = dot ? (int)strcspn(dot + 1, ".-") + (int)(dot - v) + 1 : (int)strlen(v);  // (up to the second '.')
         snprintf(text, sizeof text, "Savage Wind %.*s", n, v);
         if (strlen(text) > 15) snprintf(text, sizeof text, "Savage Wind");
-        meta_copy(fd, fmeta, foff, fsz);
-        uint64_t rel = ov_end - rom_data_off, size = strlen(text);
-        memcpy(ov_meta + rom_files[i].meta + 8, &rel, 8);
-        memcpy(ov_meta + rom_files[i].meta + 0x10, &size, 8);
-        if (ov_n == ov_cap) { ov_cap = ov_cap ? ov_cap * 2 : 256; ov = realloc(ov, sizeof *ov * ov_cap); }
-        ov[ov_n++] = (Overlay){ov_end, size, NULL, -1, (const uint8_t *)text};
-        ov_end = (ov_end + size + 0xF) & ~0xFull;
+        meta_copy(fmeta, foff, fsz);
+        uint64_t rel = R->ov_end - R->rom_data_off, size = strlen(text);
+        memcpy(R->ov_meta + R->rom_files[i].meta + 8, &rel, 8);
+        memcpy(R->ov_meta + R->rom_files[i].meta + 0x10, &size, 8);
+        if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+        R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, (const uint8_t *)text};
+        R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
         break;
     }
-    rstb_patch(fd, fmeta, foff, fsz);
-    if (ov_n) LOG("[fs] overlay: %d romfs files replaced\n", ov_n);
-    if (ov_meta) { patches[npatches++] = (Patch){ov_meta_off, ov_meta_size, ov_meta}; }
-    add_new_files(fd, h, dmeta, dsz, fsz);
-    qsort(rom_files, rom_nfiles, sizeof *rom_files, rom_cmp);
+    hud_letters_patch(fmeta, foff, fsz);
+    rstb_patch(fmeta, foff, fsz);
+    if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);
+    if (R->ov_meta) { R->patches[R->npatches++] = (Patch){R->ov_meta_off, R->ov_meta_size, R->ov_meta}; }
+    add_new_files(h, dmeta, dsz, fsz);
+    qsort(R->rom_files, R->rom_nfiles, sizeof *R->rom_files, rom_cmp);
     free(dmeta);
     free(fmeta);
-    LOG("[fs] romfs index: %d files\n", rom_nfiles);
+    LOG("[fs] romfs index: %d files\n", R->rom_nfiles);
 }
 
 // The title screen's version line: main formats System/Version.txt with "Ver.%s" (title_version_format; 1.8.2
@@ -500,37 +876,37 @@ void fs_title_version_patch(void) {
 }
 
 // Virtual RomFS image read: original bytes, with the patched file table and appended replacement files.
-static ssize_t romfs_read(int fd, uint8_t *dst, uint64_t size, uint64_t off) {
-    if (!ov_n && !npatches) return pread(fd, dst, size, (off_t)off);
+static ssize_t romfs_read(RomImage *m, uint8_t *dst, uint64_t size, uint64_t off) {
+    if (!m->ov_n && !m->npatches) return romfs_image_pread(m->img, dst, size, off);
     uint64_t done = 0;
     while (done < size) {
         uint64_t o = off + done, n = size - done;
-        if (ov_n && o >= ov[0].start) {  // appended region
+        if (m->ov_n && o >= m->ov[0].start) {  // appended region
             int i = 0;
-            while (i < ov_n && !(o >= ov[i].start && o < ov[i].start + ((ov[i].size + 0xF) & ~0xFull))) i++;
-            if (i == ov_n) { memset(dst + done, 0, n); done += n; break; }
-            uint64_t in = o - ov[i].start, avail = ((ov[i].size + 0xF) & ~0xFull) - in;
+            while (i < m->ov_n && !(o >= m->ov[i].start && o < m->ov[i].start + ((m->ov[i].size + 0xF) & ~0xFull))) i++;
+            if (i == m->ov_n) { memset(dst + done, 0, n); done += n; break; }
+            uint64_t in = o - m->ov[i].start, avail = ((m->ov[i].size + 0xF) & ~0xFull) - in;
             if (n > avail) n = avail;
             ssize_t r;
-            if (ov[i].mem) {  // in-memory blob (the extended file table)
-                r = in < ov[i].size ? (ssize_t)(n < ov[i].size - in ? n : ov[i].size - in) : 0;
-                memcpy(dst + done, ov[i].mem + in, (size_t)r);
+            if (m->ov[i].mem) {  // in-memory blob (the extended file table)
+                r = in < m->ov[i].size ? (ssize_t)(n < m->ov[i].size - in ? n : m->ov[i].size - in) : 0;
+                memcpy(dst + done, m->ov[i].mem + in, (size_t)r);
             } else {
-                if (ov[i].fd < 0) ov[i].fd = open(ov[i].path, O_RDONLY);
-                r = in < ov[i].size ? pread(ov[i].fd, dst + done, n < ov[i].size - in ? n : ov[i].size - in, (off_t)in) : 0;
+                if (m->ov[i].fd < 0) m->ov[i].fd = open(m->ov[i].path, O_RDONLY);
+                r = in < m->ov[i].size ? pread(m->ov[i].fd, dst + done, n < m->ov[i].size - in ? n : m->ov[i].size - in, (off_t)in) : 0;
             }
             if (r < 0) r = 0;
             if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);
         } else {
-            if (ov_n && o + n > ov[0].start) n = ov[0].start - o;
-            ssize_t r = pread(fd, dst + done, n, (off_t)o);
+            if (m->ov_n && o + n > m->ov[0].start) n = m->ov[0].start - o;
+            ssize_t r = romfs_image_pread(m->img, dst + done, n, o);
             if (r < 0) r = 0;
             if ((uint64_t)r < n) memset(dst + done + r, 0, n - r);
             // overlay the patched tables (file meta, and with added files: header, dir meta, file hash)
-            for (int k = 0; k < npatches; k++) {
-                uint64_t a = o > patches[k].off ? o : patches[k].off;
-                uint64_t b = o + n < patches[k].off + patches[k].size ? o + n : patches[k].off + patches[k].size;
-                if (a < b) memcpy(dst + done + (a - o), patches[k].data + (a - patches[k].off), b - a);
+            for (int k = 0; k < m->npatches; k++) {
+                uint64_t a = o > m->patches[k].off ? o : m->patches[k].off;
+                uint64_t b = o + n < m->patches[k].off + m->patches[k].size ? o + n : m->patches[k].off + m->patches[k].size;
+                if (a < b) memcpy(dst + done + (a - o), m->patches[k].data + (a - m->patches[k].off), b - a);
             }
         }
         done += n;
@@ -538,23 +914,38 @@ static ssize_t romfs_read(int fd, uint8_t *dst, uint64_t size, uint64_t off) {
     return (ssize_t)done;
 }
 
-// Path of the RomFS file containing image offset `off` (NULL if none).
-const char *romfs_file_at(uint64_t off) {
-    int lo = 0, hi = rom_nfiles - 1;
+// Image offset where the game's RomFS file containing `off` starts (~0 if none).
+static uint64_t romfs_file_start(uint64_t off) {
+    const RomImage *m = &images[0];
+    int lo = 0, hi = m->rom_nfiles - 1;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
-        if (off < rom_files[mid].off) hi = mid - 1;
-        else if (off >= rom_files[mid].off + rom_files[mid].size) lo = mid + 1;
-        else return rom_files[mid].path;
+        if (off < m->rom_files[mid].off) hi = mid - 1;
+        else if (off >= m->rom_files[mid].off + m->rom_files[mid].size) lo = mid + 1;
+        else return m->rom_files[mid].off;
+    }
+    return ~0ull;
+}
+
+// Path of the game's RomFS file containing image offset `off` (NULL if none).
+const char *romfs_file_at(uint64_t off) {
+    const RomImage *m = &images[0];
+    int lo = 0, hi = m->rom_nfiles - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        if (off < m->rom_files[mid].off) hi = mid - 1;
+        else if (off >= m->rom_files[mid].off + m->rom_files[mid].size) lo = mid + 1;
+        else return m->rom_files[mid].path;
     }
     return NULL;
 }
 
 // ------------------------------------------------------------------ IStorage (raw RomFS image)
-typedef struct { int fd; uint64_t size; } Storage;
+typedef struct { RomImage *img; uint64_t size; } Storage;
 
 static void storage(Service *s, IpcReq *req, IpcResp *resp) {
     Storage *st = s->state;
+    RomImage *m = st->img;
     switch (req->cmd) {
     case 0: {  // Read(offset, size) -> B buffer
         uint64_t off = IN(uint64_t, 0), size = IN(uint64_t, 8);
@@ -562,15 +953,15 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
-        ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        ssize_t n = romfs_read(m, (uint8_t *)(uintptr_t)b->addr, size, off);
         if (!game_is_botw() && size >= (1u << 20)) {
             static int big_logged;
             if (big_logged++ < 40)
-                LOG("[fs] big read %s: dst %llx image offset %llx size %llu (buffer %llu) -> %lld\n", romfs_file_at(off) ? romfs_file_at(off) : "?", (unsigned long long)b->addr,
+                LOG("[fs] big read %s: dst %llx image offset %llx size %llu (buffer %llu) -> %lld\n", "-", (unsigned long long)b->addr,
                     (unsigned long long)off, (unsigned long long)size, (unsigned long long)b->size, (long long)n);
-            if (big_logged < 12) { extern void kernel_log_guest_chain(void); kernel_log_guest_chain(); }
         }
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
+        if (m != &images[0]) break;
         {
             const char *path = romfs_file_at(off);
             static const char *last;
@@ -578,6 +969,13 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
                 last = path;
                 if (getenv("SAVAGEWIND_LOG_FILES")) LOG("[fs] read %s\n", path);
             }
+            // SAVAGEWIND_LOG_STREAMS=1: every read of a stream's header (a .bfstm read from its start: the sound
+            // system opening it, once per playback of a BGM or other streamed sound)
+            static int log_streams = -1;
+            if (log_streams < 0) log_streams = getenv("SAVAGEWIND_LOG_STREAMS") ? 1 : 0;
+            size_t pl = path && log_streams ? strlen(path) : 0;
+            if (pl > 6 && !strcmp(path + pl - 6, ".bfstm") && romfs_file_start(off) == off)
+                LOG("[fs] stream %s (%.2f s)\n", path, plat_now_ns() / 1e9);
         }
         static uint64_t reads, bytes;
         reads++;
@@ -585,25 +983,70 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if ((reads & (reads - 1)) == 0) LOG("[fs] romfs reads: %llu (%llu KB)\n", reads, bytes >> 10);
         break;
     }
-    case 4: OUT(uint64_t, 0) = ov_n ? ov_end : st->size; resp_size(resp, 8); break;  // GetSize
+    case 4: OUT(uint64_t, 0) = m->ov_n ? m->ov_end : st->size; resp_size(resp, 8); break;  // GetSize
     default: LOG("[fs] IStorage cmd %u (ok)\n", req->cmd);
     }
 }
 
-static Service *open_romfs_storage(void) {
-    if (romfs_fd < 0) {
-        char path[1024];
-        snprintf(path, sizeof path, "%s.bin", g_romfs_dir);  // extracted/romfs.bin
-        romfs_fd = open(path, O_RDONLY);
-        if (romfs_fd < 0) FATAL("cannot open %s (set up the game files on the start screen)\n", path);
-        rom_index(romfs_fd);
+// Opens image k from the folder dir (indexed and patched the first time); NULL when it can't be read.
+static Service *open_image(int k, const char *dir, const char *name) {
+    RomImage *m = &images[k];
+    if (!m->img) {
+        char why[256] = "";
+        uint64_t t0 = plat_now_ns();
+        m->img = romfs_image_open(dir, why, sizeof why);
+        if (!m->img) {
+            LOG("[fs] cannot read %s: %s\n", dir, why);
+            return NULL;
+        }
+        LOG("[fs] romfs image %s: %llu MB, laid out in %.2f s\n", dir, (unsigned long long)(romfs_image_size(m->img) >> 20),
+            (plat_now_ns() - t0) / 1e9);
+        m->ov_sub = k ? "aoc/0010/" : "";  // (the add-on content's place in a mod's folder, as on the Wii U)
+        R = m;
+        rom_index();
+        R = &images[0];
     }
     Storage *st = calloc(1, sizeof *st);
-    st->fd = romfs_fd;
+    st->img = m;
+    st->size = romfs_image_size(m->img);
+    return service_new(name, storage, st);
+}
+
+static Service *open_romfs_storage(void) {
+    Service *s = open_image(0, g_romfs_dir, "IStorage(romfs)");  // extracted/romfs
+    if (!s) FATAL("cannot read the game data in %s (set up the game files on the start screen)\n", g_romfs_dir);
+    return s;
+}
+
+// ------------------------------------------------------------------ add-on content (DLC)
+// Each add-on content index the game can mount has its own RomFS, next to the game's: extracted/aoc<index> (the
+// setup copies it from the DLC's romfs folder). Its data id is the add-on content base id + index. As on the
+// console, it stays its own image (the game mounts it apart and asks for it by id); it gets the same changes as the
+// game's.
+static void aoc_dir(int index, char *out, size_t n) {
+    const char *slash = strrchr(g_romfs_dir, '/');
+    int dir = slash ? (int)(slash - g_romfs_dir) : 0;
+    snprintf(out, n, "%.*s%saoc%d", dir, g_romfs_dir, slash ? "/" : "", index);
+}
+
+uint64_t fs_aoc_base_id(void) { return (g_program_id & ~0xFFFull) + 0x1000; }
+
+bool fs_aoc_present(int index) {
+    if (index < 1 || index > AOC_MAX || !g_romfs_dir) return false;
+    char dir[1100];
+    aoc_dir(index, dir, sizeof dir);
     struct stat sb;
-    fstat(romfs_fd, &sb);
-    st->size = sb.st_size;
-    return service_new("IStorage(romfs)", storage, st);
+    return stat(dir, &sb) == 0 && S_ISDIR(sb.st_mode);
+}
+
+static Service *open_aoc_storage(int index) {
+    char dir[1100];
+    aoc_dir(index, dir, sizeof dir);
+    Service *s = open_image(index, dir, "IStorage(aoc)");
+    LOG("[fs] add-on content %d: %s%s\n", index, dir, s ? "" : " (missing)");
+    extern void rt_title_menu_dlc(void);  // (runtime/ui/game_options.mm: the title menu's Downloadable Content button)
+    if (s) rt_title_menu_dlc();
+    return s;
 }
 
 // ------------------------------------------------------------------ host-directory filesystem
@@ -856,10 +1299,14 @@ SERVICE("fsp-srv", fsp_srv) {
         LOG("[fs] OpenSaveDataInfoReaderOnlyCacheStorage -> empty isolated cache reader\n");
         break;
     case 200: ipc_return_object(resp, open_romfs_storage()); break;  // OpenDataStorageByCurrentProcess
-    case 202:  // OpenDataStorageByDataId (system data archives)
-        LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", IN(uint64_t, 8));
+    case 202: {  // OpenDataStorageByDataId: add-on content, or system data archives (not available)
+        uint64_t id = IN(uint64_t, 8), base = fs_aoc_base_id();
+        Service *aoc = id > base && id <= base + AOC_MAX ? open_aoc_storage((int)(id - base)) : NULL;
+        if (aoc) { ipc_return_object(resp, aoc); break; }
+        LOG("[fs] OpenDataStorageByDataId %llx (not available)\n", (unsigned long long)id);
         resp->result = MAKE_RESULT(2, 1001);
         break;
+    }
     case 1005: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;  // GetGlobalAccessLogMode
     case 1003: case 1004: case 1006: break;
     case 1011: memset(resp->data, 0, 0x10); resp_size(resp, 0x10); break;

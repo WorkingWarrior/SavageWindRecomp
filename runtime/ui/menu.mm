@@ -27,6 +27,7 @@ extern "C" bool vk_imgui_backend_init(void);  // runtime/nvn/vulkan/imgui_glue.c
 extern "C" {
 #include "../hle.h"
 #include "../settings.h"
+#include "../color_grade.h"
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
@@ -45,6 +46,9 @@ static std::atomic<bool> g_text_busy{false};  // a text field / the on-screen ke
 static std::atomic<bool> g_want_window_apply{false};  // fullscreen or the window size changed
 // (also from the game's Options screen, game_options.mm)
 extern "C" void menu_request_window_apply(void) { g_want_window_apply.store(true); }
+// The window size stepped through (left / right): applied once it stays put a moment, not at every size on the way
+static std::atomic<uint64_t> g_size_apply_at{0};  // SDL_GetTicks() then (0: none)
+extern "C" void menu_request_window_size_apply(void) { g_size_apply_at.store(SDL_GetTicks() + 600); }
 extern "C" bool game_options_input_hold(void);  // game_options.mm: a binding capture from the game's Options screen
 
 struct QEvent {
@@ -146,10 +150,21 @@ static std::atomic<int> g_kbd{0};  // 1 open, 2 confirmed, 3 cancelled
 static std::atomic<bool> g_last_pad{false};
 static char g_kbd_text[96];
 static int g_kbd_max = 8;
-static bool capturing() { return g_open.load() || g_kbd.load() == 1; }
+// Window size's list over the game's Options screen (game_options.mm A_SIZE_LIST): up, and until when the press that
+// closed it is kept from the game
+static std::atomic<bool> g_sizes{false};
+static std::atomic<uint64_t> g_sizes_hold{0};  // SDL_GetTicks()
+extern "C" void game_options_size_picked(void);  // game_options.mm (the row shows the new size)
+extern "C" void menu_size_list_open(void) {
+    input_reset();
+    g_sizes = true;
+}
+static bool capturing() { return g_open.load() || g_kbd.load() == 1 || g_sizes.load(); }
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up, or a binding capture begun
 // from the game's Options screen.
-extern "C" bool menu_input_captured(void) { return capturing() || game_options_input_hold(); }
+extern "C" bool menu_input_captured(void) {
+    return capturing() || game_options_input_hold() || SDL_GetTicks() < g_sizes_hold.load();
+}
 
 // In game the settings are the game's own Options screen (game_options.mm): F1, Esc and the controller's home button no
 // longer open this menu (SAVAGEWIND_OVERLAY=1 brings it back). Esc frees the mouse cursor instead, a click in the
@@ -216,6 +231,13 @@ bool menu_handle_event(const SDL_Event *e) {
             return true;
         }
         ImGuiKey k = key_from_scancode(e->key.scancode);
+        if (g_sizes.load()) {  // Window size's list (in game): the keys bound to A, B and up / down work it too
+            int sc = e->key.scancode;
+            if (sc == g_bind_key[BIND_A]) k = ImGuiKey_Enter;
+            else if (sc == g_bind_key[BIND_B]) k = ImGuiKey_Escape;
+            else if (sc == g_bind_key[BIND_LS_UP] || sc == g_bind_key[BIND_UP]) k = ImGuiKey_UpArrow;
+            else if (sc == g_bind_key[BIND_LS_DOWN] || sc == g_bind_key[BIND_DOWN]) k = ImGuiKey_DownArrow;
+        }
         if (k != ImGuiKey_None) { QEvent q = {}; q.kind = QEvent::KEY; q.key = k; q.down = down; push(q); }
         return true;
     }
@@ -234,6 +256,11 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         if (!capturing()) return false;
         ImGuiKey k = key_from_pad(e->gbutton.button);
+        if (g_sizes.load()) {  // Window size's list (in game): the buttons bound to A and B, wherever they are
+            int b = e->gbutton.button;
+            if (b == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
+            else if (b == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
+        }
         if (k != ImGuiKey_None) { QEvent q = {}; q.kind = QEvent::KEY; q.key = k; q.down = down; push(q); }
         return true;
     }
@@ -291,6 +318,8 @@ void menu_apply_window_requests(void *win) {
         text_input = want_text;
     }
     // (the window was made at its size and fullscreen mode: ui_window_init)
+    uint64_t at = g_size_apply_at.load();
+    if (at && SDL_GetTicks() >= at && g_size_apply_at.compare_exchange_strong(at, 0)) g_want_window_apply.store(true);
     if (g_want_window_apply.exchange(false)) winsize_apply(w);
     else winsize_refresh(w);  // (moved to another display, or its desktop size changed: other sizes are offered)
 }
@@ -487,11 +516,77 @@ static bool toggle(const char *label, bool *v) {
     return ch;
 }
 
+extern "C" void renderer_get_scale(float *sx, float *sy);
 extern "C" void renderer_get_scene_scale(float *sx, float *sy);
 extern "C" bool renderer_gpu_rtx(void);  // (vulkan/device.c, metal.m)
+extern "C" volatile int g_fg_active;     // (hle/framepace.c: the last presented frame was generated)
+// Video > Upscaler mode's names, by UPQ_*
+static const char *const k_upscale_modes[UPQ_COUNT] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
 extern "C" {
 #include "../nvn/output_scale.h"
 }
+
+#ifndef __APPLE__
+// Colour (runtime/color_grade.h; vulkan/exec.c scene_post), the Video tab's last section: a preset sets the sliders,
+// which then show "Custom" when they match none
+static void tab_colour(void) {
+    opt_section("Colour");
+    {
+        static std::string names_buf[16];
+        const char *names[16];
+        bool avail[16];
+        int n = g_color_preset_count;
+        for (int i = 0; i <= n && i < 16; i++) {
+            names_buf[i] = tr(i < n ? g_color_presets[i].name : "Custom");
+            names[i] = names_buf[i].c_str();
+            avail[i] = i < n;
+        }
+        static int shown = -1;
+        int v = color_preset_current();
+        if (v < 0) v = n;  // (custom: shown, never picked)
+        if (opt_choice_avail("Colour preset", &v, &shown, names, avail, n + 1, 0,
+                             "Ready-made looks for the 3D image, made from the sliders below: Natural is the game's "
+                             "own colours, Warm and Cool shift the light, Vivid and Cinematic add contrast, Muted "
+                             "calms the colours. The HUD and menus keep their colours.") && v < n)
+            color_preset_apply(v);
+    }
+    float ev = g_settings.color_exposure / 10.0f;
+    if (opt_slider("Exposure", &ev, -2, 2, 0.1f, 0, "%+.1f EV",
+                   "Makes the 3D image brighter or darker, in stops: +1 EV is twice as bright."))
+        g_settings.color_exposure = (int)lroundf(ev * 10);
+    opt_int("Contrast", &g_settings.color_contrast, -50, 50, 5, 0, "%+d",
+            "More (or less) difference between dark and bright areas. Shadows and highlights keep their detail.");
+    opt_int("Saturation", &g_settings.color_saturation, -100, 100, 5, 0, "%+d",
+            "How strong the colours are. -100: black and white.");
+    opt_int("Temperature", &g_settings.color_temperature, -100, 100, 5, 0, "%+d",
+            "The colour of the light: below 0 cooler (bluer), above 0 warmer (more orange).");
+    opt_int("Tint", &g_settings.color_tint, -100, 100, 5, 0, "%+d",
+            "Below 0 toward green, above 0 toward magenta: evens out a colour cast.");
+    {   // LUT: None, the shipped ones, the player's own (listed again every couple of seconds while shown)
+        static int n;
+        static uint64_t at;
+        if (!n || SDL_GetTicks() - at > 2000) n = color_lut_list(), at = SDL_GetTicks();
+        static std::string none;
+        none = tr("None");
+        const char *names[COLOR_LUT_MAX];
+        for (int i = 0; i < n; i++) names[i] = i ? color_lut_name(i) : none.c_str();
+        int cur = color_lut_index(g_settings.color_lut);
+        char desc[1500];
+        snprintf(desc, sizeof desc,
+                 tr("A look-up table (LUT) that recolours the 3D image. Savage Wind's own are listed first. Your own LUTs "
+                    "go in this folder: .cube files (up to 64 x 64 x 64) and ReShade-style .png strips (1024 x 32, "
+                    "4096 x 64). They are listed by file name.\n\n%s"), color_lut_folder());
+        bool picked;
+        if (opt_list("LUT", &cur, names, n, 0, desc, &picked))
+            snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", color_lut_id(cur));
+    }
+    opt_indent(1);
+    if (!g_settings.color_lut[0]) opt_disable_next();
+    opt_int("LUT intensity", &g_settings.color_lut_strength, 0, 100, 5, 100, "%d%%",
+            "How much of the LUT's look is used: 100% is all of it, 0% none.");
+    opt_indent(-1);
+}
+#endif
 
 static void tab_display(void) {
     float scale = ImGui::GetFontSize() / 34;
@@ -517,19 +612,22 @@ static void tab_display(void) {
         }
         char desc[600];
         snprintf(desc, sizeof desc, tr("The size of the game's window, or of the screen in fullscreen. Only the sizes your "
-                                       "display can show: its own first, then grouped by shape. A shape wider than 16:9 "
-                                       "is filled with Fill wide screens on; any other keeps 16:9 with bars.\n\nYour display: %d x %d."), desk.w, desk.h);
-        if (opt_choice("Window size", &cur, names, n, def, desc)) {  // (past either end: the other one)
+                                       "display can show: its own first, then grouped by shape. Any shape other than 16:9 "
+                                       "is filled with Fill wide screens on; off, it keeps 16:9 with bars.\n\nYour display: %d x %d."), desk.w, desk.h);
+        bool picked;
+        if (opt_list("Window size", &cur, names, n, def, desc, &picked)) {  // (past either end: the other one)
             g_settings.window_w = list[cur].w, g_settings.window_h = list[cur].h;
-            g_want_window_apply.store(true);
+            if (picked) g_want_window_apply.store(true);
+            else menu_request_window_size_apply();  // (stepping: the size where it stops)
         }
     }
     {   // Fill wide screens (runtime/nvn/output_scale.c rt_persp)
         bool wv = g_settings.wide_view;
         if (opt_toggle("Fill wide screens", &wv, true,
-                       "On a window or screen wider than 16:9 (21:9, 32:9) the game shows more to the sides instead "
-                       "of black bars. The HUD stays 16:9 in the middle; the pause menu, the map and the start "
-                       "screen are shown 16:9."))
+                       "On a window or screen that isn't 16:9 the game shows more of the world instead of black bars: "
+                       "to the sides when it's wider (21:9, 32:9), above and below when it's taller (16:10, 4:3). "
+                       "The HUD stays 16:9 in the middle; the pause menu, the map and the start screen are shown "
+                       "16:9."))
             g_settings.wide_view = wv;
     }
     {   // Field of view (runtime/nvn/output_scale.c rt_persp)
@@ -591,6 +689,14 @@ static void tab_display(void) {
         }
         opt_choice("VSync", &g_settings.vsync, names, VSYNC_COUNT, VSYNC_DEFAULT, desc.c_str(), false);
     }
+    {   // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
+        static const char *const names[HDR_COUNT] = {"Automatic", "On", "Off"};
+        opt_choice("HDR", &g_settings.hdr, names, HDR_COUNT, HDR_AUTO,
+                   "Automatic: while Windows HDR is on for this display, the picture is sent in HDR, so it looks as bright "
+                   "and colourful as in SDR (in SDR, Windows shows it dim and dull then). On: always in HDR, where the "
+                   "display takes it. Off: always SDR. White follows Windows' SDR content brightness (Settings > System > "
+                   "Display > HDR).", false);
+    }
     static const char *const perf_names[] = {"Off", "FPS", "Full"};
     opt_choice("Performance overlay", &g_settings.perf_overlay, perf_names, 3, PERF_OFF,
                "FPS: the frame rate and frame time. Full: also CPU, memory and GPU load and temperatures, and a "
@@ -601,7 +707,8 @@ static void tab_display(void) {
         // Values that can't be picked yet are shown greyed ("coming soon"); stepping onto them keeps the one in use.
         // The modes wait for render-target scaling (upscale_modes_available): until then the upscaler brings the
         // game's own 1920 x 1080 image to a bigger window.
-        std::string fsr3 = std::string(tr("FSR 3")) + " " + tr("(coming soon)");
+        std::string fsr3 = upscaler_available(UPSCALE_FSR3) ? std::string(tr("AMD FSR 3"))
+                                                            : std::string(tr("FSR 3")) + " " + tr("(coming soon)");
         std::string dlss = std::string(tr("DLSS")) + " " + tr(renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 #ifdef __APPLE__
         const char *ups[] = {"Off", "MetalFX"};
@@ -612,10 +719,18 @@ static void tab_display(void) {
 #else
         const char *ups[] = {"Off", "AMD FSR 1", fsr3.c_str(), dlss.c_str()};
         static const int ups_value[] = {UPSCALE_OFF, UPSCALE_FSR1, UPSCALE_FSR3, UPSCALE_DLSS};
-        const char *ud = "Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
-                         "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. The HUD and "
-                         "menus always render at the window's resolution.\n\nAMD FSR 3 and NVIDIA DLSS (NVIDIA RTX "
-                         "graphics cards) are coming in a later version.";
+        // (the FSR 3 paragraph on its own: the first one keeps its translations)
+        static std::string uds;
+        uds = std::string(tr("Off: the 3D image renders at the window's resolution. AMD FSR 1: it renders smaller (the mode "
+                             "below), then FSR 1's edge-aware upscaling and sharpening bring it to the window. The HUD and "
+                             "menus always render at the window's resolution.")) + "\n\n" +
+              (upscaler_available(UPSCALE_FSR3)
+                   ? tr("AMD FSR 3: it renders smaller and builds the full-resolution image from the frames before, "
+                        "following the game's motion: sharper and steadier than FSR 1, and anti-aliased (Anti-aliasing "
+                        "has no effect with it). Sharpening sets its own sharpening. NVIDIA DLSS (NVIDIA RTX graphics "
+                        "cards) is coming in a later version.")
+                   : tr("AMD FSR 3 and NVIDIA DLSS (NVIDIA RTX graphics cards) are coming in a later version."));
+        const char *ud = uds.c_str();
 #endif
         enum { NU = sizeof ups_value / sizeof ups_value[0] };
         bool avail[NU];
@@ -629,7 +744,7 @@ static void tab_display(void) {
         for (int i = 0; i < NU; i++) if (ups_value[i] == UPSCALE_DEFAULT) udef = i;
         if (opt_choice_avail("Upscaler", &ui, &shown, ups, avail, NU, udef, ud)) g_settings.upscaler = ups_value[ui];
         // its mode (AMD's scale factors), one step in; greyed when the upscaler is off
-        static const char *const modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
+        const char *const *modes = k_upscale_modes;
         bool modes_ok = upscale_modes_available();
         std::string mode_names[UPQ_COUNT];
         const char *mn[UPQ_COUNT];
@@ -645,7 +760,7 @@ static void tab_display(void) {
         snprintf(rendering, sizeof rendering, tr("Rendering at %.0f x %.0f."), 1600.0 * sx, 900.0 * sy);
         std::string md = std::string(tr("How much smaller the game renders before the upscaler brings it to the window, "
                                         "on each side: Ultra Quality 1.3x, Quality 1.5x, Balanced 1.7x, Performance "
-                                        "2x. Smaller is faster and softer.")) +
+                                        "2x, Ultra Performance 3x. Smaller is faster and softer.")) +
                          "\n\n" + (modes_ok ? rendering : tr("Coming in a later version."));
         opt_indent(1);
         if (g_settings.upscaler == UPSCALE_OFF) opt_disable_next();
@@ -654,10 +769,22 @@ static void tab_display(void) {
                          md.c_str());
         opt_indent(-1);
     }
+#ifdef __APPLE__
     static const char *aa[] = {"Off", "SMAA"};
     opt_choice("Anti-aliasing", &g_settings.antialias, aa, 2, AA_OFF,
                "Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the edges and "
                "blends only along them, so textures stay sharp. Most useful with an upscaler.");
+#else
+    {   // (the TAA sentence on its own: the first one keeps its translations)
+        static const char *aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+        static std::string d;
+        d = std::string(tr("Smooths jagged edges of the game image before it is scaled to the window. SMAA: finds the "
+                           "edges and blends only along them, so textures stay sharp. Most useful with an upscaler.")) +
+            " " + tr("TAA: blends each frame with the ones before it, following the game's motion, so edges stay "
+                     "smooth and stop shimmering; slightly softer, use it with Sharpening.");
+        opt_choice("Anti-aliasing", &g_settings.antialias, aa, 3, AA_OFF, d.c_str());
+    }
+#endif
 #ifndef __APPLE__
     {   // Anisotropic filtering and sharpening (Vulkan: vulkan/textures.c sampler_aniso, vulkan/exec.c scene_post)
         static const char *const aniso[] = {"Off", "2x", "4x", "8x", "16x"};
@@ -670,6 +797,12 @@ static void tab_display(void) {
                    "AMD FidelityFX CAS sharpens the 3D image after the upscaler (or at the window's resolution with the "
                    "upscaler off), before the HUD is drawn over it: edges get crisper without halos. Most useful with "
                    "AMD FSR 1.", false);
+        // AMD FSR 3 frame generation (vulkan/framegen.cpp; the frame rate counts the presented frames: framepace.c)
+        opt_toggle("Frame generation (AMD FSR 3)", &g_settings.frame_gen, false,
+                   "AMD FSR 3 makes a frame between each two the game draws: about twice the frames on screen. The "
+                   "frame rate above counts them all, so the game itself draws half of it (60 with 120) and the "
+                   "controls answer as at that rate, a little later. In play only: the menus and the map show the "
+                   "game's own frames. Fast moves can leave faint smears around Link and what moves on its own.");
     }
 #endif
     opt_toggle("Asynchronous shaders", &g_settings.async_shaders, false,
@@ -683,6 +816,9 @@ static void tab_display(void) {
                "The size of the maps the sun's shadows are drawn from. Console: the game's own, 896 x 896. High (2048), "
                "Ultra (4096) and Extreme (8192) give sharper shadow edges (Link, trees, buildings) for more GPU time "
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
+#ifndef __APPLE__
+    tab_colour();
+#endif
     opt_end();
 }
 
@@ -775,6 +911,10 @@ static void tab_about(void) {
     float sens = roundf(g_settings.mouse_sens * 100);
     if (opt_slider("Mouse sensitivity", &sens, 10, 1000, 5, MOUSE_SENS_DEFAULT * 100, "%g%%", "How fast the mouse turns the camera."))
         g_settings.mouse_sens = sens / 100.0f;
+    float sens_y = roundf(g_settings.mouse_sens_y * 100);
+    if (opt_slider("Mouse vertical sensitivity", &sens_y, 50, 200, 5, 100, "%g%%",
+                   "Up and down, as a percentage of the mouse sensitivity."))
+        g_settings.mouse_sens_y = sens_y / 100.0f;
     toggle("Invert mouse Y", &g_settings.mouse_invert_y);
     ImGui::Spacing();
     header("Controls");
@@ -815,7 +955,8 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
     const ImVec4 gpu_c(0.55f, 0.83f, 0.31f, 1), cpu_c(0.18f, 0.59f, 0.80f, 1), ram_c(0.80f, 0.45f, 0.70f, 1),
                  fps_c(0.95f, 0.95f, 0.95f, 1);
     if (g_settings.perf_overlay == PERF_FPS) {
-        ImGui::TextColored(fps_c, "%.0f FPS  %.1f ms", s.fps, s.frame_ms_avg);
+        // (frame generation: the presented frames, generated ones included)
+        ImGui::TextColored(fps_c, "%.0f FPS  %.1f ms", s.fps + s.fps_generated, s.frame_ms_avg);
         ImGui::End();
         return;
     }
@@ -830,13 +971,49 @@ static void perf_overlay_draw(ImGuiIO &io, float scale) {
         ImGui::TableNextColumn(); ImGui::TextColored(ram_c, "RAM");
         perf_cell("%.1f GB", s.ram_used_mb / 1024); perf_cell("/ %.1f GB", s.ram_total_mb / 1024); perf_cell(tr("game %.1f GB"), s.ram_game_mb / 1024);
         ImGui::TableNextColumn(); ImGui::TextColored(fps_c, "FPS");
-        perf_cell("%.0f", s.fps); perf_cell("%.1f ms", s.frame_ms_avg); perf_cell(tr("max %.1f ms"), s.frame_ms_max);
+        perf_cell("%.0f", s.fps + s.fps_generated);
+        perf_cell("%.1f ms", s.frame_ms_avg); perf_cell(tr("max %.1f ms"), s.frame_ms_max);
         ImGui::EndTable();
     }
     float top = s.frame_ms_max > 50 ? s.frame_ms_max : 50;
     ImGui::PlotLines("##ft", s.frame_ms, PERF_HISTORY, 0, NULL, 0, top, ImVec2(330 * scale, 48 * scale));
     ImGui::TextDisabled("%s", s.gpu_name[0] ? s.gpu_name : tr("GPU: no NVML / sysfs data"));
     ImGui::TextDisabled("%s", s.cpu_name);
+    // the graphics settings in effect: what the game falls back to (FSR 3 not built in, a mode that isn't offered), not
+    // what the menu says
+    int up = upscaler_available(g_settings.upscaler) ? g_settings.upscaler : UPSCALE_OFF;
+    std::string line = std::string(tr("Upscaler")) + ": ";
+    switch (up) {
+        case UPSCALE_METALFX: line += tr("MetalFX"); break;
+        case UPSCALE_FSR1: line += tr("FSR 1"); break;
+        case UPSCALE_FSR3: line += tr("FSR 3"); break;
+        default: line += tr("Off");
+    }
+    int q = g_settings.upscale_quality;
+    if (up != UPSCALE_OFF && upscale_factor() > 1.0) {
+        char f[16];
+        snprintf(f, sizeof f, "%.1f", upscale_factor());
+        line += std::string(" ") + (q >= 0 && q < UPQ_COUNT ? std::string(tr(k_upscale_modes[q])) + " " : "") + f + "x";
+    }
+    // (FSR 3 anti-aliases the scene itself: the setting does nothing then)
+    int aa = rt_antialias();
+    line += std::string(" | ") + tr("Anti-aliasing") + ": " + (rt_fsr3() ? tr("FSR 3") : aa == AA_TAA ? tr("TAA") : aa == AA_SMAA ? tr("SMAA") : tr("Off"));
+    ImGui::TextDisabled("%s", line.c_str());
+    line.clear();
+#ifndef __APPLE__
+    {   // the scene's size and the final image's (the HUD and menus render at that one)
+        float rx, ry, ox, oy;
+        renderer_get_scene_scale(&rx, &ry);
+        renderer_get_scale(&ox, &oy);
+        if (rx > 0 && ox > 0) {
+            char r[48];
+            snprintf(r, sizeof r, "%.0f x %.0f -> %.0f x %.0f", 1600.0 * rx, 900.0 * ry, 1920.0 * ox, 1080.0 * oy);
+            line = r;
+        }
+    }
+#endif
+    if (g_fg_active) line += std::string(line.empty() ? "" : " | ") + tr("Frame generation on");
+    if (!line.empty()) ImGui::TextDisabled("%s", line.c_str());
     ImGui::End();
 }
 
@@ -869,6 +1046,82 @@ static void keyboard_draw(ImGuiIO &io, float scale) {
     }
     ImGui::End();
     if (g_kbd.load() != 1) was_open = false;
+}
+
+// Window size's list, dropped down under the row's button on the game's Options screen (Video), drawn like the game's
+// own pop-up lists: the menu is 16:9 in the middle of the window (output_scale.c), the button where its layout has it
+static void size_list_draw(ImGuiIO &io, float scale) {
+    static bool was_open;
+    static int frames;
+    bool appearing = !was_open;
+    was_open = true;
+    frames = appearing ? 0 : frames + 1;
+    float gw = io.DisplaySize.x, gh = gw * 9 / 16;
+    if (gh > io.DisplaySize.y) gh = io.DisplaySize.y, gw = gh * 16 / 9;
+    float ox = (io.DisplaySize.x - gw) * 0.5f, oy = (io.DisplaySize.y - gh) * 0.5f;
+    float x0 = ox + gw * 0.496f, x1 = ox + gw * 0.708f, y0 = oy + gh * 0.318f, bottom = oy + gh * 0.87f;
+    float row_h = gh * 0.046f;
+    WinSize list[WINSIZE_MAX];
+    static char names[WINSIZE_MAX][64];
+    int n = winsize_list(list, g_settings.fullscreen), cur = 0;
+    WinSize e = winsize_effective(g_settings.fullscreen);
+    for (int i = 0; i < n; i++) {
+        winsize_name(list[i], tr("native"), names[i], sizeof names[i]);
+        if (list[i].w == e.w && list[i].h == e.h) cur = i;
+    }
+    ImGui::SetNextWindowPos(ImVec2(x0, y0), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(x1 - x0, 0), ImVec2(x1 - x0, bottom - y0));
+    if (appearing) ImGui::SetNextWindowFocus();
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f * scale);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4 * scale, 4 * scale));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 2 * scale));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.04f, 0.04f, 0.94f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.62f, 0.62f, 0.58f, 0.9f));
+    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(1, 1, 1, 0.10f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(1, 1, 1, 0.22f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(1, 1, 1, 0.30f));
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0.95f, 0.93f, 0.85f, 1));
+    ImGui::Begin("##sizes", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                      ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PushFont(g_menu_font);
+    int picked = -1;
+    for (int i = 0; i < n; i++) {
+        ImGui::PushID(i);
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float w = ImGui::GetContentRegionAvail().x;
+        if (ImGui::Selectable("##size", i == cur, 0, ImVec2(w, row_h))) picked = i;
+        if (appearing && i == cur) {
+            ImGui::SetItemDefaultFocus();
+            ImGui::SetScrollHereY(0.5f);
+            ImGui::SetNavCursorVisible(g_last_pad.load());
+        }
+        bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+        ImVec2 ts = ImGui::CalcTextSize(names[i]);
+        ImU32 col = i == cur ? IM_COL32(236, 194, 84, 255) : hot ? IM_COL32(255, 255, 255, 255) : IM_COL32(215, 213, 205, 255);
+        ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (row_h - ts.y) * 0.5f), col, names[i]);
+        ImGui::PopID();
+    }
+    // (test) SAVAGEWIND_SIZE_PICK=<n>: picks size n three seconds after the list is up
+    if (const char *t = getenv("SAVAGEWIND_SIZE_PICK"); t && frames == 180) picked = atoi(t) < n ? atoi(t) : cur;
+    bool cancel = !appearing && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) ||
+                                 ImGui::IsKeyPressed(ImGuiKey_Escape, false) ||
+                                 (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered()));
+    ImGui::PopFont();
+    ImGui::End();
+    ImGui::PopStyleColor(6);
+    ImGui::PopStyleVar(4);
+    if (picked >= 0 && picked != cur) {
+        g_settings.window_w = list[picked].w, g_settings.window_h = list[picked].h;
+        settings_save();
+        g_want_window_apply.store(true);
+        game_options_size_picked();
+    }
+    if (picked >= 0 || cancel) {
+        g_sizes_hold = SDL_GetTicks() + 300;  // (the A / B that closed it, still down, stays out of the game)
+        g_sizes = false;
+        was_open = false;
+    }
 }
 
 // Game thread (runtime/hle/swkbd.c): show the dialog, re-present the last frame until it's answered.
@@ -1020,7 +1273,8 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 #endif
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
-    if (!open && !kbd && g_settings.perf_overlay == PERF_OFF) {
+    bool sizes = g_sizes.load();
+    if (!open && !kbd && !sizes && g_settings.perf_overlay == PERF_OFF) {
         if (g_inited) { pthread_mutex_lock(&q_lock); q_events.clear(); pthread_mutex_unlock(&q_lock); }
         return;
     }
@@ -1114,6 +1368,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     }
 
     if (kbd) keyboard_draw(io, scale);
+    if (sizes) size_list_draw(io, scale);
     ImGui::Render();
     g_text_busy = open && ui_text_busy();
 #ifdef __APPLE__

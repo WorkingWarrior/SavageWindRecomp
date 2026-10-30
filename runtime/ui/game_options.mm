@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <unordered_map>
@@ -33,9 +34,11 @@ extern "C" {
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
 #include "../settings.h"
+#include "../color_grade.h"
 #include "../window_size.h"
 void rt_request_reboot(int kind);           // runtime/main.c (1: start the game again)
 void menu_request_window_apply(void);       // menu.mm (fullscreen / window size, applied by the window loop)
+void menu_size_list_open(void);             // menu.mm (Window size's list, over the screen)
 bool renderer_gpu_rtx(void);                // vulkan/device.c, metal.m
 }
 
@@ -80,8 +83,8 @@ struct Entry {           // the game's option entry (0x30)
 static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
-enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
-enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT };
+enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
+enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
 
 struct Item {
     int page;
@@ -112,6 +115,8 @@ uint64_t g_quit_dialog;            // the quit question's dialog while it is up
 uint64_t g_quit_owner;             // ... and the screen it came from (title menu or Options; its input is off meanwhile)
 bool g_quit_texts;                 // ... and its texts are still to be given (its two-button layout comes next)
 uint64_t g_cap_row;                // a binding row whose capture is running
+uint64_t g_size_row;               // the Window size row whose list was opened
+std::atomic<bool> g_size_redraw;   // ... and a size was picked there (render thread): redraw it
 std::vector<uint64_t> g_dirty;     // rows to redraw, one per frame
 std::chrono::steady_clock::time_point g_hold_until;
 std::unordered_map<uint32_t, std::u16string> g_text;
@@ -133,18 +138,26 @@ const int UPS_DEFAULT = 0;  // (UPSCALE_DEFAULT: Off, the window's resolution)
 #endif
 std::vector<int> g_shown;   // per item: the value shown instead of get(), one that can't be picked yet (-1: none)
 const char16_t GREY = 3;    // (the game's message colour for greyed values)
-const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance"};
+const char *const k_modes[] = {"Ultra Quality", "Quality", "Balanced", "Performance", "Ultra Performance"};
+#ifdef __APPLE__
 const char *const k_aa[] = {"Off", "SMAA"};
+#else
+const char *const k_aa[] = {"Off", "SMAA", "TAA"};  // (settings.h AA_*)
+#endif
 const char *const k_aniso[] = {"Off", "2x", "4x", "8x", "16x"};  // (settings anisotropy 0..4)
 const char *const k_shadow[] = {"Console (896)", "High (2048)", "Ultra (4096)", "Extreme (8192)"};  // (SHADOW_*)
 const char *const k_icons[] = {"Automatic", "Keyboard", "Xbox", "PlayStation", "Nintendo"};  // (ICONS_*)
 constexpr int k_fps[] = FPS_CHOICES;  // frame rate (0: Off, no limit)
 const char *const k_vsync[VSYNC_COUNT] = {"On", "Fast", "Adaptive", "Off"};  // (settings.h VSYNC_*)
+const char *const k_hdr[HDR_COUNT] = {"Automatic", "On", "Off"};               // (settings.h HDR_*)
 constexpr int FPS_DEFAULT_INDEX = 2;
 static_assert(k_fps[FPS_DEFAULT_INDEX] == FPS_DEFAULT);
 constexpr int k_sens[] = {10, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 600, 800, 1000};  // mouse sensitivity, %
 constexpr int SENS_DEFAULT = 9;  // (300%: MOUSE_SENS_DEFAULT)
 static_assert(k_sens[SENS_DEFAULT] == 300);
+constexpr int k_sens_y[] = MOUSE_SENS_Y_CHOICES;  // vertical mouse sensitivity, % of the horizontal
+constexpr int SENS_Y_DEFAULT = 5;
+static_assert(k_sens_y[SENS_Y_DEFAULT] == 100);
 constexpr int k_motion_sens[] = {25, 50, 75, 100, 125, 150, 200, 250, 300, 400};  // motion sensitivity, %
 constexpr int MOTION_SENS_DEFAULT = 3;
 static_assert(k_motion_sens[MOTION_SENS_DEFAULT] == 100);
@@ -156,6 +169,7 @@ constexpr int DEADZONE_DEFAULT = 4;
 static_assert(k_deadzone[DEADZONE_DEFAULT] == (int)(STICK_DEADZONE_DEFAULT * 100 + 0.5f));
 const char *const k_invert[] = {"Off", "Up and down", "Left and right", "Both"};  // (MOTION_INVERT_* bits)
 #define N(a) (int)(sizeof(a) / sizeof((a)[0]))
+int g_nluts = 1;  // Colour > LUT's values (color_lut_list: None, the shipped ones, the player's), listed per opening
 
 int nearest(const int *v, int n, float x) {
     int best = 0;
@@ -219,7 +233,7 @@ const char *ups_label(const Item &, int x) {
     if (u == UPSCALE_OFF) return tr("Off");
     if (u == UPSCALE_METALFX) return tr("MetalFX");
     if (u == UPSCALE_FSR1) return tr("AMD FSR 1");
-    if (u == UPSCALE_FSR3) return soon("FSR 3");
+    if (u == UPSCALE_FSR3) return upscaler_available(u) ? tr("AMD FSR 3") : soon("FSR 3");
     return soon("DLSS", renderer_gpu_rtx() ? "(coming soon)" : "(NVIDIA RTX only)");
 }
 
@@ -243,6 +257,9 @@ void build_items(void) {
     // first page: the sections (the game's own options are on Gameplay and Controls)
     v.push_back(button(P_MAIN, "Gameplay", "Mini-map, HUD, jump button and more.", "Open", A_PAGE, P_GAMEPLAY));
     v.push_back(button(P_MAIN, "Video", "Screen, resolution and image quality.", "Open", A_PAGE, P_VIDEO));
+#ifndef __APPLE__
+    v.push_back(button(P_MAIN, "Colour", "Presets, exposure, contrast, saturation and LUTs.", "Open", A_PAGE, P_COLOUR));
+#endif
     v.push_back(button(P_MAIN, "Audio", "Volume and sound effects.", "Open", A_PAGE, P_AUDIO));
     v.push_back(button(P_MAIN, "Controls", "Camera, motion, d-pad, mouse and button icons.", "Open", A_PAGE, P_CONTROLS));
     v.push_back(button(P_MAIN, "Keyboard (buttons)", "Which key does each button.", "Open", A_PAGE, P_KEYS));
@@ -256,39 +273,28 @@ void build_items(void) {
     v.push_back(toggle(P_VIDEO, "Fullscreen", "Fills the screen. Also F11 or Alt+Enter.",
                        [](const Item &) { return (int)g_settings.fullscreen; },
                        [](const Item &, int x) { g_settings.fullscreen = x; menu_request_window_apply(); }, 0));
-    Item ws = choice(P_VIDEO, "Window size", "",
-                     [](const Item &) {
-                         WinSize list[WINSIZE_MAX];
-                         return winsize_items(list);
-                     },
-                     [](const Item &, int x) {
-                         static char buf[64];
-                         WinSize list[WINSIZE_MAX];
-                         int n = winsize_items(list);
-                         winsize_name(list[x < n ? x : 0], tr("native"), buf, sizeof buf);
-                         return (const char *)buf;
-                     },
-                     [](const Item &) { return winsize_index(winsize_effective(g_settings.fullscreen)); },
-                     [](const Item &, int x) {
-                         WinSize list[WINSIZE_MAX];
-                         int n = winsize_items(list);
-                         if (x >= n) return;
-                         g_settings.window_w = list[x].w, g_settings.window_h = list[x].h;
-                         menu_request_window_apply();
-                     }, 0);
+    // Window size: a button showing the size; A drops the sizes down as a list over it (menu.mm size_list_draw)
+    Item ws = button(P_VIDEO, "Window size", "", nullptr, A_SIZE_LIST, 0);
+    ws.label = [](const Item &, int) {
+        static char buf[64];
+        WinSize list[WINSIZE_MAX];
+        int n = winsize_items(list), x = winsize_index(winsize_effective(g_settings.fullscreen));
+        winsize_name(list[x < n ? x : 0], tr("native"), buf, sizeof buf);
+        return (const char *)buf;
+    };
     ws.desc_fn = [](const Item &) {
         static char buf[256];
         WinSize d = winsize_desktop();
-        snprintf(buf, sizeof buf, tr("Window or fullscreen size. Your display: %d x %d."), d.w, d.h);
+        snprintf(buf, sizeof buf, tr("Window or fullscreen size. A: choose it from a list. Your display: %d x %d."), d.w,
+                 d.h);
         return (const char *)buf;
     };
     ws.reset = [](const Item &) {  // (unset: 1280 x 720 in a window, the desktop in fullscreen)
         g_settings.window_w = g_settings.window_h = 0;
         menu_request_window_apply();
     };
-    ws.wrap = true;
     v.push_back(ws);
-    v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more to the sides on screens wider than 16:9, instead of bars.",
+    v.push_back(toggle(P_VIDEO, "Fill wide screens", "Shows more of the world on screens that aren't 16:9 (wider or taller), instead of bars.",
                        [](const Item &) { return (int)g_settings.wide_view; },
                        [](const Item &, int x) { g_settings.wide_view = x; }, 1));
     v.push_back(choice(P_VIDEO, "Field of view", "How much the camera shows in play. Cutscenes keep their own.",
@@ -323,6 +329,12 @@ void build_items(void) {
                        [](const Item &, int x) { return tr(k_vsync[x]); },
                        [](const Item &) { return g_settings.vsync; },
                        [](const Item &, int x) { g_settings.vsync = x; }, VSYNC_DEFAULT));
+    // HDR (settings.h HDR_*: runtime/nvn/vulkan/device.c hdr_wanted)
+    v.push_back(choice(P_VIDEO, "HDR", "Automatic: in HDR while Windows HDR is on, as bright as in SDR. Off: always SDR.",
+                       [](const Item &) { return (int)HDR_COUNT; },
+                       [](const Item &, int x) { return tr(k_hdr[x]); },
+                       [](const Item &) { return g_settings.hdr; },
+                       [](const Item &, int x) { g_settings.hdr = x; }, HDR_AUTO));
     v.push_back(choice(P_VIDEO, "Performance overlay", "Frame rate and system load in a corner. Also F10.",
                        [](const Item &) { return N(k_perf); }, [](const Item &, int x) { return tr(k_perf[x]); },
                        [](const Item &) { return g_settings.perf_overlay; },
@@ -336,16 +348,32 @@ void build_items(void) {
                        },
                        [](const Item &, int x) { g_settings.upscaler = k_ups_value[x]; }, UPS_DEFAULT));
     v.back().value_off = [](const Item &, int x) { return !upscaler_available(k_ups_value[x]); };
+    v.back().desc_fn = [](const Item &) {  // (one line)
+        return g_settings.upscaler == UPSCALE_FSR3 ? tr("AMD FSR 3: renders smaller, then rebuilds detail from past frames.")
+                                                   : tr("Off: full resolution. AMD FSR 1: renders smaller, then upscales.");
+    };
+    // With Upscaler Off no mode applies: the row has the one value Off, greyed, so its arrows go nowhere (rt_opt_read
+    // gives the row its range at each redraw, and a change of the Upscaler row redraws the page); the mode chosen
+    // before stays stored and comes back with an upscaler.
     Item mode = choice(P_VIDEO, "Upscaler mode", "",
-                       [](const Item &) { return N(k_modes); },
-                       [](const Item &, int x) { return upscale_modes_available() ? tr(k_modes[x]) : soon(k_modes[x]); },
-                       [](const Item &) { return g_settings.upscale_quality; },
-                       [](const Item &, int x) { g_settings.upscale_quality = x; }, UPQ_QUALITY);
-    mode.value_off = [](const Item &, int) { return !upscale_modes_available(); };
+                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 1 : N(k_modes); },
+                       [](const Item &, int x) {
+                           return g_settings.upscaler == UPSCALE_OFF ? tr("Off")
+                                  : upscale_modes_available()        ? tr(k_modes[x])
+                                                                     : soon(k_modes[x]);
+                       },
+                       [](const Item &) { return g_settings.upscaler == UPSCALE_OFF ? 0 : g_settings.upscale_quality; },
+                       [](const Item &, int x) {
+                           if (g_settings.upscaler != UPSCALE_OFF) g_settings.upscale_quality = x;
+                       },
+                       UPQ_QUALITY);
+    mode.value_off = [](const Item &, int) { return !upscale_modes_available() || g_settings.upscaler == UPSCALE_OFF; };
+    mode.reset = [](const Item &) { g_settings.upscale_quality = UPQ_QUALITY; };  // (also while Off)
     mode.desc_fn = [](const Item &) {
         // (one line: the game's description pane is one English line wide)
-        return upscale_modes_available() ? tr("Ultra Quality is the sharpest, Performance the fastest.")
-                                         : tr("Renders smaller, then upscales. Coming in a later version.");
+        return !upscale_modes_available()           ? tr("Renders smaller, then upscales. Coming in a later version.")
+               : g_settings.upscaler == UPSCALE_OFF ? tr("Only with an upscaler: choose one above first.")
+                                                    : tr("Ultra Quality is the sharpest, Ultra Performance the fastest.");
     };
     v.push_back(mode);
     v.push_back(choice(P_VIDEO, "Anti-aliasing", "Smooths jagged edges. Best at a lower resolution.",
@@ -368,6 +396,10 @@ void build_items(void) {
                        },
                        [](const Item &) { return g_settings.sharpening; },
                        [](const Item &, int x) { g_settings.sharpening = x; }, 0));
+    // AMD FSR 3 frame generation (vulkan/framegen.cpp)
+    v.push_back(toggle(P_VIDEO, "Frame generation (AMD FSR 3)", "Twice the frames on screen. Adds a little delay.",
+                       [](const Item &) { return (int)g_settings.frame_gen; },
+                       [](const Item &, int x) { g_settings.frame_gen = x; }, 0));
 #endif
     v.push_back(toggle(P_VIDEO, "Asynchronous shaders", "On: no stutter, but some effects appear late.",
                        [](const Item &) { return (int)g_settings.async_shaders; },
@@ -377,6 +409,75 @@ void build_items(void) {
                        [](const Item &) { return N(k_shadow); }, [](const Item &, int x) { return tr(k_shadow[x]); },
                        [](const Item &) { return g_settings.shadow_res; },
                        [](const Item &, int x) { g_settings.shadow_res = x; }, SHADOW_CONSOLE));
+
+#ifndef __APPLE__
+    // Colour (runtime/color_grade.h; vulkan/exec.c scene_post): the 3D image only, the HUD keeps its colours. The preset
+    // sets the sliders below it; "Custom" (sliders matching no preset) is shown, never picked.
+    Item preset = choice(P_COLOUR, "Colour preset", "Ready-made looks. Natural: the game's own colours.",
+                         [](const Item &) { return g_color_preset_count + 1; },
+                         [](const Item &, int x) { return tr(x < g_color_preset_count ? g_color_presets[x].name : "Custom"); },
+                         [](const Item &) {
+                             int p = color_preset_current();
+                             return p < 0 ? g_color_preset_count : p;
+                         },
+                         [](const Item &, int x) { color_preset_apply(x); }, 0);
+    preset.value_off = [](const Item &, int x) { return x >= g_color_preset_count; };
+    preset.reset = [](const Item &) {
+        color_preset_apply(0);
+        g_settings.color_lut[0] = 0;
+        g_settings.color_lut_strength = 100;
+    };
+    v.push_back(preset);
+    v.push_back(choice(P_COLOUR, "Exposure", "Brighter or darker 3D image, in stops (EV).",
+                       [](const Item &) { return 41; },
+                       [](const Item &, int x) {
+                           static char buf[32];
+                           snprintf(buf, sizeof buf, "%+.1f EV", (x - 20) / 10.0);
+                           return (const char *)buf;
+                       },
+                       [](const Item &) { return g_settings.color_exposure + 20; },
+                       [](const Item &, int x) { g_settings.color_exposure = x - 20; }, 20));
+    // contrast -50..50, the others -100..100, in steps of 5
+    auto signed_pct = [](const Item &it, int x) {
+        static char buf[32];
+        int v = (x - (it.count(it) - 1) / 2) * 5;
+        snprintf(buf, sizeof buf, v ? "%+d" : "%d", v);
+        return (const char *)buf;
+    };
+    v.push_back(choice(P_COLOUR, "Contrast", "More or less difference between dark and bright areas.",
+                       [](const Item &) { return 21; }, signed_pct,
+                       [](const Item &) { return g_settings.color_contrast / 5 + 10; },
+                       [](const Item &, int x) { g_settings.color_contrast = (x - 10) * 5; }, 10));
+    v.push_back(choice(P_COLOUR, "Saturation", "How strong the colours are. -100: black and white.",
+                       [](const Item &) { return 41; }, signed_pct,
+                       [](const Item &) { return g_settings.color_saturation / 5 + 20; },
+                       [](const Item &, int x) { g_settings.color_saturation = (x - 20) * 5; }, 20));
+    v.push_back(choice(P_COLOUR, "Temperature", "Cooler (blue) or warmer (orange) light.",
+                       [](const Item &) { return 41; }, signed_pct,
+                       [](const Item &) { return g_settings.color_temperature / 5 + 20; },
+                       [](const Item &, int x) { g_settings.color_temperature = (x - 20) * 5; }, 20));
+    v.push_back(choice(P_COLOUR, "Tint", "Toward green, or toward magenta.",
+                       [](const Item &) { return 41; }, signed_pct,
+                       [](const Item &) { return g_settings.color_tint / 5 + 20; },
+                       [](const Item &, int x) { g_settings.color_tint = (x - 20) * 5; }, 20));
+    Item lut = choice(P_COLOUR, "LUT", "A colour look. Yours: .cube or .png files in the luts folder.",
+                      [](const Item &) { return g_nluts; },
+                      [](const Item &, int x) { return x ? color_lut_name(x) : tr("None"); },
+                      [](const Item &) { return color_lut_index(g_settings.color_lut); },
+                      [](const Item &, int x) {
+                          snprintf(g_settings.color_lut, sizeof g_settings.color_lut, "%s", color_lut_id(x));
+                      }, 0);
+    v.push_back(lut);
+    v.push_back(choice(P_COLOUR, "LUT intensity", "How much of the LUT's look is used.",
+                       [](const Item &) { return 11; },
+                       [](const Item &, int x) {
+                           static std::string str;
+                           str = pct(x * 10);
+                           return str.c_str();
+                       },
+                       [](const Item &) { return (g_settings.color_lut_strength + 5) / 10; },
+                       [](const Item &, int x) { g_settings.color_lut_strength = x * 10; }, 10));
+#endif
 
     // Audio
     v.push_back(choice(P_AUDIO, "Volume", "The game's volume. 100% is its own level.",
@@ -425,6 +526,16 @@ void build_items(void) {
                        },
                        [](const Item &) { return nearest(k_sens, N(k_sens), g_settings.mouse_sens * 100); },
                        [](const Item &, int x) { g_settings.mouse_sens = k_sens[x] / 100.0f; }, SENS_DEFAULT));
+    v.push_back(choice(P_CONTROLS, "Mouse vertical sensitivity",
+                       "Up and down, as a percentage of the mouse sensitivity.",
+                       [](const Item &) { return N(k_sens_y); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_sens_y[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_sens_y, N(k_sens_y), g_settings.mouse_sens_y * 100); },
+                       [](const Item &, int x) { g_settings.mouse_sens_y = k_sens_y[x] / 100.0f; }, SENS_Y_DEFAULT));
     v.push_back(toggle(P_CONTROLS, "Invert mouse Y", "Only the mouse. The camera Y-axis option inverts both.",
                        [](const Item &) { return (int)g_settings.mouse_invert_y; },
                        [](const Item &, int x) { g_settings.mouse_invert_y = x; }, 0));
@@ -579,7 +690,9 @@ std::u16string utf16(const char *s) {
             o.push_back((char16_t)(0xD800 + (c >> 10)));
             o.push_back((char16_t)(0xDC00 + (c & 0x3FF)));
         } else {
-            o.push_back((char16_t)c);
+            // (Ё / ё become Е / е, as in the game's own Russian text: its Caption_00 font, the option names', has
+            // no glyph for them and left a gap)
+            o.push_back((char16_t)(c == 0x401 ? 0x415 : c == 0x451 ? 0x435 : c));
         }
     }
     return o;
@@ -639,6 +752,7 @@ extern "C" void rt_opt_rows(void) {
     g_switching = false;
     std::vector<uint32_t> &o = g_order[page];
     g_shown.assign(g_items.size(), -1);
+    if (page == P_COLOUR) g_nluts = color_lut_list();  // (files the player added since the last opening)
     for (size_t i = 0; i < g_items.size(); i++) {  // (how many window sizes there are depends on the display)
         Entry &e = g_entries[GAME_ENTRIES + i];
         if (g_items[i].kind == KIND_CHOICE) e.last_value = e.first_value + game_count(g_items[i]) - 1;
@@ -693,7 +807,20 @@ extern "C" int rt_opt_store(uint64_t row) {
             fprintf(stderr, "[options] %s = %d at %.3f s\n", it->title, x, SDL_GetTicksNS() / 1e9);
     }
     if (it->kind != KIND_BUTTON) settings_save();
-    if (it->page == P_VIDEO) mark_all_rows(rd64(row));  // (the sizes offered follow Fullscreen, texts the upscaler)
+    // (the sizes offered follow Fullscreen, texts and Upscaler mode's values the upscaler; Colour: the preset sets the
+    // sliders, they the preset). A value kept on show because it couldn't be picked goes once it can (Upscaler mode
+    // after Off: the mode stored, not the Off shown).
+    if (it->page == P_VIDEO || it->page == P_COLOUR) {
+        for (size_t i = 0; i < g_items.size() && i < g_shown.size(); i++) {
+            const Item &o = g_items[i];
+            if (g_shown[i] >= 0 && (!o.value_off || !o.value_off(o, g_shown[i]))) g_shown[i] = -1;
+            if (o.kind == KIND_CHOICE) {
+                Entry &e = g_entries[GAME_ENTRIES + i];
+                e.last_value = e.first_value + game_count(o) - 1;
+            }
+        }
+        mark_all_rows(rd64(row));
+    }
     if (past_end) g_dirty.push_back(row);                // (first: the row shows the value at the other end)
     return 1;
 }
@@ -737,6 +864,10 @@ extern "C" int rt_opt_decide(uint64_t row) {
     if (!it || it->kind != KIND_BUTTON) return 0;
     int d, s, ms;
     switch (it->action) {
+    case A_SIZE_LIST:
+        g_size_row = row;
+        menu_size_list_open();
+        return 2;
     case A_PAGE:
         if (bind_capture_active(&d, &s, &ms)) return 2;
         g_next_page = it->arg;
@@ -766,6 +897,9 @@ extern "C" int rt_opt_decide(uint64_t row) {
     return 2;
 }
 
+// Window size's list (menu.mm, render thread): a size was picked, the row shows it
+extern "C" void game_options_size_picked(void) { g_size_redraw = true; }
+
 // Options update: a binding capture that ended redraws the page's rows (a conflict swaps two inputs)
 extern "C" uint64_t rt_opt_tick(uint64_t screen) {
     if (g_quit_dialog) {  // (the quit question is up: 1 skips the screen's update, whose dialog handling takes answers)
@@ -779,9 +913,16 @@ extern "C" uint64_t rt_opt_tick(uint64_t screen) {
         settings_save();
         mark_all_rows(screen);
     }
+    if (g_size_redraw.exchange(false) && g_size_row) g_dirty.push_back(g_size_row);
     if (g_dirty.empty()) return 0;
     uint64_t r = g_dirty.back();
     g_dirty.pop_back();
+    // (the redraw shows the row's own value: read it again, for values set from another row - Colour's preset)
+    if (const Item *it = item_of_row(r); it && it->kind != KIND_BUTTON) rt_opt_read(r);
+    if (getenv("SAVAGEWIND_LOG_OPTIONS")) {
+        const Item *it = item_of_row(r);
+        fprintf(stderr, "[options] redraw %s value %u (%zu left)\n", it ? it->title : "?", rd32(r + 0x58), g_dirty.size());
+    }
     return r;
 }
 
@@ -811,11 +952,18 @@ extern "C" void rt_opt_back(void) {
 //    the title screen; the animation's handle is at the Options state field - 0x24 in 1.8.2 and 1.9.0, its pai1 block
 //    at handle + 0x18).
 // It was the menu's last button, so there is no gap.
+// With downloadable content set up the button opens the game's own list of the packs (no eShop): once the game mounts
+// an add-on content (rt_title_menu_dlc, from runtime/services/fs.c) the lists get it back and the pane is left alone.
 const uint32_t TITLE_DLC_BUTTON = 0x6d;
+static uint64_t g_dlc_lists[8];
+static int g_ndlc_lists;
+static bool g_dlc_button;
 
 extern "C" void rt_title_menu_prepare(void) {
     if (!game_is_botw()) return;
     int n = 0;
+    g_ndlc_lists = 0;
+    g_dlc_button = false;
     for (uint64_t p = g_site.main_data; p + 0x10 <= g_site.main_end; p += 8) {
         uint32_t count = rd32(p);
         uint64_t ids = rd64(p + 8);
@@ -828,12 +976,22 @@ extern "C" void rt_title_menu_prepare(void) {
         }
         if (!menu || rd32(ids + 4 * (count - 1)) != TITLE_DLC_BUTTON) continue;
         wr32(p, count - 1);
+        if (g_ndlc_lists < 8) g_dlc_lists[g_ndlc_lists++] = p;
         n++;
     }
     fprintf(stderr, "[options] title menu: Downloadable Content left out of %d button lists\n", n);
 }
 
+extern "C" void rt_title_menu_dlc(void) {
+    if (g_dlc_button) return;
+    g_dlc_button = true;
+    for (int i = 0; i < g_ndlc_lists; i++) wr32(g_dlc_lists[i], rd32(g_dlc_lists[i]) + 1);
+    fprintf(stderr, "[options] title menu: Downloadable Content back in %d button lists (add-on content mounted)\n",
+            g_ndlc_lists);
+}
+
 static void title_hide_dlc(uint64_t menu) {
+    if (g_dlc_button) return;
     uint64_t anim = rd64(menu + g_site.title_options_state - 0x24);
     uint64_t pai = anim ? rd64(anim + 0x18) : 0;
     if (!pai || memcmp((const void *)(uintptr_t)pai, "pai1", 4)) return;

@@ -12,7 +12,7 @@ The Link's Awakening patches this file held in LASRecomp are kept in the archive
 """
 import struct
 
-from game_sites import adrp_page
+from game_sites import adrp_page, sext
 
 
 def _word(gen, a):
@@ -222,6 +222,45 @@ def _vfr_ratio(gen, a):
             f'  /* {a:#x}: ldr w8, [x19, #0x78] (VFR: interval ratio) */')
 
 
+# Arrows (#144): once in their fall, an arrow's velocity is its last direction x its speed plus a gravity vector
+# (0, ArrowGravity, 0), added once per update with no time step (1.9.0 0x70005ee668; the straight part before it scales
+# by the delta frame). Above 30 fps it fell 2 or 4 times as fast per second and landed short. The load of its Y part
+# (the only one the game sets) takes the frame's length in console frames as a factor (runtime/hle/framepace.c
+# rt_arrow_gravity: 1 at 30 fps, slow motion left out as on the console).
+
+def _arrow_gravity(gen, a):
+    assert _word(gen, a) == 0xbd410a81, hex(_word(gen, a))  # ldr s1, [x20, #0x108]
+    return ('{ extern float rt_arrow_gravity(uint64_t, float); union { uint32_t u; float f; } g = { .u = (uint32_t)LD32(c->x[20] + 0x108) }; '
+            'g.f = rt_arrow_gravity(c->x[20], g.f); c->v[1] = g.u; }'
+            f'  /* {a:#x}: ldr s1, [x20, #0x108] (arrow gravity) */')
+
+
+# The physics step's solver microsteps (runtime/hle/framepace.c rt_solver_steps, #161): before each Havok step the game
+# gives the solver round(delta frame x 6) microsteps (1.9.0 0x700156f930): 6 at 30 fps, 3 at 60, 2 at 120. With fewer
+# the solver gives way more to what is in contact with Link: holding a cucco, its body over his head held his jump
+# to a third of its height above 90 fps. The runtime gives 6 / sqrt(delta frame) on shorter steps (12 at 120).
+
+def _solver_steps(gen, a):
+    assert _word(gen, a) == 0x1e220822, hex(_word(gen, a))  # fmul s2, s1, s2
+    return ('{ extern float rt_solver_steps(float, float); union { uint32_t u; float f; } d = { .u = (uint32_t)c->v[1] }, '
+            'k = { .u = (uint32_t)c->v[2] }; k.f = rt_solver_steps(d.f, k.f); c->v[2] = k.u; }'
+            f'  /* {a:#x}: fmul s2, s1, s2 (solver microsteps: delta frame x 6) */')
+
+
+# The sound system's frame (runtime/hle/framepace.c rt_snd_frame_floor, #145): once a frame the game hands its sound
+# system the delta frame, at least 0.5 (1.9.0 0x7001551004; 1.8.2 0x710143ce64 in the Ghidra project): in console
+# frames, with the frame rate (30) it makes the seconds every sound timer and fade steps by. The floor is a 60 fps
+# frame, so above 60 fps the sound's clock ran fast: at ~95 fps each field battle music segment started the next one
+# when it was 63% through, and the segments played over each other. The floor becomes 0.5 x the frame's length in
+# console frames: 0.5 at 30 fps as on the console, and the real frame at any rate (slow motion floored as there).
+
+def _snd_frame_floor(gen, a):
+    assert _word(gen, a) == 0x1e2c1001, hex(_word(gen, a))  # fmov s1, #0.5
+    return ('{ extern float rt_snd_frame_floor(void); union { uint32_t u; float f; } m = { .f = rt_snd_frame_floor() }; '
+            'c->v[1] = m.u; }'
+            f'  /* {a:#x}: fmov s1, #0.5 (sound frame: floor of the delta frame) */')
+
+
 # The menus' speed (runtime/hle/framepace.c rt_gui_speed): once a frame the game stores its integer interval x 0.5 as
 # the GUI speed (the float at +0xb20 of a UI object; 1.8.2 0x700116d0e8): 1 at 30 fps, 0.5 at 60 and never lower, so
 # the menus' cursor and animations ran faster above 60 fps. The runtime gives the frame's real length instead, as Cemu's
@@ -229,9 +268,24 @@ def _vfr_ratio(gen, a):
 
 def _gui_speed(gen, a):
     assert _word(gen, a) == 0xbd0b2100, hex(_word(gen, a))  # str s0, [x8, #0xb20]
-    return ('{ extern float rt_gui_speed(float); union { uint32_t u; float f; } s = { .u = (uint32_t)VS32(0) }; '
+    return ('{ extern float rt_gui_speed(float); union { uint32_t u; float f; } s = { .u = (uint32_t)c->v[0] }; '
             's.f = rt_gui_speed(s.f); ST32(c->x[8] + 0xb20, s.u); }'
             f'  /* {a:#x}: str s0, [x8, #0xb20] (GUI speed) */')
+
+
+# MainShortCut's HoldShortCutBg starts P_Capture_00 transparent and has an alpha jump at frame 1. The screen
+# corrects that boundary only at frame == 1 (1.9.0 0x7000e26a38). The wall-time GUI
+# clock can present fractional opening frames below 1, or skip the exact value: the backdrop briefly turns black
+# (#173). Apply the same alpha correction once the animation has started, leaving frame 0 and stopped animations
+# alone. Keep the GUI clock unchanged so both the quick selectors and the other menus retain their normal speed.
+def _quick_menu_capture_alpha(gen, a):
+    w = _word(gen, a)
+    assert w & 0xff00001f == 0x54000001, hex(w)  # b.ne <skip alpha correction>
+    assert _word(gen, a - 4) == 0x1e212000 and _word(gen, a - 8) == 0x1e2e1001
+    target = a + sext((w >> 5) & 0x7ffff, 19) * 4
+    return ('{ union { uint32_t u; float f; } frame = { .u = (uint32_t)c->v[0] }; '
+            f'if (!(frame.f > 0.0f)) goto L_{target:x}; }} '
+            f'/* {a:#x}: b.ne (quick-menu capture alpha after animation starts) */')
 
 
 # Perspective projections' matrix (sead's PerspectiveProjection, its vtable +0x58; 1.8.2 0x7000da13f4): it reads
@@ -300,7 +354,78 @@ def _persp_unproject_x(gen, a):
             f'  /* {a:#x}: ldp s2, s3, [x0, #0xac] (screen to camera: tan(fovy / 2), aspect) */')
 
 
+# The mouse camera (runtime/hle/input.c). Every camera action (CameraChase, CameraAiming, CameraHorse...) reads the
+# right stick through one function (1.9.0 0x7000d57fe0), which applies a dead zone, squares the tilt (v |v|) and
+# keeps it in the unit circle; the chase-like ones (CameraChase, CameraShieldSurfing, CameraWakeboard) square the
+# vertical part once more (y |y|). The camera then turns by that x its speeds x the frame's length (VFR). Fine for a
+# stick; from the mouse it crept on slow moves, sped up on fast ones and stopped at the stick's top speed. While the
+# mouse has the camera the runtime answers the stick input itself (rt_cam_stick: the frame's mouse motion over the
+# frame's length, linear, not clamped) and the vertical part goes through unsquared (rt_cam_pitch), so a frame's turn
+# is the mouse's motion in it times the sensitivity, at any frame rate. The cameras turn the horizontal part 1.78
+# times as fast as the vertical one for a stick, and the bow's (CameraAiming) and a held item's (CameraAiming2) scale
+# them apart again (lngStickScale 0.7 and latStickScale 1; 0.8 and 1.5): the runtime gives the vertical part 1.78
+# times the mouse's motion, and those two cameras' vertical part the horizontal part's scale (rt_cam_pitch_scale), so
+# the mouse turns both alike. Optional sites (tools/game_sites.py OPTIONAL_GROUPS): without them the mouse moves the
+# stick, as before.
+
+def _cam_stick(gen, a):
+    assert _word(gen, a) == _sub_sp(0x30), hex(_word(gen, a))
+    return ('{ extern int rt_cam_stick(uint64_t, uint64_t); if (rt_cam_stick(c->x[0], c->x[30])) return; '
+            'c->sp -= 0x30; }'
+            f'  /* {a:#x}: sub sp, sp, #0x30 (camera stick input) */')
+
+
+def _cam_pitch(gen, a):
+    # fmul s1, s0, s0 just above, fnmul s3, s0, s0 here: the vertical part kept its sign squared, s1 or s3 by s0's sign
+    assert _word(gen, a) == 0x1e208803 and _word(gen, a - 4) == 0x1e200801, hex(_word(gen, a))
+    return ('{ extern int rt_cam_pitch(float *); union { uint32_t u; float f; } y = { .u = (uint32_t)c->v[0] }; '
+            'if (rt_cam_pitch(&y.f)) c->v[1] = y.u; else y.f = -(y.f * y.f); c->v[3] = y.u; }'
+            f'  /* {a:#x}: fnmul s3, s0, s0 (camera: the vertical stick part squared) */')
+
+
+def _cam_pitch_aim(gen, a):
+    # ldr s1, [x8]: the camera's latStickScale, through the parameter pointer loaded just above (ldr x8, [x19, #off]);
+    # its lngStickScale's pointer is the next one (the parameters load in that order)
+    assert _word(gen, a) == 0xbd400101, hex(_word(gen, a))
+    w = next(_word(gen, a - 4 * i) for i in range(1, 5) if _word(gen, a - 4 * i) & 0xffc003ff == 0xf9400268)
+    lng = ((w >> 10) & 0xfff) * 8 + 8
+    return ('{ extern uint32_t rt_cam_pitch_scale(uint32_t, uint32_t); '
+            f'c->v[1] = rt_cam_pitch_scale(LD32(c->x[8]), LD32(LD64(c->x[19] + {lng:#x}))); }}'
+            f'  /* {a:#x}: ldr s1, [x8] (camera: latStickScale) */')
+
+
+# The game's Camera X-axis / Y-axis options (Inverted) are applied by the cameras' controller (the one the camera
+# input reads, id 3 of the controller manager): every frame it reads the flags (CameraRLReverse, CameraUpDownReverse)
+# and turns that axis of its right stick around. The mouse's camera input doesn't go through it, so the runtime is
+# told the flags here and turns the mouse's motion around the same way (rt_cam_reverse).
+
+def _cam_reverse(axis):
+    def patch(gen, a):
+        w = _word(gen, a)
+        assert w >> 26 == 0x25, hex(w)  # bl <the flag's getter>
+        t = a + sext(w & 0x3FFFFFF, 26) * 4
+        return (f'{{ extern void f_{t:x}(Cpu *); extern void rt_cam_reverse(int, int); c->x[30] = {a + 4:#x}ull; '
+                f'f_{t:x}(c); rt_cam_reverse({axis}, (int)(c->x[0] & 1)); }}'
+                f'  /* {a:#x}: bl {t:#x} (camera controller: {"XY"[axis]}-axis inverted) */')
+    return patch
+
+
 # tools/game_sites.py site -> its patch
+# BOTW's streaming Yaz0 decoder (1.9.0 0x700131d674; x0 its state, x1/w2 the input chunk): in native code
+# (runtime/hle/yaz0.c rt_yaz0, which declines the first call of a stream, the one that reads its header). Its return
+# instruction checks the native result against the game's code with SAVAGEWIND_YAZ0=2.
+def _yaz0_stream(gen, a):
+    assert _word(gen, a) == 0xa9bd7bfd, hex(_word(gen, a))  # stp x29, x30, [sp, #-0x30]!
+    return ('{ extern int rt_yaz0(Cpu *); if (rt_yaz0(c)) return; '
+            'uint64_t ea = c->sp - 0x30; ST64(ea, c->x[29]); ST64(ea + 8, c->x[30]); c->sp = ea; }'
+            f'  /* {a:#x}: stp x29, x30, [sp, #-0x30]! (Yaz0 stream decoder) */')
+
+
+def _yaz0_stream_ret(gen, a):
+    assert _word(gen, a) == 0xd65f03c0, hex(_word(gen, a))  # ret
+    return '{ extern void rt_yaz0_done(Cpu *); rt_yaz0_done(c); return; }' + f'  /* {a:#x}: ret (Yaz0 stream decoder) */'
+
+
 PATCHES = {
     'pause_options_update': _pause_option_state,
     'opt_create_rows': _opt_rows,
@@ -318,8 +443,14 @@ PATCHES = {
     'title_button': _title_event,
     'msg_lookup': _title_msg,
     'frame_wait': _frame_wait,
+    'yaz0_stream': _yaz0_stream,
+    'yaz0_stream_ret': _yaz0_stream_ret,
     'vfr_ratio': _vfr_ratio,
     'gui_speed': _gui_speed,
+    'quick_menu_capture_alpha': _quick_menu_capture_alpha,
+    'arrow_fall_gravity': _arrow_gravity,
+    'phys_solver_steps': _solver_steps,
+    'snd_frame_floor': _snd_frame_floor,
     'persp_matrix': _persp_matrix,
     'persp_matrix_offset': _persp_matrix_offset,
     'persp_unproject_y': _persp_unproject_y,
@@ -329,9 +460,18 @@ PATCHES = {
     'frustum_lr1': _frustum_load(0x2d550c02, (2, 3), 'lr'),
     'frustum_tb0': _frustum_load(0x2d540800, (0, 2), 'tb'),
     'frustum_tb1': _frustum_load(0x2d540c02, (2, 3), 'tb'),
+    'cam_stick': _cam_stick,
+    'cam_pitch_chase': _cam_pitch,
+    'cam_pitch_surf': _cam_pitch,
+    'cam_pitch_wakeboard': _cam_pitch,
+    'cam_pitch_aim': _cam_pitch_aim,
+    'cam_pitch_item': _cam_pitch_aim,
+    'cam_reverse_x': _cam_reverse(0),
+    'cam_reverse_y': _cam_reverse(1),
 }
 
 
 def table(sites):
-    """address -> patch, for the main module whose sites these are (tools/game_sites.py)"""
-    return {sites[name]: fn for name, fn in PATCHES.items()}
+    """address -> patch, for the main module whose sites these are (tools/game_sites.py; an optional site it lacks
+    has no patch)"""
+    return {sites[name]: fn for name, fn in PATCHES.items() if name in sites}
