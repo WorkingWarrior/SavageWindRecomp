@@ -17,8 +17,8 @@ import subprocess
 import time
 
 
-MISSING = re.compile(r'\b(?:UNIMPLEMENTED|STUB|unhandled|unknown cmd|unknown command|'
-                     r'no HLE implementation|unsupported SVC)\b|FATAL:', re.I)
+MISSING = re.compile(r'\b(?:UNIMPLEMENTED|STUB|unhandled|unknown (?:cmd|command|id)|'
+                     r'no HLE implementation|unsupported SVC|not implemented)\b|FATAL:', re.I)
 
 
 def main():

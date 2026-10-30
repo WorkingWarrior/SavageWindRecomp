@@ -1,5 +1,25 @@
 # TotK on SavageWind: bounded research experiment
 
+## Final result — stopped at the first missing service
+
+**TotK 1.0.0 was generated, compiled, linked, loaded and started on SavageWind's
+Cpu runtime.** The run stopped after 1.327 s at the first logged unimplemented
+operation: **appletOE / ICommonStateGetter command 900**. No menu, TotK NVN device
+initialization or game frame was observed. Playability and graphics compatibility
+remain **UNVERIFIED**; this is not evidence that TotK cannot proceed further.
+
+**Recommendation: retain totk-recomp for TotK rather than undertake a full
+migration to SavageWind.** The executed experiment proves compiler/loader/early
+SDK feasibility, but provides no rendering or gameplay evidence to justify the
+larger migration. The reference was described as working by the user; its runtime
+was not independently rerun here. The positive Savage result is enough to justify
+only a separately authorized, bounded continuation, not a finished port or FPS claim.
+
+BOTW regression evidence: **997 generated files are byte-identical to the original
+baseline; the full build passes; the opening scene/subtitle was visually confirmed
+before changes, after game-profile isolation and again after the pair extension.**
+Full progression, physical controls/audio and other platforms were not tested.
+
 ## Scope and evidence rules
 
 Started 2026-10-30. This is a feasibility experiment, not a port. Work stops at
@@ -139,8 +159,9 @@ Savage's registered service names, read from the source, are `acc:u0`,
   this is a pre-existing baseline finding, not a TotK-induced regression.
 - Baseline synthetic tests: game sites **35 checks PASS**, layout **59 checks
   PASS**. These do not prove gameplay.
-- Baseline full build: **PASS**. TotK generation: **PASS** with unsupported SDK
-  instructions recorded below. TotK link/runtime: **PENDING**.
+- Baseline full build: **PASS**. TotK generation/link/loading/early SDK startup:
+  **PASS to the prescribed service stop**. Unsupported SDK instructions and the
+  untested graphics/gameplay boundary are detailed below.
 
 ## Implementation decision
 
@@ -204,8 +225,9 @@ Exit **0**, with the following layout and results:
 
 The generated layout carries version 1.0.0 and **zero BOTW sites**. Generation
 times reported per module: 61 s / 4 s / 9 s. This does not prove every generated
-function is semantically correct or reachable. In particular, the SDK's 277
-unsupported cases remain potential runtime traps pending execution.
+function is semantically correct or reachable. At this initial pre-pair stage,
+the SDK's 277 unsupported cases were potential runtime traps; the later pair
+extension reduces that set to the 100 guarded LSE PCs.
 
 Their generated C contains **277 unique guest PCs**, duplicated into 434 emitted
 `rt_udf` calls: 197 PCs tagged `exclusive pair / CAS` and 80 tagged `ldst reg
@@ -213,7 +235,8 @@ atomic/pac`. These tags do not identify the exact instructions or prove reachabi
 No instruction implementation has been added speculatively.
 
 Build attempt: `make -j4 B=build/totk-run GEN=build/totk-experiment/totk-gen`,
-with output in `build/totk-experiment/totk-build.log` (**PENDING**).
+with output in `build/totk-experiment/totk-build.log` (initial attempt interrupted
+by the temporary user stop; the completed post-pair attempt is recorded below).
 
 `tools/totk_experiment_run.py` runs one attempt under a pty, preserving a transcript
 and JSON result in a new subdirectory of `build/totk-experiment`. It clears inherited
@@ -223,7 +246,7 @@ retries or supplies replacement service results. A negative-control run already
 verified rejection of a BOTW library. An early trap still needs classification:
 it is not automatically evidence of a graphics/service blocker.
 
-## Cost so far
+## Cost before the pair extension
 
 The initial profile/observation changes span **17 files**: 12 runtime files,
 3 tools, Makefile and this document. There are 24 added/changed runtime functions
@@ -231,10 +254,10 @@ including the inline profile predicate; most changes are one guard at an existin
 function boundary. Generator changes are limited to profile selection in
 `main_sites` and its CLI option. The game library ABI is unchanged.
 
-**Cpu/Ctx conversion cost: 0 changed Cpu/Ctx/dispatcher/lifter/SIMD files and
+**Before the revised pair scope: 0 changed Cpu/Ctx/dispatcher/lifter/SIMD files and
 0 changed functions in that contract.** NSOs were regenerated rather than linking
 the reference's incompatible Ctx-generated code. No CPU/GPU performance delta
-was measured. This count will be updated if an executed trap requires a change.
+was measured. The final extension cost is recorded below.
 
 ## Pair instructions and outline atomics (revised user scope)
 
@@ -307,6 +330,15 @@ log will observe the byte after actual module loading. Its value on a physical
 Switch was not measured here; absence of all possible indirect writes has not
 been formally proved. LSE `rt_udf` remains visible rather than silently emulated.
 
+Additional executed check: loaded the untouched SDK image (including its zero
+BSS byte) into Unicorn and called **all 100 outline helper entries**. All returned
+through LL/SC fallbacks; an instruction hook observed **zero LSE instructions**.
+An emulator-only positive control changed the byte to 1 and reached CASB at
+0x700527ce5c, confirming the guard rather than an accidental skipped test.
+The actual game files and runtime flag were never changed. Evidence:
+`build/totk-experiment/outline-guard-emulation.log`. This establishes conditional
+reachability in the emulator, not a physical-console measurement or all-game trace.
+
 For hardware context, Arm identifies Cortex-A57 as Armv8.0-A and LSE as an
 Armv8.1-A feature; this does not substitute for reading the actual flag on a console.
 Sources: [Arm extension guide](https://developer.arm.com/-/media/Arm%20Developer%20Community/PDF/Learn%20the%20Architecture/Understanding%20the%20Armv8.x%20extensions.pdf),
@@ -341,4 +373,104 @@ pair-store observer. All passed on this Linux x86-64 host. Other hosts are untes
 After the pair change, all 177 original pair PCs lift successfully and the SDK
 unsupported count is **100**, exactly the guarded LSE set. BOTW generation again
 has **997 byte-identical files** compared with the pre-experiment baseline.
-Full post-pair BOTW/TotK builds and startup observation are **PENDING**.
+Full post-pair BOTW and TotK builds **PASS**. BOTW: exit 0, 294.671 s; its 35/59
+sites/layout checks pass. The final post-pair BOTW frame-3100 screenshot again
+shows “Open your eyes…” (`build/totk-experiment/botw-pair-state/build/frames/`).
+The bounded visual run ended at its external timeout, not a normal game exit.
+
+## Completed TotK build and executed stop
+
+The post-pair build produced `build/totk-run/savagewind` (10295608 bytes),
+`swgame.so` (417456168 bytes) and `.id` **78ef8dfbf61dd9f0**. Build log:
+`build/totk-experiment/totk-pair-build.log`. The elapsed time is approximately
+17m31s from the log's filesystem birth timestamp to the final ID file; this
+includes scheduling alongside the BOTW build and is not a performance benchmark.
+The coordinator independently checked the completed outputs and reran the exact
+make command: **exit 0, nothing to do**.
+Actual runtime `dlopen` then successfully resolved the game library's host symbols.
+
+One startup attempt was executed:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 tools/venv/bin/python tools/totk_experiment_run.py \
+  --exe build/totk-run/savagewind --library build/totk-run/swgame.so \
+  --data ../totk-recomp/totk-build/data \
+  --out build/totk-experiment/totk-start-01 --seconds 60
+```
+
+Use a **new** output directory for any future authorized attempt; the runner
+refuses to overwrite evidence. No repeat was performed after the stop.
+
+Authoritative transcript and result:
+`build/totk-experiment/totk-start-01/run.log` and `result.json`.
+
+- Loaded all three modules and accepted their recorded build IDs.
+- Relocated main, subsdk0 and sdk. The existing loader reported 47 / 2 / 0 imports
+  bound to host stubs; that count is a binding category, not proof of missing
+  implementations. No relocation error was observed in this startup.
+- Observed the outline-atomics byte at **0x7005ae4780 = 0**, read only, after loading.
+- Created the main thread for program **0100f2c0115b6000**, found
+  `nn::init::Start` at **0x7004e09060**, and entered SDK DT_INIT / constructors.
+- Opened `lm`, `apm` and `appletOE`, then logged the first missing operation:
+
+```text
+[am] ICommonStateGetter cmd 900 (unhandled, ok; logged once)
+```
+
+The runner returned **3** (`first_missing_behavior`) and deliberately terminated
+the child with **SIGTERM**, recorded as `child_exit: -15`; elapsed **1.327 s**.
+This is an intentional research stop, **not a demonstrated fatal game failure**.
+The same buffered read also contains `ISelfController cmd 91`; it was already
+queued before termination. Neither command was implemented and the game was not
+resumed. No `rt_udf`, missing function, graphics failure or menu was reached.
+
+### Concrete service gap and reference comparison
+
+`runtime/services/am.c:65-92` has no command 900 case, so it falls through to
+`unhandled()` (`:52-61`). IPC initializes the response to zero
+(`runtime/ipc.c:114-116`), making the default response successful without
+implementing the command's state change. This behavior predates the experiment.
+
+The libnx implementation identifies command 900 as
+**SetRequestExitToLibraryAppletAtExecuteNextProgramEnabled**, a no-input/no-output
+operation; it is not SetCpuBoostMode. Its ISelfController command 91 obtains
+the accumulated-suspended-tick change event. These protocol names are sourced
+from [libnx applet.c](https://raw.githubusercontent.com/switchbrew/libnx/master/nx/source/services/applet.c),
+observed 2026-10-30; they are not guessed from the numeric IDs.
+
+The reference has **no corresponding command-900 IPC implementation to copy**.
+Its boot sequence (`reference:runtime/rt_main.cpp:599-624`) calls main's DT_INIT,
+`nninitStartup`, main's init array and `nnMain` directly, rather than invoking
+SDK `nn::init::Start` and SDK constructors as Savage does. The reference's
+`runtime/hle_oe.cpp:16-23` supplies operation/performance/focus/notification HLE,
+and its import dispatch (`runtime/rt_main.cpp:155-166`) supplies HLE or a logged
+zero stub. This explains the different service boundary in source; it is not
+evidence of a valid one-line semantic fix for Savage. No such bypass was added.
+
+## Final cost, blockers and limits
+
+Total source delta against 860f372: **21 files** (13 runtime, 6 tools, Makefile,
+one report). No generated game code, game assets or keys are tracked. The original
+`main` remains at d712942; reference source WIP and all cleanup candidates remain.
+Freed space: **0 bytes**, following the user's decision against deletion.
+
+Pair/Cpu cost: **2 production files, 2 new inline helpers, 1 modified decoder
+function, 1 extra monitor value in padding; 2 test files**. Existing Cpu offsets,
+size, packed flags, dispatcher and GameLib ABI are preserved. This extends Cpu's
+monitor state; it is not a Ctx-to-Cpu adapter. No game-speed delta was measured.
+
+| Item | Evidence/status | Further effort estimate |
+| --- | --- | --- |
+| NSO generation / host linking / module relocation | Executed successfully to early SDK startup | Completed for this build only |
+| Four 64-bit exclusive-pair instructions | 177 PCs supported; 8 Unicorn sequences and concurrent host tests pass | Completed within the existing CAS-monitor approximation |
+| LSE variants | 100 guarded PCs remain traps; initial zero flag and 100 LL/SC fallback calls observed | Small-to-medium if a future executed path enables them; unnecessary for the observed start |
+| ICommonStateGetter command 900 | **First observed unimplemented service command; experiment stop** | Small for an explicit host policy; lifecycle semantics and a valid test still required |
+| Other SDK/IPC compatibility | Not tested beyond that stop; trailing command 91 is also unimplemented | Medium-to-large, scope unknown |
+| TotK NVN / shaders / synchronization | Source inventory only; no TotK device, shader, draw or frame executed | Large / high uncertainty; not a confirmed runtime graphics failure |
+| TotK installer / configuration / controls | Source CLI experiment only; BOTW installer excluded | Medium for product integration; outside this experiment |
+| BOTW | Generation byte equality, full build and opening scene verified | Full progression / physical input / audio remain unverified |
+
+The stop condition is satisfied by the concrete service gap. **No further TotK
+startup or migration work was performed after it.** The experiment establishes
+that the generator/Cpu contract is not the first hard barrier for this image;
+it does not establish complete TotK support on SavageWind or disprove it.
