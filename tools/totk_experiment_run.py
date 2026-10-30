@@ -19,6 +19,22 @@ import time
 
 MISSING = re.compile(r'\b(?:UNIMPLEMENTED|STUB|unhandled|unknown (?:cmd|command|id)|'
                      r'no HLE implementation|unsupported SVC|not implemented)\b|FATAL:', re.I)
+BLOCKING = re.compile(r'FATAL:|\[nvn\].*(?:not implemented|UNIMPLEMENTED)|'
+                      r'\[hle\].*UNIMPLEMENTED nvn', re.I)
+IPC_ERROR = re.compile(r'\[experiment\] IPC error (\S+) cmd (\d+) result (0x[0-9a-f]+)', re.I)
+
+
+def blocking_ipc_error(line):
+    m = IPC_ERROR.search(line)
+    if not m:
+        return False
+    name, command, result = m[1], int(m[2]), int(m[3], 16)
+    # Normal negative poll results, not missing service implementations. Preserve
+    # them in the transcript/result; never rewrite the result seen by the guest.
+    return (name, command, result) not in {
+        ('ICommonStateGetter', 1, 0x680),  # AM_NO_MESSAGE, ReceiveMessage
+        ('IApplicationFunctions', 1, 0x480),  # AM_NO_DATA, PopLaunchParameter
+    }
 
 
 def main():
@@ -28,6 +44,8 @@ def main():
     ap.add_argument('--data', required=True, type=Path)
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--seconds', type=float, default=60)
+    ap.add_argument('--policy', choices=('first-missing', 'blocking'), default='first-missing')
+    ap.add_argument('--shots', default='', help='comma-separated presented frame numbers for visual observation')
     args = ap.parse_args()
     repo = Path(__file__).resolve().parent.parent
     out = args.out.resolve()
@@ -40,6 +58,10 @@ def main():
     env.update(SAVAGEWIND_DATA_ROOT=str(out / 'state'), SAVAGEWIND_SAVE_DIR=str(out / 'state' / 'save'),
                SAVAGEWIND_GAME_LIB=str(args.library.resolve()), SAVAGEWIND_HIDDEN='1',
                SAVAGEWIND_NO_USER_INPUT='1')
+    if args.shots:
+        if not re.fullmatch(r'\d+(,\d+)*', args.shots):
+            ap.error('--shots must contain frame numbers only')
+        env['SAVAGEWIND_WINDOW_SHOT_AT'] = args.shots
     (out / 'state' / 'build').mkdir(parents=True)
     master, slave = pty.openpty()
     start = time.monotonic()
@@ -50,6 +72,7 @@ def main():
     sel.register(master, selectors.EVENT_READ)
     pending = ''
     reason, first = 'exit', ''
+    fallbacks, ipc_errors = [], []
     try:
         with (out / 'run.log').open('wb') as log:
             while True:
@@ -74,9 +97,17 @@ def main():
                 lines = pending.split('\n')
                 pending = lines.pop()
                 for line in lines:
-                    if MISSING.search(line):
-                        reason, first = 'first_missing_behavior', line.strip()
+                    if IPC_ERROR.search(line):
+                        ipc_errors.append(line.strip())
+                    hard = BLOCKING.search(line) or blocking_ipc_error(line)
+                    if args.policy == 'blocking' and hard:
+                        reason, first = 'first_blocking_behavior', line.strip()
                         break
+                    if MISSING.search(line):
+                        if args.policy == 'first-missing':
+                            reason, first = 'first_missing_behavior', line.strip()
+                            break
+                        fallbacks.append(line.strip())
                 if first:
                     break
     finally:
@@ -89,7 +120,10 @@ def main():
             proc.wait()
         sel.close()
         os.close(master)
-    result = dict(reason=reason, first=first, child_exit=proc.returncode,
+    if reason == 'exit' and proc.returncode:
+        reason, first = 'process_failure', f'child exited with {proc.returncode}'
+    result = dict(reason=reason, first=first, child_exit=proc.returncode, policy=args.policy,
+                  fallbacks=fallbacks, ipc_errors=ipc_errors,
                   seconds=round(time.monotonic() - start, 3), command=command)
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result))

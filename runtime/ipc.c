@@ -4,6 +4,7 @@
 
 #include "hle.h"
 #include "ipc.h"
+#include "game_profile.h"
 
 #ifdef __APPLE__
 extern const ServiceDef __start_services[] __asm__("section$start$__DATA$__services");
@@ -202,6 +203,9 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
             if (!target) { LOG("[ipc] domain object %u missing\n", req.domain_obj); return 0xE401; }
         }
         target->handler(target, &req, &resp);
+        if (!game_is_botw() && resp.result)
+            LOG("[experiment] IPC error %s cmd %u result %#x lr %llx\n",
+                target->name, req.cmd, resp.result, c->x[30]);
     } else if (req.type == 5 || req.type == 7) {  // control
         req.cmd = *(uint32_t *)(payload + 8);
         LOG("[ipc] control %u on %s (handle %x)\n", req.cmd, sess->svc->name, handle);

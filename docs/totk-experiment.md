@@ -1,16 +1,19 @@
 # TotK on SavageWind: bounded research experiment
 
-## Final result — stopped at the first missing service
+## Final result — one additional iteration reached a RomFS input failure
 
 **TotK 1.0.0 was generated, compiled, linked, loaded and started on SavageWind's
-Cpu runtime.** The run stopped after 1.327 s at the first logged unimplemented
-operation: **appletOE / ICommonStateGetter command 900**. No menu, TotK NVN device
-initialization or game frame was observed. Playability and graphics compatibility
+Cpu runtime.** After the user revised the stop rule and allowed **one additional
+iteration**, startup passed command 900, entered subsdk0/main initialization and
+initialized the host Vulkan device and GPU-backed heap. It then stopped on
+**FATAL: missing `totk-build/data/romfs.bin`** after 1.685 s. The reference has a
+RomFS **directory**; Savage's storage interface requires a raw image. No menu,
+TotK NVN device initialization or game frame was observed. Playability and graphics compatibility
 remain **UNVERIFIED**; this is not evidence that TotK cannot proceed further.
 
 **Recommendation: retain totk-recomp for TotK rather than undertake a full
 migration to SavageWind.** The executed experiment proves compiler/loader/early
-SDK feasibility, but provides no rendering or gameplay evidence to justify the
+SDK/host-device feasibility, but provides no rendering or gameplay evidence to justify the
 larger migration. The reference was described as working by the user; its runtime
 was not independently rerun here. The positive Savage result is enough to justify
 only a separately authorized, bounded continuation, not a finished port or FPS claim.
@@ -22,9 +25,11 @@ Full progression, physical controls/audio and other platforms were not tested.
 
 ## Scope and evidence rules
 
-Started 2026-10-30. This is a feasibility experiment, not a port. Work stops at
-the first concrete missing service/graphics behavior or the first menu, whichever
-comes first. Source comparisons are not runtime acceptance. BOTW gameplay and
+Started 2026-10-30. This is a feasibility experiment, not a port. The initial
+stop was the first missing service/graphics behavior or menu; the latest user
+override allowed exactly one further observation to a **blocking** failure or
+menu, tolerating logged fallbacks. That iteration is now exhausted. Source
+comparisons are not runtime acceptance. BOTW gameplay and
 TotK gameplay remain **UNVERIFIED** until observed. No FPS claim is made.
 
 - Branch: `experiment/totk-support`.
@@ -81,7 +86,8 @@ or key access required). This reconstruction has not been run here.
    Prefer its existing `Cpu` contract if the actual generation permits it.
    Record unsupported instructions, relocations and missing symbols verbatim.
 5. Only after successful linking, run with isolated output/config/save paths to
-   the first concrete missing service/graphics behavior or menu; then stop.
+   the applicable user stop rule; the last allowed observation ended at the
+   blocking missing-RomFS-image error, and no more runs are authorized.
 6. Check BOTW regression evidence separately and report blockers, effort and
    recommendation based on executed results.
 
@@ -160,7 +166,7 @@ Savage's registered service names, read from the source, are `acc:u0`,
 - Baseline synthetic tests: game sites **35 checks PASS**, layout **59 checks
   PASS**. These do not prove gameplay.
 - Baseline full build: **PASS**. TotK generation/link/loading/early SDK startup:
-  **PASS to the prescribed service stop**. Unsupported SDK instructions and the
+  **PASS to the final missing-RomFS-image stop**. Unsupported SDK instructions and the
   untested graphics/gameplay boundary are detailed below.
 
 ## Implementation decision
@@ -378,7 +384,7 @@ sites/layout checks pass. The final post-pair BOTW frame-3100 screenshot again
 shows “Open your eyes…” (`build/totk-experiment/botw-pair-state/build/frames/`).
 The bounded visual run ended at its external timeout, not a normal game exit.
 
-## Completed TotK build and executed stop
+## Completed TotK build and first observation (earlier stop rule)
 
 The post-pair build produced `build/totk-run/savagewind` (10295608 bytes),
 `swgame.so` (417456168 bytes) and `.id` **78ef8dfbf61dd9f0**. Build log:
@@ -399,7 +405,8 @@ PYTHONDONTWRITEBYTECODE=1 tools/venv/bin/python tools/totk_experiment_run.py \
 ```
 
 Use a **new** output directory for any future authorized attempt; the runner
-refuses to overwrite evidence. No repeat was performed after the stop.
+refuses to overwrite evidence. No repeat was performed under the earlier rule;
+the single subsequently authorized attempt is recorded below.
 
 Authoritative transcript and result:
 `build/totk-experiment/totk-start-01/run.log` and `result.json`.
@@ -449,7 +456,7 @@ evidence of a valid one-line semantic fix for Savage. No such bypass was added.
 
 ## Final cost, blockers and limits
 
-Total source delta against 860f372: **21 files** (13 runtime, 6 tools, Makefile,
+Total source delta against 860f372: **22 files** (14 runtime, 6 tools, Makefile,
 one report). No generated game code, game assets or keys are tracked. The original
 `main` remains at d712942; reference source WIP and all cleanup candidates remain.
 Freed space: **0 bytes**, following the user's decision against deletion.
@@ -464,13 +471,119 @@ monitor state; it is not a Ctx-to-Cpu adapter. No game-speed delta was measured.
 | NSO generation / host linking / module relocation | Executed successfully to early SDK startup | Completed for this build only |
 | Four 64-bit exclusive-pair instructions | 177 PCs supported; 8 Unicorn sequences and concurrent host tests pass | Completed within the existing CAS-monitor approximation |
 | LSE variants | 100 guarded PCs remain traps; initial zero flag and 100 LL/SC fallback calls observed | Small-to-medium if a future executed path enables them; unnecessary for the observed start |
-| ICommonStateGetter command 900 | **First observed unimplemented service command; experiment stop** | Small for an explicit host policy; lifecycle semantics and a valid test still required |
-| Other SDK/IPC compatibility | Not tested beyond that stop; trailing command 91 is also unimplemented | Medium-to-large, scope unknown |
+| ICommonStateGetter command 900 | Initially triggered the old stop rule; tolerated in the one authorized continuation | No implementation added; wire-compatible empty success for this bounded startup, full next-program semantics unverified |
+| RomFS input representation | **Final actual blocker:** raw `romfs.bin` absent; reference supplies a directory | Small for separately authorized image preparation, medium for directory-backed storage adaptation |
+| Other SDK/IPC compatibility | One continuation passed 11 logged fallbacks and reached RomFS opening; later semantics unverified | Medium-to-large, scope unknown |
 | TotK NVN / shaders / synchronization | Source inventory only; no TotK device, shader, draw or frame executed | Large / high uncertainty; not a confirmed runtime graphics failure |
 | TotK installer / configuration / controls | Source CLI experiment only; BOTW installer excluded | Medium for product integration; outside this experiment |
 | BOTW | Generation byte equality, full build and opening scene verified | Full progression / physical input / audio remain unverified |
 
-The stop condition is satisfied by the concrete service gap. **No further TotK
-startup or migration work was performed after it.** The experiment establishes
+The earlier stop was the first logged service gap. A later user instruction
+authorized exactly one additional observation with a stricter blocking criterion,
+documented next. The experiment establishes
 that the generator/Cpu contract is not the first hard barrier for this image;
 it does not establish complete TotK support on SavageWind or disprove it.
+
+## One additional iteration — blocking criterion, limit exhausted
+
+The user changed the stop rule after the first observation: confirm command 900,
+permit nonblocking fallbacks, and stop on an actual blocking failure or menu.
+Only **one** additional TotK process was started. No third attempt was made.
+
+### Why command 900 was permitted
+
+The SDK's exported CMIF method at **0x7004ebfbb4** has the suffix
+`SetRequestExitToLibraryAppletAtExecuteNextProgramEnabledEv`; its thunk passes
+command **0x384 (900)** with no method arguments. The libnx contract cited above
+uses a **no-input/no-output** IPC command. The existing Savage default therefore
+returns a correctly shaped empty success result: no fabricated data or handles
+are needed for this call. Its future effect concerns leaving to a library applet
+during a next-program transition, not data required to construct the startup state.
+The reference boot bypasses this SDK initialization sequence entirely.
+
+Conclusion: retaining this success fallback was justified for the **bounded,
+single-program startup observation**. Full program-transition behavior is not
+implemented or declared safe. The additional run empirically passed the call.
+No command-900 handler or state bypass was added.
+
+### What changed for the observation
+
+- `runtime/ipc.c`: a TotK-only, readonly diagnostic logs nonzero CMIF response
+  results with interface, command and caller LR. It does not alter any response.
+- `tools/totk_experiment_run.py`: optional `--policy blocking` records earlier
+  fallbacks, stops on fatal errors, missing NVN implementations, non-normal IPC
+  errors or abnormal process exit. Normal no-message/no-launch-parameter poll
+  results remain logged. Optional frame captures support menu observation.
+- No service implementation, CPU instruction, graphics feature or game data was
+  added/changed for this extra iteration. BOTW's execution behavior is unchanged.
+- Both runtime builds after the diagnostic change completed with exit 0; logs
+  `blocking-policy-build.log` and `botw-ipc-trace-build.log`.
+
+Executed command, once:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 tools/venv/bin/python tools/totk_experiment_run.py \
+  --exe build/totk-run/savagewind --library build/totk-run/swgame.so \
+  --data ../totk-recomp/totk-build/data \
+  --out build/totk-experiment/totk-start-02 \
+  --policy blocking --shots 60,300,600,1200 --seconds 60
+```
+
+### All preceding logged fallback gaps
+
+The transcript is authoritative: `build/totk-experiment/totk-start-02/run.log`.
+It contains these **11** distinct fallback gaps before the fatal error, in order:
+
+| # | Interface / command | Existing fallback |
+| ---: | --- | --- |
+| 1 | ICommonStateGetter 900 | Unhandled, empty success |
+| 2 | ISelfController 91 | Unhandled, empty success |
+| 3 | IWindowController 10 | Unhandled, empty success |
+| 4 | ISelfController 13 | Unhandled, empty success |
+| 5 | ISelfController 16 | Unhandled, empty success |
+| 6 | Service `ectx:aw` | Logging-stub session; no failing command observed |
+| 7 | IParentalControlService 1 | Default success with 16 zero bytes (`runtime/services/misc.c:24`) |
+| 8 | ICommonStateGetter 66 | Unhandled, empty success |
+| 9 | ISelfController 14 | Unhandled, empty success |
+| 10 | ISelfController 11 | Unhandled, empty success |
+| 11 | ISelfController 12 | Unhandled, empty success |
+
+`result.json` records the 10 explicitly marked missing/unhandled entries; the
+source audit adds the generic `(ok)` parental-control default, which is also in
+the original transcript. Existing log-once behavior means this is a list of
+distinct logged gaps, not a count of every repeated invocation. Their presence
+did not stop this particular startup; later semantic correctness is unverified.
+No nonzero CMIF response was logged in this run.
+
+### Actual blocking failure
+
+```text
+FATAL: cannot open /mnt/Dane/Development/totk-recomp/totk-build/data/romfs.bin (set up the game files on the start screen)
+```
+
+`runtime/services/fs.c:586-591` appends `.bin` to `g_romfs_dir` and opens that path
+read-only, failing fatally when it is absent. The supplied reference data has
+`romfs/` and **no `romfs.bin`**. The reference instead mounts `kRomDir` directly
+through HLE (`reference:runtime/hle_fs.cpp:32-43,222`). This is a verified **input
+representation mismatch**, not a demonstrated NVN/shader failure or CPU trap.
+
+Before this failure, the log shows SDK initialization passing the earlier
+fallbacks, a host Vulkan device/swapchain on RADV, a **2140 MB GPU-backed guest
+heap**, and entry into subsdk0/main DT_INIT and constructor processing. This does
+not prove guest graphics execution: no TotK NVN initialization, shader, draw,
+frame or menu was observed. The outline-atomics flag was again **0** after loading.
+
+The runner returned **3**, `reason: first_blocking_behavior`, elapsed **1.685 s**.
+The child exit was **0** after coordinated termination; it does not override the
+recorded fatal error or establish a successful game exit. No screenshot was
+produced. Evidence: `totk-start-02/run.log` and `result.json`.
+
+Current first blocker: **RomFS input compatibility**. Preparing a separate raw
+image with the existing image builder is a small input-preparation task but
+would require permission under the dump-copying restriction and storage space;
+adapting storage to a directory is a medium code task. Neither was done. What
+would happen after supplying that image is **unverified**. Service/graphics
+continuation was not attempted because the one-additional-iteration limit is
+exhausted. Recommendation remains to use the reference for TotK rather than
+claim a completed Savage port; the compiler/early-runtime feasibility result is
+positive and the later rendering risk remains unmeasured.
