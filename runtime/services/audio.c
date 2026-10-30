@@ -1165,19 +1165,23 @@ static void sdk_sleep(Cpu *c, uint64_t ns) {
 // ExecuteAudioRendererRendering calls through the renderer object (whose vtable thunks add 0x70 for the system) before
 // it signals the event. The renderer's mutex (AudioRenderSystem +0x2d0, which Update, Start and Stop take) keeps
 // the game's RequestUpdate from changing voices while a frame is generated.
+// Where each game's sdk keeps what a frame needs: the function that renders one (a symbol, or the renderer's interface
+// slot +0x78 when the sdk has none), the renderer's mutex (system +mutex_off, which Update, Start and Stop take) and
+// the object that function takes (renderer + this_off). TotK's public ExecuteAudioRendererRendering calls the slot, whose
+// thunk adjusts renderer +0x10 to Impl, whose system starts at +0x60; it returns a result, BOTW's does not.
+typedef struct { const char *exec_sym; uint32_t mutex_off, this_off; bool has_result; } SdkAudioAbi;
+static const SdkAudioAbi k_audio_abi_botw = {"_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv", 0x2d0, 0x70, false};
+static const SdkAudioAbi k_audio_abi_totk = {NULL, 0x1f0, 0, true};
+
 static void sdk_render_thread(Cpu *c) {
     SdkRen *r = &g_sdkren;
-    bool botw = game_is_botw();
-    // TotK's public ExecuteAudioRendererRendering calls this interface slot.
-    // Its thunk adjusts renderer +0x10 to Impl, whose system starts at +0x60.
-    uint64_t exec = botw ? guest_sym("_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv")
-                         : LD64(LD64(r->renderer) + 0x78);
+    const SdkAudioAbi *abi = game_is_botw() ? &k_audio_abi_botw : &k_audio_abi_totk;
+    uint64_t exec = abi->exec_sym ? guest_sym(abi->exec_sym) : LD64(LD64(r->renderer) + 0x78);
     uint64_t lock = guest_sym("_ZN2nn2os12SdkMutexType4LockEv");
     uint64_t unlock = guest_sym("_ZN2nn2os12SdkMutexType6UnlockEv");
-    // TotK Update/Start/Stop use system +0x1f0; BOTW uses +0x2d0.
-    uint64_t mutex = r->renderer + 0x70 + (botw ? 0x2d0 : 0x1f0);
-    if (!botw) LOG("[audren-sdk] TotK renderer slot +0x78 -> %llx, mutex %llx, renderer %llx context %llx\n", exec, mutex,
-                   (unsigned long long)r->renderer, (unsigned long long)r->context);
+    uint64_t mutex = r->renderer + 0x70 + abi->mutex_off;
+    if (!abi->exec_sym) LOG("[audren-sdk] renderer slot +0x78 -> %llx, mutex %llx, renderer %llx context %llx\n", exec, mutex,
+                            (unsigned long long)r->renderer, (unsigned long long)r->context);
     uint32_t N = r->samples ? r->samples : 240;
     int target = output_target(r->stream, r->rate, N);
     uint64_t next = plat_now_ns(), frame_ns = (uint64_t)N * 1000000000ull / (r->rate ? r->rate : 48000);
@@ -1203,9 +1207,9 @@ static void sdk_render_thread(Cpu *c) {
         uint64_t t1 = plat_now_ns();
         r->out_n = 0;
         if (r->open) {
-            c->x[0] = botw ? r->renderer + 0x70 : r->renderer;
+            c->x[0] = r->renderer + abi->this_off;
             guest_call(c, exec);
-            if (!botw && c->x[0]) FATAL("[audren-sdk] TotK ExecuteAudioRendererRendering result %#llx\n", c->x[0]);
+            if (abi->has_result && c->x[0]) FATAL("[audren-sdk] ExecuteAudioRendererRendering result %#llx\n", c->x[0]);
         }
         c->x[0] = mutex;
         guest_call(c, unlock);
