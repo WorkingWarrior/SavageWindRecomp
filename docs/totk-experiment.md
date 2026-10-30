@@ -1,5 +1,43 @@
 # TotK on SavageWind: bring-up and experiment log
 
+## Final report (end of the continuation task)
+
+**Result: TotK 1.0.0 now boots on the SavageWind runtime, plays its opening and renders the world.**
+Observed headless (gamescope, RX 9070), `build/totk-experiment/claude-61` and `claude-60`: "Nintendo
+Presents", "Tears of the Kingdom", the opening cutscene in the textured cave (torch, Link, Zelda with the
+"Zelda, Princess of Hyrule" caption and subtitles), then gameplay with HUD hearts and control hints
+(frames 1500-3000). No fatal error in 150 s runs and a 420 s run. No title *menu* was seen: a clean save goes
+straight to the intro; the reference shows the menu only once a save exists.
+
+**What did not work / is not verified**
+- Zelda's close-up: head with a patterned face, body as large flat yellow/cyan polygons (a skinned or
+  compute-built mesh is wrong; Link is fine). White streaks on a mesh near the debris in gameplay. Both
+  undiagnosed (the picks and per-draw logs are in place: `SAVAGEWIND_DEBUG_PICK`, `LOG_DRAW_TEX`).
+- An intermittent SIGSEGV (about 1 start in 12) in SDK audio mixing `f_7004f31b50`, early in boot.
+- Audio output, input, saving, performance (10-30 fps headless), a physical display, anything past the
+  opening cave. 20 more minutes of play or the open world were not exercised.
+
+**Changes (27 commits after 860f372, 35 files, +1738/-26; nothing generated or game-owned committed)**
+| Change | Cost / scope |
+| --- | --- |
+| VAMM budget, ADR continuations, physical-memory intervals, audio renderer, cache info reader (earlier fixes) | kernel, generator, fs, audio |
+| Conditional render + rasterizer discard | cmdbuf.c, exec.c, TotK only |
+| `totk_texels_2d` ReadTexels/WriteTexels (tested against a layout oracle) | objects.c |
+| Region table 1024 -> 65536 | kernel.c, one constant |
+| hwopus decoder service on libopus (`-lopus` on Linux) | new `services/hwopus.c`; BOTW keeps the stub |
+| Compute shaders with the 0x100-byte TotK header | translate.c |
+| VOTE, LEA, VMNMX, RED, ATOM, DADD, DMUL, DFMA, F2F.F64; `shaderFloat64` | translate.c, device.c |
+| `nvnTextureGetViewOffset` (the cause of the magenta terrain) | objects.c, TotK only |
+| Diagnostics: per-draw texture log, page watch, big-read log, RomFS check, runner `--env` | opt-in |
+No change to Cpu, dispatcher, lifter or the BOTW generated code (997 files unchanged by construction).
+BOTW rechecked after every shared change; last run `claude-botw-06` ("Open your eyes..." frame 3100,
+294k draws/interval).
+
+**Recommendation.** Continue on Savage: the remaining defects are specific (one mesh, one race), not
+architectural, and every blocker so far was a missing or stubbed NVN/translator feature. Next: diagnose
+Zelda's mesh with the pick tool, fix the audio race, then run a real scene change (open world) and measure
+performance on a display. The reference remains the playable build until then.
+
 ## Active scope and current result
 
 The later user goal supersedes the bounded/diagnostic-only stops below: continue
