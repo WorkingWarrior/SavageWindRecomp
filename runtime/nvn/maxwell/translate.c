@@ -2286,7 +2286,8 @@ static size_t code_end(const uint8_t *code, size_t n) {
 }
 
 size_t maxwell_binary_size(const uint8_t *blob, size_t max_size, int stage) {
-    size_t head = stage == STAGE_COMPUTE ? 0 : 0x80;
+    // (TotK's compute binaries carry a 0x100-byte header, magic 0x12345679; BOTW's start with code)
+    size_t head = stage == STAGE_COMPUTE ? (max_size >= 4 && *(const uint32_t *)blob == 0x12345679 ? 0x100 : 0) : 0x80;
     if (max_size <= head) return max_size;
     return head + code_end(blob + head, (max_size - head) / 8) * 8;
 }
@@ -2516,8 +2517,9 @@ ShaderInfo *maxwell_translate(const uint8_t *blob, size_t max_size, int stage, c
     for (c->smem_words = 1; c->smem_words < sw && c->smem_words < 8192; c->smem_words *= 2) {}
     const uint8_t *sph = blob + 0x30;
     const uint8_t *code = blob + 0x80;
-    // compute programs have neither the 0x30-byte NVN header nor an SPH: code starts at the blob
-    if (stage == STAGE_COMPUTE) code = blob;
+    // compute programs have neither the 0x30-byte NVN header nor an SPH: code starts at the blob, or after the
+    // 0x100-byte header (magic 0x12345679) TotK's carry
+    if (stage == STAGE_COMPUTE) code = *(const uint32_t *)blob == 0x12345679 ? blob + 0x100 : blob;
     c->code = code;
     if (stage == STAGE_FRAGMENT) {
         c->omap_target = *(const uint32_t *)(sph + 0x48);

@@ -55,6 +55,7 @@ def main():
     ap.add_argument('--trace-svc', action='store_true', help='enable the existing kernel SVC input/output trace')
     ap.add_argument('--policy', choices=('first-missing', 'blocking', 'observe'), default='first-missing',
                     help='observe keeps nonfatal NVN stub logs for bounded diagnostic comparisons')
+    ap.add_argument('--env', action='append', default=[], metavar='SAVAGEWIND_X=V', help='extra SAVAGEWIND_* debug switch (repeatable)')
     ap.add_argument('--shots', default='', help='comma-separated presented frame numbers for visual observation')
     args = ap.parse_args()
     repo = Path(__file__).resolve().parent.parent
@@ -68,6 +69,11 @@ def main():
     env.update(SAVAGEWIND_DATA_ROOT=str(out / 'state'), SAVAGEWIND_SAVE_DIR=str(out / 'state' / 'save'),
                SAVAGEWIND_GAME_LIB=str(args.library.resolve()), SAVAGEWIND_HIDDEN='1',
                SAVAGEWIND_NO_USER_INPUT='1')
+    for item in args.env:
+        key, _, value = item.partition('=')
+        if not key.startswith('SAVAGEWIND_'):
+            ap.error('--env keys must start with SAVAGEWIND_')
+        env[key] = value
     if args.sdk_entry_probe:
         env['SAVAGEWIND_SDK_ENTRY_PROBE'] = '1'
     if args.trace_svc:
