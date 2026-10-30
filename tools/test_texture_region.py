@@ -8,7 +8,7 @@ OUT = ROOT / 'build/totk-experiment/texture-region-tests'
 
 
 def helper_body(source):
-    start = source.index('static void totk_texels_2d(')
+    start = source.index('static bool texels_2d(')
     brace = source.index('{', start)
     depth = 0
     for pos in range(brace, len(source)):
@@ -18,7 +18,7 @@ def helper_body(source):
             depth -= 1
             if depth == 0:
                 return source[start:pos + 1]
-    raise RuntimeError('unterminated totk_texels_2d')
+    raise RuntimeError('unterminated texels_2d')
 
 
 def level_layout(width, height, levels, bw, bh, bpb):
@@ -43,7 +43,7 @@ def gob_byte(xb, y, bpb, width_gobs):
     return off + ((xi >> 5) << 8) + ((yi >> 1) << 6) + (((xi >> 4) & 1) << 5) + ((yi & 1) << 4) + (xi & 15)
 
 
-def make_case(name, bpb, bw, bh, width, height, levels, level, rect, pitch=False, stride=None):
+def make_case(name, bpb, bw, bh, width, height, levels, level, rect, pitch=False, stride=None, clip=False):
     layouts, block_size = level_layout(width, height, levels, bw, bh, bpb)
     if pitch:
         assert levels == 1 and stride and stride >= layouts[0][5]
@@ -72,15 +72,23 @@ def make_case(name, bpb, bw, bh, width, height, levels, level, rect, pitch=False
     nx, ny = (rw + bw - 1) // bw, (rh + bh - 1) // bh
     _, lw, lh, wb, hb, row, _ = layouts[level]
     assert x % bw == 0 and y % bh == 0
-    assert x + rw <= lw and y + rh <= lh
-    assert (rw % bw == 0 or x + rw == lw) and (rh % bh == 0 or y + rh == lh)
+    # clip: the rectangle may reach past the level (the game's last 64-row chunk); only the part inside is stored
+    cw, ch = (min(rw, lw - x), min(rh, lh - y)) if clip else (rw, rh)
+    assert x + cw <= lw and y + ch <= lh
+    assert (cw % bw == 0 or x + cw == lw) and (ch % bh == 0 or y + ch == lh)
+    cnx, cny = (cw + bw - 1) // bw, (ch + bh - 1) // bh
     packed_row = nx * bpb
+    crow = cnx * bpb
     before = bytearray()
     patch = bytearray((i * 47 + 203) & 255 for i in range(packed_row * ny))
     for yy in range(ny):
-        before.extend(linear[level][(by + yy) * row + bx * bpb:(by + yy) * row + bx * bpb + packed_row])
+        if yy >= cny:
+            before.extend(bytes(packed_row))
+            continue
         start = (by + yy) * row + bx * bpb
-        linear[level][start:start + packed_row] = patch[yy * packed_row:(yy + 1) * packed_row]
+        before.extend(linear[level][start:start + crow])
+        before.extend(bytes(packed_row - crow))
+        linear[level][start:start + crow] = patch[yy * packed_row:yy * packed_row + crow]
     expected = bytearray(initial)
     if pitch:
         for yy in range(hb):
@@ -95,8 +103,12 @@ def make_case(name, bpb, bw, bh, width, height, levels, level, rect, pitch=False
     # Expected packed read after the write.
     after = bytearray()
     for yy in range(ny):
+        if yy >= cny:
+            after.extend(bytes(packed_row))
+            continue
         start = (by + yy) * row + bx * bpb
-        after.extend(linear[level][start:start + packed_row])
+        after.extend(linear[level][start:start + crow])
+        after.extend(bytes(packed_row - crow))
     return dict(name=name, bpb=bpb, bw=bw, bh=bh, width=width, height=height, levels=levels, level=level,
                 rect=rect, pitch=pitch, stride=stride or 0, initial=initial, patch=patch, before=before,
                 expected=expected, after=after, levels_mask=0x80000000 | (1 << level))
@@ -126,13 +138,13 @@ def c_case(case, index):
         t.flags = {0x10 if case['pitch'] else 0}; t.stride = {case['stride']}ull;
         t.addr = (uint64_t)(uintptr_t)storage; t.cpu_levels = 0x80000000u;
         memset(out, 0xa5, sizeof out);
-        totk_texels_2d(&t, &v, region, out, false);
+        texels_2d(&t, &v, region, out, false);
         assert(memcmp(out, {n}_before, sizeof out) == 0);
-        totk_texels_2d(&t, &v, region, (uint8_t *){n}_patch, true);
+        texels_2d(&t, &v, region, (uint8_t *){n}_patch, true);
         assert(memcmp(storage, {n}_expected, sizeof storage) == 0);
         assert(t.cpu_levels == 0x{case['levels_mask']:08x}u);
         memset(out, 0x5a, sizeof out);
-        totk_texels_2d(&t, &v, region, out, false);
+        texels_2d(&t, &v, region, out, false);
         assert(memcmp(out, {n}_after, sizeof out) == 0);
     }}
 '''
@@ -150,6 +162,11 @@ def main():
         make_case('bc1_blocks', 8, 4, 4, 36, 24, 2, 0, (4, 4, 20, 12)),
         make_case('bc1_edge', 8, 4, 4, 36, 24, 2, 1, (8, 4, 4, 4)),
         make_case('pitch_padding', 4, 1, 1, 19, 7, 1, 0, (3, 1, 7, 4), pitch=True, stride=19 * 4 + 20),
+        make_case('r8_full_level', 1, 1, 1, 70, 17, 2, 0, (0, 0, 70, 17)),
+        make_case('rgba8_full_level', 4, 1, 1, 35, 13, 1, 0, (0, 0, 35, 13)),
+        make_case('bc1_full_level', 8, 4, 4, 36, 24, 2, 0, (0, 0, 36, 24)),
+        make_case('r8_past_end', 1, 1, 1, 64, 20, 1, 0, (0, 16, 64, 8), clip=True),
+        make_case('rgba8_past_end', 4, 1, 1, 35, 13, 1, 0, (0, 8, 35, 8), clip=True),
     ]
     preamble = r'''#include <assert.h>
 #include <stdbool.h>
