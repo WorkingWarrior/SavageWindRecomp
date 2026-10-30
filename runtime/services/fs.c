@@ -563,6 +563,12 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
         ssize_t n = romfs_read(st->fd, (uint8_t *)(uintptr_t)b->addr, size, off);
+        if (!game_is_botw() && size >= (1u << 20)) {
+            static int big_logged;
+            if (big_logged++ < 40)
+                LOG("[fs] big read %s: dst %llx image offset %llx size %llu (buffer %llu) -> %lld\n", romfs_file_at(off) ? romfs_file_at(off) : "?", (unsigned long long)b->addr,
+                    (unsigned long long)off, (unsigned long long)size, (unsigned long long)b->size, (long long)n);
+        }
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         {
             const char *path = romfs_file_at(off);

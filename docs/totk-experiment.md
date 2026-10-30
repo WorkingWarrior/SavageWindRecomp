@@ -335,6 +335,33 @@ Also observed: an intermittent (about 1 start in 8) SIGSEGV at address 0 in SDK 
 mixing `f_7004f31b50`, during early boot; not investigated. Still unfixed: FP64 (DMUL) in one
 vertex shader. BOTW rechecked (`claude-botw-03`: "Open your eyes..." frame 3100).
 
+### Session 2, part 4: reference comparison of the magenta terrain (stopped after three attempts)
+
+With permission the reference was run once (its own `run.sh`, state and screenshots in
+`build/totk-experiment/ref-0*`; no reference file modified). On a clean save it plays the same
+opening and renders the same cave **correctly textured** (`ref-02`), so this is a Savage fault.
+
+Findings:
+- The two arrays (#1161, #1162, 121 layers) are filled completely in the reference before their first
+  use (frame 146: 41.2 of 42.6 MB nonzero, `LARECOMP_TEX_WATCH_FMT`). In Savage layer 0 only.
+- Their source is `TexToGo/MaterialAlb.txtg` (36.7 MB) and `MaterialCmb.txtg` (9.9 MB), a packed
+  format (magic `6PK0`). Savage reads both **completely and correctly** (`[fs] big read`, full sizes),
+  into buffers at `7154001000` / `7156401000`; the raw image matches the source for all 304207
+  files (`tools/check_romfs_image.py`).
+- A page watchpoint on the MaterialCmb buffer (`SAVAGEWIND_WATCH_PAGE`) shows the guest **never reads
+  the buffer after the read** in 30 s: the unpack step does not start. All other threads idle on arbiters.
+  This looks like a lost wake-up or an unsatisfied condition between the loader and the unpacking
+  job, not a data or graphics problem.
+
+Tried without effect (three distinct attempts): larger full-hash budget for big textures; keeping the
+contents of already-mapped pages in MapPhysicalMemory (no overlap ever occurs); serving the reference's
+RomFS overlay (`SAVAGEWIND_ROMFS_OVERLAY`, replaces RESTBL and two files). All three reverted or
+shown unnecessary (the overlay is only an env var).
+
+New debugging aids: `tools/check_romfs_image.py`, `SAVAGEWIND_WATCH_PAGE=<addr>:<len>` (+
+`_DELAY`, with `SAVAGEWIND_WATCH_WRITES`), `[fs] big read` and `GetEntryType` missing-path logs for TotK.
+BOTW rechecked (`claude-botw-04`, 294k draws/interval).
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in

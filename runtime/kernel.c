@@ -1335,6 +1335,18 @@ static void *watch_poll(void *arg) {
     return NULL;
 }
 
+extern void watch_retarget(uint64_t lo, uint64_t hi);
+static void *page_watch_start(void *arg) {  // (a moment after boot: the memory it names has to exist by then)
+    char *e = arg;
+    uint64_t lo = strtoull(e, &e, 16), len = *e == ':' ? strtoull(e + 1, NULL, 16) : 0x1000;
+    const char *d = getenv("SAVAGEWIND_WATCH_PAGE_DELAY");  // seconds (default 3)
+    double secs = d ? atof(d) : 3.0;
+    struct timespec ts = {(time_t)secs, (long)((secs - (time_t)secs) * 1e9)};
+    nanosleep(&ts, NULL);
+    watch_retarget(lo, lo + len);
+    return NULL;
+}
+
 void kernel_init(void) {
     static bool watch_started;
     const char *w = getenv("SAVAGEWIND_WATCH");
@@ -1353,6 +1365,12 @@ void kernel_init(void) {
             (unsigned long long)watch_len, (unsigned long long)deref_len, (unsigned long long)deref_off);
         pthread_t th;
         pthread_create(&th, NULL, watch_poll, NULL);
+    }
+    static bool page_watch_started;
+    if (!page_watch_started && getenv("SAVAGEWIND_WATCH_PAGE")) {  // <addr hex>:<len hex>: who writes there (see SAVAGEWIND_WATCH_WRITES)
+        page_watch_started = true;
+        pthread_t th;
+        pthread_create(&th, NULL, page_watch_start, (void *)getenv("SAVAGEWIND_WATCH_PAGE"));
     }
     static bool dump_started;
     if (!dump_started && getenv("SAVAGEWIND_THREAD_DUMP_AT")) {
