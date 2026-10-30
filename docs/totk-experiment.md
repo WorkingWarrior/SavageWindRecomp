@@ -208,6 +208,35 @@ frame 3100 (visually checked), with draw summaries in its 100-second run. The
 (new reader handler, fsp command 62), runner negative-poll classification, this
 report. No generator/Cpu changes. 75 GiB free before builds.
 
+### Fix 06: conditional NVN command recorded; first TotK image observed
+
+TotK's SetRenderEnableConditional now records mode/address using the reference's
+encoding (2/3 = equal/not equal, ordinary SetRenderEnable stays 0/1). The Vulkan
+executor supports that predicate for TotK and suppresses draw/clear operations
+when false; ordinary boolean enable is respected. It completes earlier GPU
+work and applies pending counter readbacks before loading the two 64-bit values
+at +0 and +16. The reference itself warns that unsynchronized loads may see
+stale values. No no-op or assumed-success render condition was introduced.
+BOTW retains the prior command behavior. The new render state resets on reboot.
+
+Both builds pass; all 997 generated BOTW files remain identical.
+`fix06-botw-headless` again visibly renders "Open your eyes…" at frame 3100,
+with draw summaries during the 100-second observation. Cost: `nvn/cmdbuf.c`
+(conditional recorder), `nvn/vulkan/exec.c` (exec_list and vk_exec_reset);
+no header, Cpu or generator changes. Predicate values/skipped operations have
+**not yet been observed in execution**; this run verifies passing the recording
+boundary, not conditional rendering throughout the game. The added GPU wait's
+performance cost has not been measured.
+
+**First TotK rendering evidence:** `fix06-conditional-render-run`, screenshot
+`state/build/frames/window_00060.png`, visibly shows **Nintendo Presents**. The
+renderer logs frame 63 at t=8.2, with **101 draws, 126 passes, six shader
+compilations** in the interval. This is a rendered startup screen, not menu or
+world acceptance. The run stops at 11.366 s on **ReadTexels not implemented**;
+concurrent logs show partial WriteTexels missing for texture #214, 5120x5120,
+level 0, regions 1024x64x1. CPU texture-region I/O is the next repair. Protected
+inputs remain untouched; 75 GiB free before both builds.
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in

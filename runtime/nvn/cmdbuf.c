@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "nvn.h"
+#include "../game_profile.h"
 
 #define JUMP_RESERVE (sizeof(CmdRec) + 8)
 
@@ -530,7 +531,14 @@ PLAIN(nvnCommandBufferSetLineWidth, CMD_SET_LINE_WIDTH)
 PLAIN(nvnCommandBufferSetPointSize, CMD_SET_POINT_SIZE)
 PLAIN(nvnCommandBufferSetSampleMask, CMD_SET_SAMPLE_MASK)
 PLAIN(nvnCommandBufferSetRenderEnable, CMD_SET_RENDER_ENABLE)
-NVN(nvnCommandBufferSetRenderEnableConditional) { (void)c; UNIMPLEMENTED_ONCE("SetRenderEnableConditional"); }
+NVN(nvnCommandBufferSetRenderEnableConditional) {
+    if (game_is_botw()) { UNIMPLEMENTED_ONCE("SetRenderEnableConditional"); return; }
+    Snap s = snap(c);
+    if (s.x[1] > 1) FATAL("[nvn] invalid conditional render mode %llu\n", s.x[1]);
+    CmdRec *r = record(c, CMD_SET_RENDER_ENABLE, 0, &s);
+    r->x[0] = 2 + s.x[1];  // equal / not equal; 0/1 remain the ordinary boolean enable
+    r->x[1] = s.x[2];      // two value/timestamp counter records, 16 bytes apart
+}
 PLAIN(nvnCommandBufferSetDepthClamp, CMD_SET_DEPTH_CLAMP)
 NVN(nvnCommandBufferSetRasterizerDiscard) { (void)c; UNIMPLEMENTED_ONCE("SetRasterizerDiscard"); }
 NVN(nvnCommandBufferSetConservativeRasterEnable) { (void)c; }
