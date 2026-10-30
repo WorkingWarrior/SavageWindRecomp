@@ -1154,6 +1154,18 @@ static void sdk_process(Cpu *c) {
     sdk_take_sink(&g_sdkren, list);
 }
 
+// TotK: the first AudioRenderSystem::Update (the game's RequestUpdate) sets up the mixes' buffers. A frame generated
+// before it runs a mix command with a null buffer table (SIGSEGV in the sdk, about one start in a dozen); the renderer
+// service on the console renders nothing until its first update.
+static GuestFn g_sdk_update;
+static _Atomic bool g_sdk_updated;
+static void sdk_update(Cpu *c) {
+    uint64_t lr = c->x[30];
+    g_sdk_update(c);
+    c->x[30] = lr;
+    atomic_store(&g_sdk_updated, true);
+}
+
 // svcSleepThread: the core goes to other threads meanwhile, and a reboot stops the thread there.
 static void sdk_sleep(Cpu *c, uint64_t ns) {
     c->x[0] = ns;
@@ -1176,7 +1188,8 @@ static void sdk_render_thread(Cpu *c) {
     uint64_t unlock = guest_sym("_ZN2nn2os12SdkMutexType6UnlockEv");
     // TotK Update/Start/Stop use system +0x1f0; BOTW uses +0x2d0.
     uint64_t mutex = r->renderer + 0x70 + (botw ? 0x2d0 : 0x1f0);
-    if (!botw) LOG("[audren-sdk] TotK renderer slot +0x78 -> %llx, mutex %llx\n", exec, mutex);
+    if (!botw) LOG("[audren-sdk] TotK renderer slot +0x78 -> %llx, mutex %llx, renderer %llx context %llx\n", exec, mutex,
+                   (unsigned long long)r->renderer, (unsigned long long)r->context);
     uint32_t N = r->samples ? r->samples : 240;
     int target = output_target(r->stream, r->rate, N);
     uint64_t next = plat_now_ns(), frame_ns = (uint64_t)N * 1000000000ull / (r->rate ? r->rate : 48000);
@@ -1185,6 +1198,11 @@ static void sdk_render_thread(Cpu *c) {
     while (r->open) {
         if (*(volatile const uint32_t *)(uintptr_t)(r->context + 0x14)) {  // not started (StartAudioRenderer clears it)
             sdk_sleep(c, 5000000);
+            next = plat_now_ns();
+            continue;
+        }
+        if (!botw && !atomic_load(&g_sdk_updated)) {  // (nothing to render before the game's first update)
+            sdk_sleep(c, 2000000);
             next = plat_now_ns();
             continue;
         }
@@ -1313,6 +1331,12 @@ HLE_FUNC("_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11Sy
     SdkRen *r = &g_sdkren;
     if (r->open) { LOG("[audren-sdk] a second renderer: not rendered\n"); return; }
     uint64_t proc = guest_sym("_ZN2nn5audio3dsp20CommandListProcessor7ProcessEv");
+    if (!game_is_botw() && !g_sdk_update) {
+        uint64_t upd = guest_sym("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm");
+        g_sdk_update = dispatch_lookup(upd);
+        if (!g_sdk_update) FATAL("[audren-sdk] AudioRenderSystem::Update %llx isn't recompiled\n", (unsigned long long)upd);
+        hle_override(upd, sdk_update, "AudioRenderSystem::Update");
+    }
     static uint64_t hooked;
     if (hooked != proc) {
         g_sdk_process = dispatch_lookup(proc);
