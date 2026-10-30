@@ -954,7 +954,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (size > b->size) size = b->size;
         kernel_watch_write("romfs read", b->addr, size);
         ssize_t n = romfs_read(m, (uint8_t *)(uintptr_t)b->addr, size, off);
-        if (!game_is_botw() && size >= (1u << 20)) {
+        if (size >= (1u << 20)) {
             static int big_logged;
             if (big_logged++ < 40)
                 LOG("[fs] big read %s: dst %llx image offset %llx size %llu (buffer %llu) -> %lld\n", "-", (unsigned long long)b->addr,
@@ -1207,7 +1207,7 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         struct stat sb;
         if (stat(p, &sb)) {
             static int missing_logged;
-            if (!game_is_botw() && missing_logged++ < 40) LOG("[fs] GetEntryType: no such path %s\n", p);
+            if (missing_logged++ < 40) LOG("[fs] GetEntryType: no such path %s\n", p);
             resp->result = FS_PATH_NOT_FOUND;
             break;
         }

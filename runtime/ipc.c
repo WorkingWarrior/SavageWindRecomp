@@ -203,9 +203,17 @@ int ipc_handle_request(Cpu *c, uint32_t handle) {
             if (!target) { LOG("[ipc] domain object %u missing\n", req.domain_obj); return 0xE401; }
         }
         target->handler(target, &req, &resp);
-        if (!game_is_botw() && resp.result)
-            LOG("[experiment] IPC error %s cmd %u result %#x lr %llx\n",
-                target->name, req.cmd, resp.result, c->x[30]);
+        if (resp.result) {  // (each distinct service / command / result / caller once: the game retries and probes a lot)
+            static struct { const char *name; uint32_t cmd, result; uint64_t lr; } seen[128];
+            static int nseen;
+            int n = __atomic_load_n(&nseen, __ATOMIC_RELAXED), dup = 0;
+            for (int i = 0; i < n && i < 128; i++)
+                dup |= seen[i].name == target->name && seen[i].cmd == req.cmd && seen[i].result == resp.result && seen[i].lr == c->x[30];
+            if (!dup && (n = __atomic_fetch_add(&nseen, 1, __ATOMIC_RELAXED)) < 128) {
+                seen[n].name = target->name, seen[n].cmd = req.cmd, seen[n].result = resp.result, seen[n].lr = c->x[30];
+                LOG("[experiment] IPC error %s cmd %u result %#x lr %llx\n", target->name, req.cmd, resp.result, c->x[30]);
+            }
+        }
     } else if (req.type == 5 || req.type == 7) {  // control
         req.cmd = *(uint32_t *)(payload + 8);
         LOG("[ipc] control %u on %s (handle %x)\n", req.cmd, sess->svc->name, handle);
