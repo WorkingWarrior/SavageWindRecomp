@@ -313,7 +313,7 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
 
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
     uint64_t commit_addr = addr, commit_size = size;
-    if (!game_is_botw() && type == 7) {
+    if (type == 7) {
         // SDK VAMM commits small adjacent ranges. QueryMemory describes a
         // contiguous mapping, not one bookkeeping entry per SVC invocation.
         for (int i = 0; i < nregions;) {
@@ -1144,8 +1144,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[0] = R_OK;
         break;
     case 0x2D:  // UnmapPhysicalMemory
-        if (game_is_botw()) region_remove(x[0]);
-        else physical_region_remove(x[0], x[1]);
+        physical_region_remove(x[0], x[1]);
         x[0] = R_OK;
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;
