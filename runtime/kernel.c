@@ -274,7 +274,8 @@ static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
 
 // ------------------------------------------------------------------ memory map
 typedef struct { uint64_t addr, size; uint32_t type, perm; } Region;
-static Region regions[1024];
+#define MAX_REGIONS 0x10000  // (a game's physical-memory heap can fragment into many small mappings)
+static Region regions[MAX_REGIONS];
 static int nregions;
 static uint64_t heap_size;
 static uint64_t tls_next = TLS_BASE;
@@ -305,7 +306,7 @@ static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t per
             } else i++;
         }
     }
-    if (nregions == 1024) FATAL("too many regions\n");
+    if (nregions == MAX_REGIONS) FATAL("too many regions\n");
     plat_commit(commit_addr, commit_size);  // back only the requested pages, preserving existing contents
     int i = nregions++;
     while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
@@ -336,7 +337,7 @@ static void physical_region_remove(uint64_t addr, uint64_t size) {
         if (addr <= r->addr) { r->addr = end; r->size = rend - end; }
         else if (end >= rend) r->size = addr - r->addr;
         else {
-            if (nregions == 1024) FATAL("too many regions\n");
+            if (nregions == MAX_REGIONS) FATAL("too many regions\n");
             memmove(r + 2, r + 1, (nregions - i - 1) * sizeof *r);
             r[1] = (Region){end, rend - end, r->type, r->perm};
             r->size = addr - r->addr;
