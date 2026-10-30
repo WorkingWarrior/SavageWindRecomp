@@ -11,6 +11,7 @@
 #include "../hle.h"
 #include "../settings.h"
 #include "../ipc.h"
+#include "../game_profile.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
 // Ryujinx's AudioRenderer (VoiceState / DataSourceHelper / StateUpdater, copies in notes/ryujinx_audio).
@@ -1166,9 +1167,16 @@ static void sdk_sleep(Cpu *c, uint64_t ns) {
 // the game's RequestUpdate from changing voices while a frame is generated.
 static void sdk_render_thread(Cpu *c) {
     SdkRen *r = &g_sdkren;
-    uint64_t exec = guest_sym("_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv");
+    bool botw = game_is_botw();
+    // TotK's public ExecuteAudioRendererRendering calls this interface slot.
+    // Its thunk adjusts renderer +0x10 to Impl, whose system starts at +0x60.
+    uint64_t exec = botw ? guest_sym("_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv")
+                         : LD64(LD64(r->renderer) + 0x78);
     uint64_t lock = guest_sym("_ZN2nn2os12SdkMutexType4LockEv");
     uint64_t unlock = guest_sym("_ZN2nn2os12SdkMutexType6UnlockEv");
+    // TotK Update/Start/Stop use system +0x1f0; BOTW uses +0x2d0.
+    uint64_t mutex = r->renderer + 0x70 + (botw ? 0x2d0 : 0x1f0);
+    if (!botw) LOG("[audren-sdk] TotK renderer slot +0x78 -> %llx, mutex %llx\n", exec, mutex);
     uint32_t N = r->samples ? r->samples : 240;
     int target = output_target(r->stream, r->rate, N);
     uint64_t next = plat_now_ns(), frame_ns = (uint64_t)N * 1000000000ull / (r->rate ? r->rate : 48000);
@@ -1188,14 +1196,15 @@ static void sdk_render_thread(Cpu *c) {
             if (now - next > 100000000) next = now;  // (more than 100 ms late: don't catch up)
             next += frame_ns;
         }
-        uint64_t mutex = r->renderer + 0x70 + 0x2d0, t0 = plat_now_ns();
+        uint64_t t0 = plat_now_ns();
         c->x[0] = mutex;
         guest_call(c, lock);
         uint64_t t1 = plat_now_ns();
         r->out_n = 0;
         if (r->open) {
-            c->x[0] = r->renderer + 0x70;
+            c->x[0] = botw ? r->renderer + 0x70 : r->renderer;
             guest_call(c, exec);
+            if (!botw && c->x[0]) FATAL("[audren-sdk] TotK ExecuteAudioRendererRendering result %#llx\n", c->x[0]);
         }
         c->x[0] = mutex;
         guest_call(c, unlock);

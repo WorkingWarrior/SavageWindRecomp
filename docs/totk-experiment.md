@@ -141,6 +141,35 @@ Cost: `runtime/kernel.c` (`region_add`, new `physical_region_remove`, SVC 0x2d),
 `tools/test_physical_regions.py`. No generator/Cpu/dispatcher change; no limit
 increase. Disk free before both builds: 75 GiB.
 
+### Fix 04 verified past symbol lookup: TotK audio renderer interface
+
+TotK does not export BOTW's AudioRenderSystem render method. Its public
+`ExecuteAudioRendererRendering` (`f_7004ee9a50`) invokes renderer vtable +0x78;
+the observed target `f_7004f16418` adjusts +0x10 to AudioRendererImpl, whose
+`f_7004f158c4` adds +0x60 to reach AudioRenderSystem. Its calls to
+GenerateCommand and CommandListProcessor::Setup/Process were resolved against
+the SDK's actual JUMP_SLOT symbols. `AudioRenderSystem::Update`
+(`f_7004f14c74`) locks system +0x1f0, confirmed by its Lock/Unlock PLT bindings.
+The existing worker now uses this interface and matching mutex for TotK;
+BOTW retains its original direct method and system +0x2d0 mutex.
+
+Both builds pass; BOTW's 997 generated files remain identical and
+`fix04-botw-headless` again visibly renders "Open your eyes…" at frame 3100
+with draw counts in its 100-second log. Cost: one source file,
+`runtime/services/audio.c`, one changed function `sdk_render_thread` plus the
+profile include; no generator/ABI change. SDK/C hardware audio playback and
+DeviceSink format correctness for TotK remain **UNVERIFIED**.
+
+TotK `fix04-audio-interface-run` logs renderer target `0x7004f16418` and mutex
+`0x7005a67360`, passes the absent-symbol boundary, mounts its isolated save and
+starts more workers. The next failure is SIGSEGV reading address 0 in
+`f_7004deb36c+0x372`, guest LR `0x7004deb43c`, after the existing `fsp-srv`
+command 62 default returned success without an object. Causal IPC decoding is
+under investigation. The process exits -6; reported elapsed 143.949 s includes
+crash/core handling and is not a boot-to-menu time. No TotK frame/menu yet.
+Subsequent isolated launches disable core-file output (`ulimit -c 0`) while
+preserving the runtime's text crash diagnostics.
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in
