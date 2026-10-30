@@ -4899,6 +4899,20 @@ static void debug_draw(Prog *pr, CmdRec *r, bool indexed) {
             LOG("\n");
         }
     }
+    if (g_debug_frame && getenv("SAVAGEWIND_LOG_DRAW_TEX")) {  // every draw of a debug frame: pass, shaders, target, textures
+        char tb[900]; int o = 0;
+        for (int i = 0; i < pr->fi->ntex && o < 800; i++) {
+            NvnTexture *t = shader_texture_object(1, &pr->fi->tex[i]);
+            TexBackend *b = t ? (TexBackend *)t->backend : NULL;
+            o += snprintf(tb + o, sizeof tb - o, " [%d:#%llu %ux%u f%#x g%d u%d]", i, t ? (unsigned long long)t->debug_id : 0ull,
+                          t ? t->width : 0, t ? t->height : 0, t ? t->format : 0, b ? b->gpu_owned : -1, b ? b->uploaded : -1);
+        }
+        LOG("[dtex] pass %d vs %llx fs %016llx rt0 #%llu %ux%u scissor %d,%d %dx%d%s\n", debug_pass_no,
+            (unsigned long long)st.program->stages[0].code_addr, (unsigned long long)g_cur_fs_hash,
+            st.rt.ncolor && st.rt.color[0] ? (unsigned long long)st.rt.color[0]->debug_id : 0ull,
+            st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->width : 0, st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->height : 0,
+            st.scissor[0][0], st.scissor[0][1], st.scissor[0][2], st.scissor[0][3], tb);
+    }
     {   // SAVAGEWIND_DEBUG_TEXDUMP=<fs>[,...] (see FsSel): the first such draw of a debug frame saves its fragment
         // and vertex textures (build/dtex_<hash>_<i>... / _v<i>..., see debug_save_channels; depth as .pgm) and logs
         // its vertex layout, its first vertices and its uniform buffers

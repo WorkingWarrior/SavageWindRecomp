@@ -797,8 +797,8 @@ static void totk_texels_2d(NvnTexture *t, const NvnTextureView *v, const int32_t
     bool full_write = write && !r[0] && !r[1] && (uint32_t)r[3] == l.w && (uint32_t)r[4] == l.h;
     if (gpu_owned && !full_write) FATAL("[nvn] TotK texel copy of GPU-owned texture #%llu needs image readback\n",
                                        (unsigned long long)t->debug_id);
-    static int logged;
-    if (logged++ < 8)
+    static int logged, logged_big;
+    if (logged++ < 8 || (t->width >= 1024 && logged_big++ < 80))
         LOG("[nvn] TotK %sTexels %s-owned texture #%llu %ux%u f%#x target %u level %u rect %d,%d %dx%d\n",
             write ? "Write" : "Read", gpu_owned ? "GPU" : "CPU", (unsigned long long)t->debug_id, t->width, t->height, t->format, t->target,
             level, r[0], r[1], r[3], r[4]);

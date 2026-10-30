@@ -306,6 +306,35 @@ DMUL (0x5c80, FP64); the reference needs F64 support (DADD/DMUL/DFMA, F2F.F64) f
 pipelines compile. BOTW rechecked after these changes (`claude-botw-02`,
 "Open your eyes..." at frame 3100, 296k draws/interval).
 
+### Session 2, part 3: magenta world (diagnosed to the data, not fixed)
+
+Frames over 420 s (`claude-28`) show the cave and Link standing with the dialogue box
+("Link! Has something caught your attention?") but the geometry is saturated magenta,
+and it does not clear with time.
+
+Trace (`SAVAGEWIND_DEBUG_PICK`, `LOG_FS_CB`, `DEBUG_TEXDUMP*`, the new opt-in
+`SAVAGEWIND_LOG_DRAW_TEX`): the G-buffer albedo is magenta where the terrain shader
+`59531823a3265cec` draws. That shader samples ASTC 8x8 texture arrays #1162 (512x512)
+and #1161 (1024x1024), 121 layers each, at a layer taken from a material table (cbuffer
+16, populated and sane: layers 84, 93, 113 ...). Only **layer 0 holds data**; layers
+1..120 are all zero in guest memory (checked at upload time up to frame 300 and by a
+memory watch on layer 1 for 120 s), and an all-zero ASTC block decodes as the error
+colour, magenta. Nothing writes those layers: no WriteTexels, no buffer/texture copy,
+no GPU surface store (neither translator supports SUST). It is not the ASTC decoder (identical
+to the reference's), the upload hashing (a larger full-hash budget changed nothing,
+reverted), or the 5120x5120 mask atlas #214 (only its first 1024x1024 tile is ever
+written, by design of the observed 1024x64 copies).
+
+Worker threads are idle on arbiters (`SAVAGEWIND_THREAD_DUMP_AT`), RomFS reads stop at
+2048 reads / 296 MB, and the only missing paths are save files (new game). So the game
+does not request the layers in this run. **Open question:** what fills these layers in
+the reference (streaming that depends on something Savage does not provide?). Next step:
+run the reference once on the same scene with a watch on its layer memory.
+
+Also observed: an intermittent (about 1 start in 8) SIGSEGV at address 0 in SDK audio
+mixing `f_7004f31b50`, during early boot; not investigated. Still unfixed: FP64 (DMUL) in one
+vertex shader. BOTW rechecked (`claude-botw-03`: "Open your eyes..." frame 3100).
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in

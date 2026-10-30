@@ -755,7 +755,12 @@ static void filesystem(Service *s, IpcReq *req, IpcResp *resp) {
         break;
     case 7: {  // GetEntryType
         struct stat sb;
-        if (stat(p, &sb)) { resp->result = FS_PATH_NOT_FOUND; break; }
+        if (stat(p, &sb)) {
+            static int missing_logged;
+            if (!game_is_botw() && missing_logged++ < 40) LOG("[fs] GetEntryType: no such path %s\n", p);
+            resp->result = FS_PATH_NOT_FOUND;
+            break;
+        }
         OUT(uint32_t, 0) = S_ISDIR(sb.st_mode) ? 0 : 1;
         resp_size(resp, 4);
         break;
