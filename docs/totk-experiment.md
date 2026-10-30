@@ -1,5 +1,11 @@
 # TotK on SavageWind: bounded research experiment
 
+Later, separately authorized diagnostics are recorded in
+[VammManager entry probe](totk-vamm-entry-probe.md). That task used an already
+existing local raw RomFS image, ran TotK once, and observed AllocateAddressRegion
+with a zero +0x40 field immediately before SIGSEGV. It added no behavioral repair;
+the result below describes the earlier bounded feasibility phase.
+
 ## Final result — one additional iteration reached a RomFS input failure
 
 **TotK 1.0.0 was generated, compiled, linked, loaded and started on SavageWind's

@@ -1,15 +1,61 @@
 // Function-entry profiler. SAVAGEWIND_FNPROF=<from>:<to> counts guest function entries (every generated
 // function calls FN_ENTER) between those presented frames, then writes build/fnprof.txt (addr count, most
 // called first). Diffing two runs shows which game functions a change brings in; counts also show hot code.
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef __linux__
+#include <sys/uio.h>
+#include <unistd.h>
+#endif
 
+#include "game_sites.h"
 #include "hle.h"
+#include "kernel.h"
 #include "platform.h"
 
 volatile int g_fnprof;
+
+// Opt-in, once per method: use the already emitted FN_ENTER hook. No generated
+// code or CPU header change. The BOTW 1.9.0 addresses match the same SDK exports.
+static bool sdk_probe_on, sdk_probe_only;
+static _Atomic uint8_t sdk_probe_done[2];
+
+static void sdk_entry_probe(uint64_t pc, uint64_t x0) {
+    static const uint64_t totk[2] = {0x7004e3d1d0ull, 0x7004e3d3d4ull};
+    static const uint64_t botw[2] = {0x7002649df0ull, 0x7002649f70ull};
+    static const char *names[2] = {"AllocateAddressRegion", "AllocateMemory"};
+    if (game_is_botw() && strcmp(g_game_version, "1.9.0")) return;
+    const uint64_t *addrs = game_is_botw() ? botw : totk;
+    for (int i = 0; i < 2; i++) {
+        if (pc != addrs[i] || atomic_exchange_explicit(&sdk_probe_done[i], 1, memory_order_relaxed)) continue;
+        uint64_t field = 0;
+        bool readable = false;
+#ifdef __linux__
+        // Read exactly LD64(x0+0x40), without introducing another SIGSEGV if x0
+        // itself is invalid. A failed read is reported as unreadable, never 0.
+        if (x0 <= UINT64_MAX - 0x48) {
+            struct iovec dst = {&field, sizeof field};
+            struct iovec src = {(void *)(uintptr_t)(x0 + 0x40), sizeof field};
+            readable = process_vm_readv(getpid(), &dst, 1, &src, 1, 0) == (ssize_t)sizeof field;
+        }
+#endif
+        KThread *t = kernel_current_thread();
+        if (readable)
+            LOG("[sdk-entry-probe] %s VammManager::%s f_%llx x0=%016llx LD64(x0+0x40)=%016llx guest_tid=%llu handle=%#x\n",
+                game_profile_name(), names[i], (unsigned long long)pc, (unsigned long long)x0,
+                (unsigned long long)field, (unsigned long long)(t ? t->id : 0), t ? t->handle : 0);
+        else
+            LOG("[sdk-entry-probe] %s VammManager::%s f_%llx x0=%016llx LD64(x0+0x40)=unreadable guest_tid=%llu handle=%#x\n",
+                game_profile_name(), names[i], (unsigned long long)pc, (unsigned long long)x0,
+                (unsigned long long)(t ? t->id : 0), t ? t->handle : 0);
+        fflush(stderr);
+    }
+}
 
 #define NSLOT (1 << 18)
 static struct { _Atomic uint64_t addr; _Atomic uint64_t count; } slots[NSLOT];
@@ -90,6 +136,10 @@ static void args_check(uint64_t a, uint64_t lr) {
 }
 
 void fnprof_hit(uint64_t a, uint64_t lr, uint64_t x0) {
+    if (sdk_probe_on) {
+        sdk_entry_probe(a, x0);
+        if (sdk_probe_only) return;
+    }
     if (bt_n) bt_check(a, lr, x0);
     if (args_n) args_check(a, lr);
     uint32_t h = (uint32_t)((a >> 2) * 0x9E3779B1u) & (NSLOT - 1);
@@ -136,4 +186,8 @@ void fnprof_frame(uint64_t frame) {
 __attribute__((constructor)) static void fnprof_early(void) {
     const char *e = getenv("SAVAGEWIND_FNPROF");
     if (e && e[0] == '0' && e[1] == ':') g_fnprof = 1;
+    const char *probe = getenv("SAVAGEWIND_SDK_ENTRY_PROBE");
+    sdk_probe_on = probe && !strcmp(probe, "1");
+    sdk_probe_only = sdk_probe_on && (!e || !*e);
+    if (sdk_probe_on) g_fnprof = 1;
 }

@@ -44,7 +44,10 @@ def main():
     ap.add_argument('--data', required=True, type=Path)
     ap.add_argument('--out', required=True, type=Path)
     ap.add_argument('--seconds', type=float, default=60)
-    ap.add_argument('--policy', choices=('first-missing', 'blocking'), default='first-missing')
+    ap.add_argument('--game', choices=('totk', 'botw'), default='totk')
+    ap.add_argument('--sdk-entry-probe', action='store_true', help='enable the opt-in VammManager entry diagnostic')
+    ap.add_argument('--policy', choices=('first-missing', 'blocking', 'observe'), default='first-missing',
+                    help='observe keeps nonfatal NVN stub logs for bounded diagnostic comparisons')
     ap.add_argument('--shots', default='', help='comma-separated presented frame numbers for visual observation')
     args = ap.parse_args()
     repo = Path(__file__).resolve().parent.parent
@@ -53,11 +56,13 @@ def main():
         ap.error('--out must be inside this checkout/build/totk-experiment')
     if out.exists():
         ap.error('--out must be new: preserve previous evidence')
-    command = [str(args.exe.resolve()), '--game', 'totk', '--play', str(args.data.resolve())]
+    command = [str(args.exe.resolve()), '--game', args.game, '--play', str(args.data.resolve())]
     env = {k: v for k, v in os.environ.items() if not k.startswith('SAVAGEWIND_')}
     env.update(SAVAGEWIND_DATA_ROOT=str(out / 'state'), SAVAGEWIND_SAVE_DIR=str(out / 'state' / 'save'),
                SAVAGEWIND_GAME_LIB=str(args.library.resolve()), SAVAGEWIND_HIDDEN='1',
                SAVAGEWIND_NO_USER_INPUT='1')
+    if args.sdk_entry_probe:
+        env['SAVAGEWIND_SDK_ENTRY_PROBE'] = '1'
     if args.shots:
         if not re.fullmatch(r'\d+(,\d+)*', args.shots):
             ap.error('--shots must contain frame numbers only')
@@ -99,8 +104,9 @@ def main():
                 for line in lines:
                     if IPC_ERROR.search(line):
                         ipc_errors.append(line.strip())
-                    hard = BLOCKING.search(line) or blocking_ipc_error(line)
-                    if args.policy == 'blocking' and hard:
+                    hard = (BLOCKING.search(line) if args.policy == 'blocking' else 'FATAL:' in line)
+                    hard = hard or blocking_ipc_error(line)
+                    if args.policy != 'first-missing' and hard:
                         reason, first = 'first_blocking_behavior', line.strip()
                         break
                     if MISSING.search(line):
@@ -123,6 +129,7 @@ def main():
     if reason == 'exit' and proc.returncode:
         reason, first = 'process_failure', f'child exited with {proc.returncode}'
     result = dict(reason=reason, first=first, child_exit=proc.returncode, policy=args.policy,
+                  sdk_entry_probe=args.sdk_entry_probe,
                   fallbacks=fallbacks, ipc_errors=ipc_errors,
                   seconds=round(time.monotonic() - start, 3), command=command)
     (out / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
