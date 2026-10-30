@@ -7,6 +7,7 @@
 
 #include "gamelib.h"
 #include "game_profile.h"
+#include "code_patches.h"
 #include "paths.h"
 #include "nvn/maxwell/shader.h"
 #include "nvn/shader_archive.h"
@@ -163,6 +164,7 @@ static void boot(const char *root) {
     char why[512];
     if (!gamelib_load(root, why, sizeof why)) FATAL("%s\n", why);
     loader_load(exefs);
+    rt_patches_init();  // (runtime/patches.c: the code patch sets of the generated C, if any)
     if (!game_is_botw()) {
         Module *sdk = loader_module("sdk");
         if (!sdk || sdk->size <= TOTK_100_SDK_LSE_FLAG_OFF) FATAL("TotK SDK has no observed LSE flag address\n");

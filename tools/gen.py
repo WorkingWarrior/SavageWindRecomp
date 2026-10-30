@@ -35,6 +35,7 @@ import game_sites
 import game_profiles
 import layout
 import patches
+import wordpatches
 from analyze import eh_frame_extents, eh_frame_functions
 from lifter import Insn, Lifter, Unsupported, bits, emit_asm_batch, hx, sext
 from nso import Nso, R_AARCH64_JUMP_SLOT, R_AARCH64_RELATIVE, header
@@ -86,6 +87,7 @@ class Module:
         self.jt_cache = {}
         self.setjmps = self.setjmp_targets()
         self.sites, self.patches = {}, {}  # (main: tools/game_sites.py, tools/patches.py)
+        self.wpatch = {}  # address -> (patch set, replacement words): tools/wordpatches.py
         self.local_adr_continuations = False  # opt-in TotK's hand-written decoder continuations
 
     def in_text(self, a):
@@ -483,6 +485,31 @@ class Module:
             if a in labels:
                 flush()
                 out.append(f'L_{a:x}:;')
+            if a in self.wpatch:  # `if (set on) { replacement words } else { the original }` (tools/wordpatches.py)
+                flush()
+                k, words = self.wpatch[a]
+
+                def one(i, ins, final):  # one lifted instruction as C statements (a final bl may call)
+                    if ins.kind == 'asm':
+                        out.append('        ' + emit_asm_batch([ins.asm]))
+                    elif ins.kind in ('op', 'trap'):
+                        out.append('        ' + ins.code)
+                    elif ins.kind == 'bl' and final and self.in_text(ins.target) and ins.target not in self.setjmps:
+                        refs.add(ins.target)
+                        out.append(f'        c->x[30] = {hx(a + 4)}; {fname(ins.target)}(c);')
+                    elif ins.kind == 'bl' and final:
+                        out.append(f'        c->x[30] = {hx(a + 4)}; c->pc = {hx(ins.target)}; rt_dispatch(c);')
+                    else:
+                        raise Unsupported(f'{a:#x}: a patch set may not branch ({ins.kind})')
+
+                out.append(f'    if (rt_patch_on[{k}]) {{')
+                for i, w in enumerate(words):
+                    one(i, self.lifter.lift(w, a), i == len(words) - 1)
+                out.append('    } else {')
+                one(0, ins, True)
+                out.append('    }')
+                last = 'op'
+                continue
             if a in self.patches:  # hand-written replacement for one instruction (tools/patches.py)
                 flush()
                 out.append('    ' + self.patches[a](self, a))
@@ -635,6 +662,10 @@ def generate(name, nso, base, outdir, opts, sites=None):
     t0 = time.time()
     m = Module(name, nso, base, opts.simd)
     m.local_adr_continuations = getattr(opts, 'game', 'botw') == 'totk'
+    if getattr(opts, 'patches', None):
+        table = wordpatches.load(opts.patches, {'main', 'sdk', 'subsdk0'} | {f'subsdk{i}' for i in range(10)})
+        table.check(name, bytes(m.nso.image), 0)
+        m.wpatch = table.for_module(name, base)
     if name == 'main':
         m.sites = sites if sites is not None else main_sites(m.nso, base, opts)[1]
         m.patches = patches.table(m.sites) if m.sites else {}
@@ -684,6 +715,8 @@ def generate(name, nso, base, outdir, opts, sites=None):
         text = ['#include "cpu.h"\n' + ('#include "simd.h"\n' if m.lifter.sc else '')]
         if any('rt_setjmp_slot(' in l for l in body):
             text += ['#include <setjmp.h>\njmp_buf *rt_setjmp_slot(Cpu *c, uint64_t gbuf);\n']
+        if any('rt_patch_on[' in l for l in body):
+            text += ['extern uint8_t rt_patch_on[];\n']
         text += [f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs)]
         text += [f'void {sanitize(hle[a])}(Cpu *c);\n' for a in sorted(set(hle) & set(fns))]
         text += ['\n'.join(body), '\n']
@@ -732,6 +765,7 @@ def main():
     ap.add_argument('--big-fn', type=int, default=100000)  # bytes of C from which a function gets its own file
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--any-version', action='store_true')  # (a main module of a version not supported yet)
+    ap.add_argument('--patches', help='instruction-word patch sets with a run-time switch (tools/wordpatches.py)')
     ap.add_argument('--no-sites', action='store_true')  # (made-up modules, tools/test_layout.py: no sites, no patches)
     ap.add_argument('--game', choices=('botw', 'totk'), default='botw',
                     help='game identity, independent of BOTW version/site selection; TotK is experimental')
@@ -750,6 +784,9 @@ def main():
             version, sites = main_sites(Nso(os.path.join(exefs, 'main')), main_base, args)
             print(f'  game version {version}, {len(sites)} sites')
             layout.write(lay, outdir, (version, sites))
+            if args.patches:  # (the sets and the patch page, for runtime/patches.c)
+                write_if_changed(os.path.join(outdir, 'patches.h'),
+                                 wordpatches.load(args.patches, {n for n, *_ in lay}).header_text())
             if args.name == 'all':
                 present = {n for n, *_ in lay}
                 for n in layout.LOAD_ORDER:  # a module gone from the exefs: its old C would still be built in
