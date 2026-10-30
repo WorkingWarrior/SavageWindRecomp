@@ -859,14 +859,18 @@ static void totk_texels_2d(NvnTexture *t, const NvnTextureView *v, const int32_t
     const FormatInfo *fi = t->layout.fmt;
     if (!fi->bpb || !fi->bw || !fi->bh) FATAL("[nvn] invalid TotK texel-copy format\n");
     LevelLayout l = tegra_level(&t->layout, level);
-    if (r[0] < 0 || r[1] < 0 || r[3] <= 0 || r[4] <= 0 ||
-        (uint64_t)r[0] + r[3] > l.w || (uint64_t)r[1] + r[4] > l.h ||
-        (uint32_t)r[0] % fi->bw || (uint32_t)r[1] % fi->bh ||
-        ((uint32_t)r[3] % fi->bw && (uint32_t)(r[0] + r[3]) != l.w) ||
-        ((uint32_t)r[4] % fi->bh && (uint32_t)(r[1] + r[4]) != l.h))
+    // The game copies in fixed-size chunks (64 rows of a 1024x1020 texture): the last one reaches past the level. Copy
+    // what is inside it; the packed data keeps the chunk's size (reads: the rest is zero, writes: the rest is dropped).
+    if (r[0] < 0 || r[1] < 0 || r[3] <= 0 || r[4] <= 0 || (uint32_t)r[0] >= l.w || (uint32_t)r[1] >= l.h)
+        FATAL("[nvn] invalid TotK texel-copy rectangle\n");
+    uint32_t cw = (uint32_t)r[3] < l.w - (uint32_t)r[0] ? (uint32_t)r[3] : l.w - (uint32_t)r[0];
+    uint32_t ch = (uint32_t)r[4] < l.h - (uint32_t)r[1] ? (uint32_t)r[4] : l.h - (uint32_t)r[1];
+    if ((uint32_t)r[0] % fi->bw || (uint32_t)r[1] % fi->bh ||
+        (cw % fi->bw && (uint32_t)r[0] + cw != l.w) || (ch % fi->bh && (uint32_t)r[1] + ch != l.h))
         FATAL("[nvn] invalid TotK texel-copy rectangle\n");
     uint32_t bx = (uint32_t)r[0] / fi->bw, by = (uint32_t)r[1] / fi->bh;
     uint32_t nx = ((uint32_t)r[3] + fi->bw - 1) / fi->bw, ny = ((uint32_t)r[4] + fi->bh - 1) / fi->bh;
+    uint32_t cnx = (cw + fi->bw - 1) / fi->bw, cny = (ch + fi->bh - 1) / fi->bh;
     uint64_t row = (uint64_t)nx * fi->bpb, full_row = (uint64_t)l.wb * fi->bpb;
     bool pitch = nvn_texture_flags_pitch(t->flags);
     uint64_t stride = pitch && t->stride ? t->stride : full_row;
@@ -885,10 +889,15 @@ static void totk_texels_2d(NvnTexture *t, const NvnTextureView *v, const int32_t
     if (!linear) FATAL("[nvn] TotK texel-copy scratch allocation failed\n");
     if (!pitch) tegra_deswizzle(base, linear, l.wb, l.hb, 1, fi->bpb, l.block_height_log2, l.block_depth_log2);
     if (write) kernel_watch_write("WriteTexels", t->addr, tegra_total_size(&t->layout));
+    uint64_t crow = (uint64_t)cnx * fi->bpb;
     for (uint32_t y = 0; y < ny; y++) {
+        if (y >= cny) { if (!write) memset(data + (uint64_t)y * row, 0, row); continue; }
         uint8_t *image_row = linear + (uint64_t)(by + y) * stride + (uint64_t)bx * fi->bpb;
-        if (write) memcpy(image_row, data + (uint64_t)y * row, row);
-        else memcpy(data + (uint64_t)y * row, image_row, row);
+        if (write) memcpy(image_row, data + (uint64_t)y * row, crow);
+        else {
+            memcpy(data + (uint64_t)y * row, image_row, crow);
+            if (crow < row) memset(data + (uint64_t)y * row + crow, 0, row - crow);
+        }
     }
     if (write) {
         if (!pitch) tegra_swizzle(linear, base, l.wb, l.hb, 1, fi->bpb, l.block_height_log2, l.block_depth_log2);
