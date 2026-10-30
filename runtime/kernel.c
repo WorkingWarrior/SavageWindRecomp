@@ -26,6 +26,9 @@
 
 pthread_mutex_t g_klock = PTHREAD_MUTEX_INITIALIZER;
 static __thread KThread *t_cur;
+static uint64_t system_resource_size;
+
+void kernel_set_system_resource_size(uint64_t size) { system_resource_size = size; }
 
 // ------------------------------------------------------------------ handle table
 #define MAX_HANDLES 4096
@@ -1054,7 +1057,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 13: v = GUEST_HI - GUEST_LO; break;
         case 14: v = STACK_BASE; break;
         case 15: v = STACK_SIZE; break;
-        case 16: case 17: v = 0; break;
+        case 16: v = system_resource_size; break;
+        case 17: v = 0; break;
         case 18: v = g_program_id; break;  // ProgramId (main.npdm)
         // UserExceptionContextAddress: a zeroed page at the top of the TLS region. BOTW 1.8.2's
         // nn::os::SetDyingMessageRegion stores its dying-message pointer at +0x1c0 there.
@@ -1142,6 +1146,7 @@ void kernel_reset(void) {
     memset(handles, 0, sizeof handles);
     nregions = 0;
     heap_size = 0;
+    system_resource_size = 0;
     tls_next = TLS_BASE;
     next_thread_id = 0x50;
     for (int i = 0; i < 4; i++) {

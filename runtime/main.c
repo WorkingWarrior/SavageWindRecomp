@@ -177,6 +177,7 @@ static void boot(const char *root) {
     { extern void jpeg_debug_init(void); jpeg_debug_init(); }
 
     uint32_t stack_size = 0x100000;
+    uint32_t system_resources = 0;
     int prio = 44;
     FILE *f = fopen(npdm_path, "rb");
     if (f) {
@@ -185,11 +186,14 @@ static void boot(const char *root) {
         if (n >= 0x80 && !memcmp(npdm, "META", 4)) {
             prio = npdm[0xE];
             stack_size = *(uint32_t *)(npdm + 0x1C);
+            if (!game_is_botw()) memcpy(&system_resources, npdm + 0x14, sizeof system_resources);
             uint32_t aci = *(uint32_t *)(npdm + 0x70);  // ACI0: the program id at +0x10
             if (aci + 0x18 <= n && !memcmp(npdm + aci, "ACI0", 4)) g_program_id = *(uint64_t *)(npdm + aci + 0x10);
         }
         fclose(f);
     }
+    kernel_set_system_resource_size(system_resources);
+    if (!game_is_botw()) LOG("[totk-memory] NPDM SystemResourceSizeTotal=%#x\n", system_resources);
     LOG("main thread: prio %d, stack 0x%x, program %016llx\n", prio, stack_size, (unsigned long long)g_program_id);
 
     // nn::init::Start(thread_handle, args_region, init_sdk, init_main[, fini_main]): with x4 in newer SDKs

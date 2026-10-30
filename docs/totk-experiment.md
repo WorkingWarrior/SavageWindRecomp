@@ -1,4 +1,54 @@
-# TotK on SavageWind: bounded research experiment
+# TotK on SavageWind: bring-up and experiment log
+
+## Active scope and current result
+
+The later user goal supersedes the bounded/diagnostic-only stops below: continue
+with scoped fixes, builds and one startup per change until a rendered TotK menu
+or world, a missing required input/design decision, or the same failure after
+three distinct repair attempts. Cpu/dispatcher redesign requires a decision.
+Historical conclusions below are retained as evidence, not the current stop rule
+or recommendation. Work remains on `experiment/totk-support`; protected dumps,
+keys, reference `totk-build/data` and the existing local raw RomFS remain untouched.
+
+**Fix 01: VammManager initialization now passes.** Its constructor
+`f_7004e3cf88` clears the manager's +0x40 pointer. Initialization
+`f_7004e3d00c` queries GetInfo(16) and only initializes the backend and stores
+`0x7005a344a8` there when that query succeeds with a nonzero value. The former
+kernel always returned zero. TotK's NPDM declares SystemResourceSizeTotal
+`0x1800000` at offset +0x14; boot now supplies that process budget to GetInfo(16).
+BOTW retains the previous zero value. GetInfo(17) remains zero; resource-use
+accounting is not implemented by this fix. No SDK HLE replacement was needed.
+
+Runtime evidence: `build/totk-experiment/fix01-system-resource-headless/run.log`
+records `AllocateAddressRegion`, x0=`0x7005a34430`, +0x40=`0x7005a344a8`,
+guest tid=80, handle=0x101. The original SIGSEGV at 0xc0 is absent. Startup
+initializes the NVN device/window, creates worker threads, and then stops at
+`FATAL: no function at 700086344c (lr=713fe89473 ?+713fe89473)` after 1.910 s.
+This address is an internal continuation in `f_70008631a0`; a local BR through
+x19 incorrectly escapes to the global dispatcher. No TotK draw or menu has
+yet been observed. This is the next repair, not a completed port.
+
+Both initial fix-01 tests failed earlier in SDL because the desktop session
+exposed no display outputs (Xwayland 0x0, no Wayland wl_output). Those runs do
+not test VammManager. A separate Gamescope headless compositor exposes a real
+1280x720 Vulkan surface on the RX 9070 without modifying desktop configuration:
+`gamescope --backend headless -W 1280 -H 720 -w 1280 -h 720 -r 60 -- env
+SDL_VIDEODRIVER=x11 python3 tools/totk_experiment_run.py ...`.
+
+**BOTW after fix 01:** the separate `build/totk-baseline` build passes; all 997
+files in `botw-entry-probe-gen` still match `baseline-gen` byte for byte. The
+100-second run `fix01-botw-headless` renders the opening scene and "Open your
+eyes…" at frame 3100 (screenshot visually inspected); renderer logs include
+173447 draws in the interval ending at frame 2900. No fatal error was observed.
+This verifies the opening, not later gameplay or physical display/input/audio.
+
+Cost: runtime `kernel.c` (GetInfo, reset, budget setter), `kernel.h` (declaration),
+`main.c` (boot NPDM parsing); runner `totk_experiment_run.py` permits `--seconds 0`
+to remove the observation time bound. Two incremental builds, byte comparison,
+one meaningful TotK startup and one BOTW opening run. Disk free before builds:
+75 GiB. No generated-code, Cpu layout, dispatcher or reference-source change.
+
+## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in
 [VammManager entry probe](totk-vamm-entry-probe.md). That task used an already
@@ -6,7 +56,7 @@ existing local raw RomFS image, ran TotK once, and observed AllocateAddressRegio
 with a zero +0x40 field immediately before SIGSEGV. It added no behavioral repair;
 the result below describes the earlier bounded feasibility phase.
 
-## Final result — one additional iteration reached a RomFS input failure
+## Earlier result — one additional iteration reached a RomFS input failure
 
 **TotK 1.0.0 was generated, compiled, linked, loaded and started on SavageWind's
 Cpu runtime.** After the user revised the stop rule and allowed **one additional
@@ -29,7 +79,7 @@ baseline; the full build passes; the opening scene/subtitle was visually confirm
 before changes, after game-profile isolation and again after the pair extension.**
 Full progression, physical controls/audio and other platforms were not tested.
 
-## Scope and evidence rules
+## Original scope and evidence rules (superseded above)
 
 Started 2026-10-30. This is a feasibility experiment, not a port. The initial
 stop was the first missing service/graphics behavior or menu; the latest user

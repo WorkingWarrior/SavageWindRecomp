@@ -82,3 +82,4 @@ void kernel_sample_host_thread(void);  // (profiling) the calling host thread is
 extern volatile int g_core_best_wait[4];
 void kernel_preempt(KThread *t);
 uint64_t kernel_heap_size(void);  // bytes from HEAP_BASE set by SetHeapSize
+void kernel_set_system_resource_size(uint64_t size);  // process NPDM memory-management resource budget

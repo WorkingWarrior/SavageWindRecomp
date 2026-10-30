@@ -43,7 +43,7 @@ def main():
     ap.add_argument('--library', required=True, type=Path)
     ap.add_argument('--data', required=True, type=Path)
     ap.add_argument('--out', required=True, type=Path)
-    ap.add_argument('--seconds', type=float, default=60)
+    ap.add_argument('--seconds', type=float, default=60, help='observation bound; 0 keeps the process running until a stop/error')
     ap.add_argument('--game', choices=('totk', 'botw'), default='totk')
     ap.add_argument('--sdk-entry-probe', action='store_true', help='enable the opt-in VammManager entry diagnostic')
     ap.add_argument('--policy', choices=('first-missing', 'blocking', 'observe'), default='first-missing',
@@ -81,7 +81,7 @@ def main():
     try:
         with (out / 'run.log').open('wb') as log:
             while True:
-                if time.monotonic() - start >= args.seconds:
+                if args.seconds > 0 and time.monotonic() - start >= args.seconds:
                     reason = 'observation_timeout'
                     break
                 if not sel.select(0.1):
