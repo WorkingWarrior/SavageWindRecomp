@@ -349,6 +349,7 @@ static void create_device(void) {
     g_vk.feat_aniso = h->samplerAnisotropy;
     b->textureCompressionBC = h->textureCompressionBC;
     b->shaderInt64 = h->shaderInt64;
+    b->shaderFloat64 = h->shaderFloat64;  // DADD/DMUL/DFMA/F2F.F64 (TotK's double-precision 'material' vertex shaders)
     b->depthBiasClamp = h->depthBiasClamp;
     b->depthClamp = h->depthClamp;
     g_vk.depth_clamp = h->depthClamp;

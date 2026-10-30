@@ -225,6 +225,49 @@ static const char *fresult(Ctx *c, const char *e, bool sat, char *buf) {
 }
 #define FRES(e, sat) fresult(c, (e), (sat), alloca(700))
 
+// F64 (DADD / DMUL / DFMA / F2F.F64): a double lives in a register pair (low word in the even register). 32 'material'
+// vertex shaders compute positions in double precision (cbuf floats -> F2F.F64, DFMA/DMUL/DADD, F2F.F32); they failed
+// to translate and their draws were dropped (grass missing, user 2026-10-15). GLSL only (Vulkan shaderFloat64).
+// Operand forms as Eden (GetDoubleReg20 / GetDoubleCbuf / GetDoubleImm20).
+static const char *dreg(Ctx *c, int r, char *buf) {
+    if (r == RZ) return "packDouble2x32(uint2(0u, 0u))";
+    c->reg_used[r] = c->reg_used[r + 1] = 1;
+    sprintf(buf, "packDouble2x32(uint2(r%d, r%d))", r, r + 1);
+    return buf;
+}
+static const char *dcbuf(Ctx *c, uint64_t w, char *buf) {
+    int idx = (int)bits(w, 34, 5);
+    int64_t off = bits(w, 20, 14) * 4;
+    char lo[128], hi[128];
+    if (off & 4) {  // unaligned: high word from the given offset, low word 0
+        strcpy(lo, "0u");
+        cbuf_ref(c, idx, off, NULL, hi);
+    } else {
+        cbuf_ref(c, idx, off, NULL, lo);
+        cbuf_ref(c, idx, off + 4, NULL, hi);
+    }
+    sprintf(buf, "packDouble2x32(uint2(%s, %s))", lo, hi);
+    return buf;
+}
+static const char *dsrc_b(Ctx *c, uint64_t w, char *buf) {
+    switch (b_form(w)) {
+    case B_REG: return dreg(c, (int)bits(w, 20, 8), buf);
+    case B_CBUF: return dcbuf(c, w, buf);
+    default: {
+        uint32_t hi = ((uint32_t)bits(w, 20, 19) << 12) | ((uint32_t)bits(w, 56, 1) << 31);
+        sprintf(buf, "packDouble2x32(uint2(0u, 0x%08xu))", hi);
+        return buf;
+    }
+    }
+}
+#define DR(r) dreg(c, (r), alloca(64))
+#define DB() dsrc_b(c, w, alloca(320))
+static void set_dreg(Ctx *c, int d, const char *e) {
+    if (d == RZ) return;
+    c->reg_used[d] = c->reg_used[d + 1] = 1;
+    sp(&c->body, "    { precise double pd_ = %s; uint2 dv_ = unpackDouble2x32(pd_); r%d = dv_.x; r%d = dv_.y; }\n", e, d, d + 1);
+}
+
 static const char *cmp_op(int op) {
     static const char *const ops[] = {"false", "<", "==", "<=", ">", "!=", ">=", "num", "nan",
                                       "<", "==", "<=", ">", "!=", ">=", "true"};
@@ -1281,6 +1324,27 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
                OPM(0x3890000000000000ull, 0xfef8000000000000ull)) {  // RRO: range reduction (no-op for us)
         const char *x = NA(F(B(true)), bits(w, 45, 1), bits(w, 49, 1));
         set_reg(c, d, FRES(x, false));
+    } else if (OPM(0x5c70000000000000ull, 0xfff8000000000000ull) || OPM(0x4c70000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0x3870000000000000ull, 0xfef8000000000000ull)) {  // DADD (Eden double_add.cpp)
+        if (!c->glsl) { fail(c, "DADD needs GLSL"); return; }
+        if (bits(w, 47, 1)) { fail(c, "DADD.CC"); return; }
+        sprintf(t, "(%s + %s)", NA(DR(a), bits(w, 48, 1), bits(w, 46, 1)), NA(DB(), bits(w, 45, 1), bits(w, 49, 1)));
+        set_dreg(c, d, t);
+    } else if (OPM(0x5c80000000000000ull, 0xfff8000000000000ull) || OPM(0x4c80000000000000ull, 0xfff8000000000000ull) ||
+               OPM(0x3880000000000000ull, 0xfef8000000000000ull)) {  // DMUL (Eden double_multiply.cpp)
+        if (!c->glsl) { fail(c, "DMUL needs GLSL"); return; }
+        if (bits(w, 47, 1)) { fail(c, "DMUL.CC"); return; }
+        sprintf(t, "(%s * %s)", DR(a), NA(DB(), bits(w, 48, 1), false));
+        set_dreg(c, d, t);
+    } else if (OPM(0x5b70000000000000ull, 0xfff0000000000000ull) || OPM(0x4b70000000000000ull, 0xfff0000000000000ull) ||
+               OPM(0x5370000000000000ull, 0xfff0000000000000ull) || OPM(0x3670000000000000ull, 0xfff0000000000000ull)) {  // DFMA
+        if (!c->glsl) { fail(c, "DFMA needs GLSL"); return; }
+        if (bits(w, 47, 1)) { fail(c, "DFMA.CC"); return; }
+        const char *bv, *cv;
+        if (OPM(0x5370000000000000ull, 0xfff0000000000000ull)) { bv = DR((int)bits(w, 39, 8)); cv = dcbuf(c, w, alloca(320)); }  // rc
+        else { bv = DB(); cv = DR((int)bits(w, 39, 8)); }  // reg, cr, imm
+        sprintf(t, "fma(%s, %s, %s)", DR(a), NA(bv, bits(w, 48, 1), false), NA(cv, bits(w, 49, 1), false));
+        set_dreg(c, d, t);
     } else if (OPM(0x5c58000000000000ull, 0xfff8000000000000ull) || OPM(0x4c58000000000000ull, 0xfff8000000000000ull) ||
                OPM(0x3858000000000000ull, 0xfef8000000000000ull)) {  // FADD
         sprintf(t, "(%s + %s)", NA(F(R(a)), bits(w, 48, 1), bits(w, 46, 1)), NA(F(B(true)), bits(w, 45, 1), bits(w, 49, 1)));
@@ -1392,6 +1456,28 @@ static void emit_insn(Ctx *c, uint64_t w, uint32_t pc) {
             set_reg(c, d, h);
         } else {
             set_reg(c, d, FRES(NA(u, bits(w, 45, 1), bits(w, 49, 1)), false));
+        }
+    } else if ((OPM(0x5ca8000000000000ull, 0xfff8000000000000ull) || OPM(0x4ca8000000000000ull, 0xfff8000000000000ull) ||
+                OPM(0x38a8000000000000ull, 0xfef8000000000000ull)) && (bits(w, 8, 2) == 3 || bits(w, 10, 2) == 3)) {  // F2F with F64
+        int dfmt = (int)bits(w, 8, 2), sfmt = (int)bits(w, 10, 2);
+        char srcv[512];
+        if (dfmt == 3 || sfmt == 3) {  // F64 source and/or result (register pairs; Eden F2F with FPConvert)
+            if (!c->glsl || dfmt == 1) { fail(c, "F2F F64 dst %d src %d", dfmt, sfmt); return; }
+            if (sfmt == 3) strcpy(srcv, DB());
+            else if (sfmt == 2) sprintf(srcv, "double(%s)", F(B(true)));
+            else sprintf(srcv, "double(h2f((%s >> %du) & 0xFFFFu))", B(false), 16 * (int)bits(w, 41, 1));
+            const char *x = NA(srcv, bits(w, 45, 1), bits(w, 49, 1));
+            static const char *const rf[] = {"rint", "floor", "ceil", "trunc"};
+            int mode = (int)((bits(w, 39, 2)) | (bits(w, 42, 1) << 2));
+            if (mode >= 4) sprintf(t, "%s(%s)", rf[mode - 4], x);
+            else sprintf(t, "%s", x);
+            if (dfmt == 3) {
+                if (bits(w, 50, 1)) { sprintf(u, "clamp(%s, double(0.0f), double(1.0f))", t); strcpy(t, u); }
+                set_dreg(c, d, t);
+            } else {
+                sprintf(u, "float(%s)", t);
+                set_reg(c, d, FRES(u, bits(w, 50, 1)));
+            }
         }
     } else if (OPM(0x5ca8000000000000ull, 0xfff8000000000000ull) || OPM(0x4ca8000000000000ull, 0xfff8000000000000ull) ||
                OPM(0x38a8000000000000ull, 0xfef8000000000000ull)) {  // F2F (formats: 1 F16, 2 F32; bit 41 = high half)
