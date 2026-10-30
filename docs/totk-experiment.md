@@ -468,8 +468,13 @@ divided by the FSR 1 mode's factor) and switches the set on when it differs. Mea
 window: scene 640x360 (Performance) brightness 33.0, 852x480 (Quality) 32.9, against 32.8 at the game's size; BOTW
 unchanged (298k draws/interval, "Open your eyes..."). Not done: sizes above 1600x900 (the game's texture heap is sized
 for the shipped scene; totk-pc-recomp grows it through the HeapDef table), the final-image size (the host still scales
-that), the 60 fps and real-time-step sets (their sites map the same way), the hair/cloth clock (its 7 sites have no
-1.0.0 mapping here) and the dynamic resolution controller (its scale is still the game's).
+that), the hair/cloth clock (its 7 sites have no 1.0.0 mapping here: hair and cloth still move at the console's rate
+at 60 fps) and the dynamic resolution controller (its scale is still the game's).
+
+**60 fps** (sets `fps60`, `realtime`, `bounce`; `runtime/totk_frame.c`): the present-interval controller's minimum goes from 2
+to 1, the game's step comes from the page (average of the last 5 display intervals, at most 1/15 s) instead of whole vsyncs, and
+the pacer holds the limit (Video > Frame rate: 30 or 60). Headless: 60.0 fps for 100 s; at 80 s of wall time the game is in
+the same place (Link at the cave entrance, controllable) as at 30 fps, so its speed is right. Higher rates are not offered.
 
 ## Historical bounded feasibility phase
 

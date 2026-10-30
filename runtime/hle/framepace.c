@@ -48,6 +48,7 @@
 #include "../hle.h"
 #include "../settings.h"
 #include "../framepace.h"
+#include "../totk_frame.h"
 #include "../window_size.h"
 
 extern volatile int g_movie_playing;  // runtime/hle/movie.c: video decoders running
@@ -107,7 +108,7 @@ bool framepace_menu_ui(void) { return game_is_botw() && *(uint32_t *)(uintptr_t)
 bool framepace_paused(void) { return game_is_botw() && in_menu(); }
 
 int framepace_target(void) {
-    if (!game_is_botw()) return 30;
+    if (!game_is_botw()) return totk_frame_limit();
     static int forced = -2, movie = -2, menu = -2, event = -2;
     if (forced == -2) forced = env_int("SAVAGEWIND_FPS", -1);
     extern bool movie_paced(void);

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "../framepace.h"
+#include "../totk_frame.h"
 #include "../game_sites.h"
 #include "../kernel.h"
 #include "../perfmon.h"
@@ -1280,6 +1281,7 @@ static void present_pace(int interval) {
     if (cap < 0) cap = getenv("SAVAGEWIND_FPS_CAP") ? atoi(getenv("SAVAGEWIND_FPS_CAP")) : 60;
     uint64_t period;
     if (framepace_on()) period = framepace_period_ns();
+    else if (!game_is_botw() && totk_frame_realtime()) period = 1000000000ull / (uint64_t)totk_frame_limit();  // (TotK: the limit, whatever interval the game asks for)
     else {
         period = 16666667ull * (uint64_t)(interval > 0 ? interval : 0);
         if (cap > 0 && period < 1000000000ull / (uint64_t)cap) period = 1000000000ull / (uint64_t)cap;
@@ -1292,6 +1294,7 @@ static void present_pace(int interval) {
     now = t1;
     last = last && now < target + period ? target : now;  // (steady cadence; after a long frame, start again)
     framepace_presented(last, last == target);
+    if (!game_is_botw()) totk_frame_present(last);
 }
 
 NVN(nvnQueuePresentTexture) {

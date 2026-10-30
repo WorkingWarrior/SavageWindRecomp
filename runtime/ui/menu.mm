@@ -651,6 +651,14 @@ static void tab_display(void) {
                        "conversations keep theirs.", false))
             g_settings.fov = fov[cur];
     }
+    if (!botw) {  // Frame rate for TotK (runtime/totk_frame.c): the console's 30, or 60 with the game stepping real time
+        static const char *const names[] = {"30 FPS", "60 FPS"};
+        int cur = g_settings.fps_limit == 30 ? 0 : 1;
+        if (opt_choice("Frame rate", &cur, names, 2, 1,
+                       "How many pictures a second the game draws. The game itself runs at the same speed at either rate "
+                       "(the console runs it at 30). Hair and cloth still move at the console's rate.", false))
+            g_settings.fps_limit = cur ? 60 : 30;
+    }
     if (botw) {   // Frame rate (runtime/hle/framepace.c)
         static const int fps[] = FPS_CHOICES;
         enum { NF = sizeof fps / sizeof fps[0] };
