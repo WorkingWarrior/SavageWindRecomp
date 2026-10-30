@@ -1079,6 +1079,7 @@ typedef struct {
     uint32_t wav_bytes;
     float out[2 * 1024];  // the last frame, stereo, from the device sink (sdk_take_sink)
     uint32_t out_n;
+    uint8_t sink_id;  // the DeviceSink command's id in this game's sdk (SdkAudioAbi)
     uint64_t frames, render_ns, render_max, lock_max;  // (SAVAGEWIND_AUDIO_LOG)
     float peak;
 } SdkRen;
@@ -1117,7 +1118,8 @@ static void sdk_take_sink(SdkRen *r, uint64_t list) {
     for (uint32_t i = 0; i < count && in_guest(cmd, 8); i++) {
         const uint8_t *p = (const uint8_t *)(uintptr_t)cmd;
         int16_t size = *(const int16_t *)(p + 6);
-        if (p[5] == 0x14 && (p[4] & 1) && in_guest(cmd, 0x148)) {
+        if (p[5] == r->sink_id && (p[4] & 1) && in_guest(cmd, 0x148)) {
+
             uint64_t buf = *(const uint64_t *)(p + 0x128);
             uint32_t inputs = *(const uint32_t *)(p + 0x130);
             if (inputs > 6) inputs = 6;
@@ -1169,13 +1171,14 @@ static void sdk_sleep(Cpu *c, uint64_t ns) {
 // slot +0x78 when the sdk has none), the renderer's mutex (system +mutex_off, which Update, Start and Stop take) and
 // the object that function takes (renderer + this_off). TotK's public ExecuteAudioRendererRendering calls the slot, whose
 // thunk adjusts renderer +0x10 to Impl, whose system starts at +0x60; it returns a result, BOTW's does not.
-typedef struct { const char *exec_sym; uint32_t mutex_off, this_off; bool has_result; } SdkAudioAbi;
-static const SdkAudioAbi k_audio_abi_botw = {"_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv", 0x2d0, 0x70, false};
-static const SdkAudioAbi k_audio_abi_totk = {NULL, 0x1f0, 0, true};
+typedef struct { const char *exec_sym; uint32_t mutex_off, this_off; bool has_result; uint8_t sink_id; } SdkAudioAbi;
+static const SdkAudioAbi k_audio_abi_botw = {"_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv", 0x2d0, 0x70, false, 0x14};
+static const SdkAudioAbi k_audio_abi_totk = {NULL, 0x1f0, 0, true, 0x13};
 
 static void sdk_render_thread(Cpu *c) {
     SdkRen *r = &g_sdkren;
     const SdkAudioAbi *abi = game_is_botw() ? &k_audio_abi_botw : &k_audio_abi_totk;
+    r->sink_id = abi->sink_id;
     uint64_t exec = abi->exec_sym ? guest_sym(abi->exec_sym) : LD64(LD64(r->renderer) + 0x78);
     uint64_t lock = guest_sym("_ZN2nn2os12SdkMutexType4LockEv");
     uint64_t unlock = guest_sym("_ZN2nn2os12SdkMutexType6UnlockEv");
