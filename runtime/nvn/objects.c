@@ -723,7 +723,16 @@ NVN(nvnTextureGetStorageSize) {
     RET(nvn_texture_flags_pitch(t->flags) && t->stride ? t->stride * t->height : tegra_total_size(&t->layout));
 }
 NVN(nvnTextureGetDebugID) { RET(TEX->debug_id); }
-NVN(nvnTextureGetViewOffset) { RET(0); }
+NVN(nvnTextureGetViewOffset) {
+    // Byte offset of the view's first level and layer in the texture storage. TotK computes the destination of each
+    // decompressed layer/mip of its material arrays from it; 0 sent every layer to the start of the array.
+    if (game_is_botw()) { RET(0); return; }
+    NvnTexture *t = TEX;
+    const NvnTextureView *v = A(1) ? (const NvnTextureView *)AP(1) : NULL;
+    uint32_t level = v && (v->setmask & 1) ? v->base_level : 0, layer = v && (v->setmask & 2) ? v->min_layer : 0;
+    const TexLayout *l = &t->layout;
+    RET((uint64_t)layer * tegra_layer_size(l) + (level < l->levels ? tegra_level(l, level).offset : 0));
+}
 NVN(nvnTextureGetStorageClass) { RET(0); }
 NVN(nvnTextureGetRawStorageClass) { RET(0); }
 NVN(nvnTextureGetSparseTileLayout) { RET(0); }

@@ -359,6 +359,15 @@ bool rt_fault_watch(uint64_t fa, uint64_t pc) {
         const char *nm = host_sym(pc, &off);
         if (!nm) nm = "?";
         bool found = false;
+        static int all = -1;  // SAVAGEWIND_WATCH_ALL=<n>: not one line per host pc but every access (up to n), with its chain
+        static _Atomic int nall;
+        if (all < 0) all = getenv("SAVAGEWIND_WATCH_ALL") ? atoi(getenv("SAVAGEWIND_WATCH_ALL")) : 0;
+        if (all && nall++ < all) {
+            fprintf(stderr, "[watch] %.6f %s +%#llx of %llx by %s+%llx (thread %x)\n", plat_now_ns() / 1e9, g_fault_is_write ? "write" : "access",
+                    (unsigned long long)(fa - g_watch_lo), (unsigned long long)g_watch_lo, nm, (unsigned long long)off, kernel_current_thread_handle());
+            extern void kernel_log_guest_chain(void);
+            kernel_log_guest_chain();
+        }
         for (int i = 0; i < nseen; i++) found |= seen[i] == pc;
         if (!found && nseen < 256) {
             seen[nseen++] = pc;

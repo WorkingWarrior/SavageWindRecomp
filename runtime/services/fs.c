@@ -568,6 +568,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
             if (big_logged++ < 40)
                 LOG("[fs] big read %s: dst %llx image offset %llx size %llu (buffer %llu) -> %lld\n", romfs_file_at(off) ? romfs_file_at(off) : "?", (unsigned long long)b->addr,
                     (unsigned long long)off, (unsigned long long)size, (unsigned long long)b->size, (long long)n);
+            if (big_logged < 12) { extern void kernel_log_guest_chain(void); kernel_log_guest_chain(); }
         }
         if (n < 0) LOG("[fs] storage read failed at %llx: %s\n", off, strerror(errno));
         {
