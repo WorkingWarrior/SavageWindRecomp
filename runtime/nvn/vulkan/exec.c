@@ -27,8 +27,8 @@
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
-static bool totk_render_off;
-static uint64_t totk_cond_evals, totk_cond_skips;
+static bool render_off;
+static uint64_t cond_evals, cond_skips;
 static uint64_t stat_gw_waits, stat_gw_holds;  // draws / dispatches that waited for a storing shader; lists held (gw_check)
 static uint64_t stat_uub, stat_uub_same, stat_gcopy_hit, stat_gcopy_miss, stat_gcopy_bytes;  // UpdateUniformBuffer; guest_copy cache
 static uint64_t stat_feedback_live;  // depth attachments sampled as they are (read-only feedback, no copy)
@@ -4497,8 +4497,8 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
-    totk_render_off = false;
-    totk_cond_evals = totk_cond_skips = 0;
+    render_off = false;
+    cond_evals = cond_skips = 0;
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
     ngw = 0;
@@ -8212,11 +8212,11 @@ static void exec_list(uint64_t handle, int depth) {
             LOG("[op] %u depth %d: %llx %llx %llx %llx %llx\n", r->op, depth, (unsigned long long)r->x[0], (unsigned long long)r->x[1],
                 (unsigned long long)r->x[2], (unsigned long long)r->x[3], (unsigned long long)r->x[4]);
         if (lst_on) { lst_op(depth, r); lst_depth = depth; }
-        if (!game_is_botw() && totk_render_off &&
+        if (render_off &&
             (r->op == CMD_DRAW_ARRAYS || r->op == CMD_DRAW_ELEMENTS || r->op == CMD_DRAW_ARRAYS_INDIRECT ||
              r->op == CMD_DRAW_ELEMENTS_INDIRECT || r->op == CMD_DRAW_TEXTURE || r->op == CMD_CLEAR_COLOR ||
              r->op == CMD_CLEAR_DEPTH_STENCIL || r->op == CMD_CLEAR_TEXTURE)) {
-            if (totk_cond_skips++ < 8) LOG("[vk] TotK conditional render skipped op %u\n", r->op);
+            if (cond_skips++ < 8) LOG("[vk] conditional render skipped op %u\n", r->op);
             p += r->size;
             continue;
         }
@@ -8377,9 +8377,8 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_SET_PRIMITIVE_RESTART: st.prim_restart = r->x[0] != 0; st.restart_index = (uint32_t)r->x[1]; break;
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
         case CMD_SET_RENDER_ENABLE: {
-            if (game_is_botw()) break;  // preserve BOTW's existing command behavior
-            if (r->x[0] < 2) { totk_render_off = !r->x[0]; break; }
-            if (!r->x[1]) FATAL("[vk] null TotK conditional-render counters\n");
+            if (r->x[0] < 2) { render_off = !r->x[0]; break; }
+            if (!r->x[1]) FATAL("[vk] null conditional-render counters\n");
             // Unlike a bare host load, complete preceding GPU writes and apply
             // deferred ReportCounter readbacks before evaluating the predicate.
             renderer_flush();
@@ -8387,10 +8386,10 @@ static void exec_list(uint64_t handle, int depth) {
             const uint64_t *counter = (const uint64_t *)(uintptr_t)r->x[1];
             uint64_t a = counter[0], b = counter[2];
             bool equal = a == b;
-            totk_render_off = !(r->x[0] == 2 ? equal : !equal);
-            if (totk_cond_evals++ < 8)
-                LOG("[vk] TotK conditional mode %llu counters %llx: %llu / %llu -> render %d\n",
-                    r->x[0] - 2, r->x[1], a, b, !totk_render_off);
+            render_off = !(r->x[0] == 2 ? equal : !equal);
+            if (cond_evals++ < 8)
+                LOG("[vk] conditional mode %llu counters %llx: %llu / %llu -> render %d\n",
+                    r->x[0] - 2, r->x[1], a, b, !render_off);
             break;
         }
         case CMD_CLEAR_COLOR: {

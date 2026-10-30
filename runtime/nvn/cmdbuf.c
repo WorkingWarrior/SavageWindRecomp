@@ -532,7 +532,6 @@ PLAIN(nvnCommandBufferSetPointSize, CMD_SET_POINT_SIZE)
 PLAIN(nvnCommandBufferSetSampleMask, CMD_SET_SAMPLE_MASK)
 PLAIN(nvnCommandBufferSetRenderEnable, CMD_SET_RENDER_ENABLE)
 NVN(nvnCommandBufferSetRenderEnableConditional) {
-    if (game_is_botw()) { UNIMPLEMENTED_ONCE("SetRenderEnableConditional"); return; }
     Snap s = snap(c);
     if (s.x[1] > 1) FATAL("[nvn] invalid conditional render mode %llu\n", s.x[1]);
     CmdRec *r = record(c, CMD_SET_RENDER_ENABLE, 0, &s);
