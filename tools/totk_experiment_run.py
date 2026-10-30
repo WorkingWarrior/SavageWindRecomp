@@ -46,6 +46,7 @@ def main():
     ap.add_argument('--seconds', type=float, default=60, help='observation bound; 0 keeps the process running until a stop/error')
     ap.add_argument('--game', choices=('totk', 'botw'), default='totk')
     ap.add_argument('--sdk-entry-probe', action='store_true', help='enable the opt-in VammManager entry diagnostic')
+    ap.add_argument('--trace-svc', action='store_true', help='enable the existing kernel SVC input/output trace')
     ap.add_argument('--policy', choices=('first-missing', 'blocking', 'observe'), default='first-missing',
                     help='observe keeps nonfatal NVN stub logs for bounded diagnostic comparisons')
     ap.add_argument('--shots', default='', help='comma-separated presented frame numbers for visual observation')
@@ -63,6 +64,8 @@ def main():
                SAVAGEWIND_NO_USER_INPUT='1')
     if args.sdk_entry_probe:
         env['SAVAGEWIND_SDK_ENTRY_PROBE'] = '1'
+    if args.trace_svc:
+        env['SAVAGEWIND_TRACE_SVC'] = '1'
     if args.shots:
         if not re.fullmatch(r'\d+(,\d+)*', args.shots):
             ap.error('--shots must contain frame numbers only')

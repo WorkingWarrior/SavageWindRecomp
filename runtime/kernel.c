@@ -7,6 +7,7 @@
 
 #include "hle.h"
 #include "kernel.h"
+#include "game_profile.h"
 
 // ------------------------------------------------------------------ results
 #undef R_OK
@@ -289,8 +290,23 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
 }
 
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
+    uint64_t commit_addr = addr, commit_size = size;
+    if (!game_is_botw() && type == 7) {
+        // SDK VAMM commits small adjacent ranges. QueryMemory describes a
+        // contiguous mapping, not one bookkeeping entry per SVC invocation.
+        for (int i = 0; i < nregions;) {
+            Region *r = &regions[i];
+            if (r->type == type && r->perm == perm &&
+                (r->addr + r->size == addr || addr + size == r->addr)) {
+                if (r->addr < addr) addr = r->addr;
+                size += r->size;
+                memmove(r, r + 1, (nregions - i - 1) * sizeof *r);
+                nregions--;
+            } else i++;
+        }
+    }
     if (nregions == 1024) FATAL("too many regions\n");
-    plat_commit(addr, size);  // back it before the OS writes there (Windows: file reads into the heap)
+    plat_commit(commit_addr, commit_size);  // back only the requested pages, preserving existing contents
     int i = nregions++;
     while (i > 0 && regions[i - 1].addr > addr) { regions[i] = regions[i - 1]; i--; }
     regions[i] = (Region){addr, size, type, perm};
@@ -303,6 +319,30 @@ static void region_remove(uint64_t addr) {
             nregions--;
             return;
         }
+    }
+}
+
+static void physical_region_remove(uint64_t addr, uint64_t size) {
+    uint64_t end = addr + size;
+    for (int i = 0; i < nregions;) {
+        Region *r = &regions[i];
+        uint64_t rend = r->addr + r->size;
+        if (r->type != 7 || end <= r->addr || addr >= rend) { i++; continue; }
+        if (addr <= r->addr && end >= rend) {
+            memmove(r, r + 1, (nregions - i - 1) * sizeof *r);
+            nregions--;
+            continue;
+        }
+        if (addr <= r->addr) { r->addr = end; r->size = rend - end; }
+        else if (end >= rend) r->size = addr - r->addr;
+        else {
+            if (nregions == 1024) FATAL("too many regions\n");
+            memmove(r + 2, r + 1, (nregions - i - 1) * sizeof *r);
+            r[1] = (Region){end, rend - end, r->type, r->perm};
+            r->size = addr - r->addr;
+            nregions++;
+        }
+        i++;
     }
 }
 
@@ -1076,7 +1116,8 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         x[0] = R_OK;
         break;
     case 0x2D:  // UnmapPhysicalMemory
-        region_remove(x[0]);
+        if (game_is_botw()) region_remove(x[0]);
+        else physical_region_remove(x[0], x[1]);
         x[0] = R_OK;
         break;
     case 0x34: x[0] = svc_wait_for_address(x[0], (uint32_t)x[1], (int32_t)x[2], (int64_t)x[3]); break;

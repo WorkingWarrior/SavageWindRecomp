@@ -99,6 +99,48 @@ lines), plus `tools/test_local_continuation.py`; two generated TotK chunks diffe
 No instruction family, HLE replacement, Cpu or runtime behavior was added by
 this generator fix. The generated chunks themselves are not committed.
 
+### Fix 03 verified: physical-memory interval bookkeeping
+
+The existing SVC trace (`--trace-svc` in the runner, runtime trace unchanged)
+records 994 MapPhysicalMemory calls and 10 UnmapPhysicalMemory calls before the
+1024-entry table fills. Replaying the actual map/unmap ranges with interval
+coalescing/splitting yields **283 live intervals, maximum 283**, and no mapping
+overlaps. The old table records one entry per map call and removes an entire
+entry only when the unmap starts at exactly its base; it ignores the unmap size.
+This is an observed bookkeeping failure, not evidence of a missing memory file
+or a need to raise the limit.
+
+For TotK physical mappings only, `region_add` coalesces adjacent ranges with
+matching type/permissions. `physical_region_remove` trims, splits or removes
+exactly the requested range; nonphysical mappings are preserved. BOTW retains
+its existing add/remove paths. The limit remains **1024**. QueryMemory now sees
+the resulting contiguous intervals. Host page release remains unchanged and is
+not claimed as a full kernel-memory implementation.
+
+`test_physical_regions.py` compiles the actual kernel bookkeeping section with
+ASan/UBSan: the real 1004-call trace replay passes (283 intervals), together with
+bridge/head/tail/middle removal, permission/type boundaries, 3000 adjacent maps,
+and 10000 deterministic operations compared with a page oracle. Both incremental
+builds pass; the unchanged generated BOTW set is 997 byte-identical files.
+`fix03-botw-headless` again renders "Open your eyes…" at frame 3100, visually
+verified, with renderer draw counts. Full progression/audio remain unverified.
+
+TotK `fix03-physical-regions-run` passes the former table failure, reaches 512
+RomFS reads (123276 KB), creates more threads and opens its audio renderer
+(48000 Hz, 240 samples, 72 mixes, 96 voices, 16 effects, CPU/manual, result 0).
+After 6.008 s it stops on **FATAL: guest symbol
+`_ZN2nn5audio6server17AudioRenderSystem29ExecuteAudioRendererRenderingEv` not
+found**. The BOTW-specific audio worker requests that absent SDK symbol. TotK
+has a renderer-interface implementation instead; this is the next blocker.
+No TotK draw/menu was observed. Concurrent shutdown logs also show the existing
+`hwopus` logging stub returning success for command 5; decoding remains
+unimplemented/unverified and is not claimed safe for later playback.
+
+Cost: `runtime/kernel.c` (`region_add`, new `physical_region_remove`, SVC 0x2d),
+`tools/totk_experiment_run.py` (opt-in existing SVC trace), and
+`tools/test_physical_regions.py`. No generator/Cpu/dispatcher change; no limit
+increase. Disk free before both builds: 75 GiB.
+
 ## Historical bounded feasibility phase
 
 Later, separately authorized diagnostics are recorded in
