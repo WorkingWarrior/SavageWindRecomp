@@ -1,6 +1,6 @@
 // hwopus: the hardware Opus decoder service, decoded on the host with libopus.
 // Packet framing: an 8-byte header {u32 BE payload size, u32 BE final range} before each Opus packet; the consumed
-// size includes it and sample counts are per channel. Only TotK uses it (BOTW's audio path never reaches this service).
+// size includes it and sample counts are per channel. TotK opens it; BOTW's audio path has not been seen to.
 #if defined(__linux__) && defined(__has_include)
 #if __has_include(<opus/opus.h>)
 #include <opus/opus.h>
@@ -9,7 +9,6 @@
 
 #include "../hle.h"
 #include "../ipc.h"
-#include "../game_profile.h"
 
 typedef struct { OpusDecoder *dec; int rate, ch; } HwOpus;
 
@@ -56,11 +55,6 @@ static void decoder_handler(Service *s, IpcReq *req, IpcResp *resp) {
 // IHardwareOpusDecoderManager: 0/4 open, 1/5 work buffer size (the decoder state lives in libopus)
 SERVICE("hwopus", hwopus_manager) {
     (void)s;
-    if (game_is_botw()) {  // BOTW keeps the logging stub it always had
-        LOG("[ipc] STUB hwopus cmd %u -> ok\n", req->cmd);
-        resp_size(resp, 0x40);
-        return;
-    }
     switch (req->cmd) {
     case 0: case 4: {
         int rate = IN(int32_t, 0), ch = IN(int32_t, 4), err = 0;
