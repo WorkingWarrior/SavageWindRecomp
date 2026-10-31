@@ -32,6 +32,9 @@ Steam with Steam Input on, the game sees Steam's virtual Xbox controller.
 
 Controller vibration and frequency shaping are enabled by default. Set `SAVAGEWIND_VIBRATION=0` to disable rumble,
 or `SAVAGEWIND_VIBRATION_SHAPE=0` to use the original direct amplitude mapping without shaping.
+Nintendo controllers and the Steam Controller on its dongle (not Steam Input's virtual pad) get HD rumble, with the game's
+frequencies; `SAVAGEWIND_VIBRATION_HD=0` puts them back on the motors. For the Steam Controller,
+`SAVAGEWIND_VIBRATION_STEAM_GAIN` (dB, default 3) sets its strength and `SAVAGEWIND_VIBRATION_STEAM_SCALE` (default 0.5) its pitch.
 
 If the AppImage won't start with a FUSE error, install your distribution's `fuse3` package (the AppImage runtime
 needs `fusermount3`), or run it as `./Savage_Wind-....AppImage --appimage-extract-and-run`.

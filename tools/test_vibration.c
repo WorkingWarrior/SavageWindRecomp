@@ -15,6 +15,25 @@ bool SDL_RumbleGamepad(SDL_Gamepad *pad, Uint16 low, Uint16 high, Uint32 ms) {
     return true;
 }
 const char *SDL_GetError(void) { return "test"; }
+// The controller behind the pad; by default one with plain motors.
+static uint16_t pad_vendor, pad_product;
+static SDL_GamepadType pad_type = SDL_GAMEPAD_TYPE_STANDARD;
+static uint8_t sent[16];
+static int sent_size, send_result = 1;
+Uint16 SDL_GetGamepadVendor(SDL_Gamepad *p) { (void)p; return pad_vendor; }
+Uint16 SDL_GetGamepadProduct(SDL_Gamepad *p) { (void)p; return pad_product; }
+SDL_GamepadType SDL_GetGamepadType(SDL_Gamepad *p) { (void)p; return pad_type; }
+const char *SDL_GetGamepadPath(SDL_Gamepad *p) { (void)p; return "/dev/hidraw0"; }
+SDL_hid_device *SDL_hid_open_path(const char *path) { (void)path; return (SDL_hid_device *)(uintptr_t)1; }
+int SDL_hid_close(SDL_hid_device *d) { (void)d; return 0; }
+int SDL_hid_write(SDL_hid_device *d, const unsigned char *data, size_t size) {
+    (void)d; memcpy(sent, data, size); sent_size = (int)size;
+    return send_result ? (int)size : -1;
+}
+bool SDL_SendGamepadEffect(SDL_Gamepad *p, const void *data, int size) {
+    (void)p; memcpy(sent, data, (size_t)size); sent_size = size;
+    return send_result;
+}
 
 // Unrelated HID / settings dependencies. Keep the returned vibration object callable.
 static Service returned_service;
@@ -117,5 +136,48 @@ int main(int argc, char **argv) {
     vibration_send(left, &value); vibration_reset();
     vibration_update(pad, true); assert(motor_low == 0 && vibration_permitted());
     puts("vibration: HID packets, batching, motors, focus, disconnect and reboot checks passed");
+
+    // Steam Controller: one tone from the strongest band, at half its frequency, refreshed before it ends.
+    pad_vendor = 0x28de; pad_product = 0x1304;
+    SDL_Gamepad *steam_pad = (SDL_Gamepad *)(uintptr_t)2;
+    now = 1000; calls = 0;
+    value = (VibrationValue){.5f, 160, .25f, 320};
+    vibration_send(left, &value); vibration_update(steam_pad, true);
+    const uint8_t tone[10] = {0x83, 3, 1, 80, 0, 60, 0, 0, 0, 0};  // 0.75 ^ 0.8 = -2 dB, +3
+    assert(sent_size == 10 && !memcmp(sent, tone, 10) && calls == 0);
+    sent_size = 0; now = 1029; vibration_update(steam_pad, true); assert(sent_size == 0);
+    now = 1030; vibration_update(steam_pad, true); assert(sent_size == 10);
+    value = (VibrationValue){0, 160, .9f, 320};  // a change goes out at once, but not twice in 8 ms
+    sent_size = 0; now = 1035; vibration_send(left, &value); vibration_update(steam_pad, true); assert(sent_size == 0);
+    now = 1038; vibration_update(steam_pad, true); assert(sent_size == 10 && sent[3] == 160);
+    value = (VibrationValue){0, 160, 0, 320};
+    now = 1050; vibration_send(left, &value); vibration_update(steam_pad, true);
+    assert(sent_size == 4 && sent[0] == 0x82 && sent[1] == 3);
+    sent_size = 0; now = 1100; vibration_update(steam_pad, true); assert(sent_size == 0);  // once
+    value = (VibrationValue){1, 160, 0, 320};
+    send_result = 0; now = 1200; vibration_send(left, &value); vibration_update(steam_pad, true);
+    assert(calls == 1 && motor_low == 65535);  // a failed write leaves the motors
+    send_result = 1;
+
+    // Nintendo: both bands of both sides as the rumble packet; neutral is the well-known 00 01 40 40.
+    pad_vendor = 0x057e; pad_product = 0x2009; pad_type = SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO;
+    SDL_Gamepad *pro = (SDL_Gamepad *)(uintptr_t)3;
+    calls = 0; now = 2000;
+    vibration_clear();
+    vibration_update(pro, true);
+    const uint8_t neutral[10] = {0x10, 0, 0, 1, 0x40, 0x40, 0, 1, 0x40, 0x40};
+    assert(sent_size == 10 && !memcmp(sent, neutral, 10));
+    value = (VibrationValue){1, 160, 1, 320};
+    now = 2100; vibration_send(left, &value); vibration_update(pro, true);
+    assert(sent[2] == 0 && sent[3] == 0xc9 && sent[4] == 0x40 && sent[5] == 0x72 && !memcmp(sent + 6, neutral + 6, 4));
+    value = (VibrationValue){.4905f, 41, .4905f, 2000};  // the amplitude's odd code, the frequency limits
+    now = 2200; vibration_send(right, &value); vibration_update(pro, true);
+    assert(sent[6] == 0xfc && sent[7] == 0x87 && sent[8] == 0x81 && sent[9] == 0x61);
+    sent_size = 0; now = 2249; vibration_update(pro, true); assert(sent_size == 0);
+    now = 2250; vibration_update(pro, true); assert(sent_size == 10);
+    send_result = 0; now = 2400; vibration_send(left, &value);  vibration_update(pro, true);
+    assert(calls == 1);  // SDL refuses (a Joy-Con pair, a clone): the motors
+    send_result = 1;
+    puts("vibration: Steam Controller tones and Nintendo rumble packets passed");
     return 0;
 }

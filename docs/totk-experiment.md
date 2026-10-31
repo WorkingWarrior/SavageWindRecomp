@@ -31,7 +31,7 @@ questions and frame rates are history, and where they disagree with this section
 - Hair and cloth at 60 fps: the `cloth` set is on, its effect is not measured.
 - FOV, wide-screen, TAA, FSR 3 and frame generation are BOTW's only. The settings overlay offers only what works in TotK.
 - Steam Controller: X opens the on-screen keyboard when started through Steam (a Steam Input layout, not fixed here).
-- Vibration reaches the controller as two motor amplitudes (`runtime/hle/vibration.c`), not as HD rumble.
+- HD rumble (`runtime/hle/vibration.c`, both games): see "HD rumble". No in-game vibration has been observed in a run yet.
 
 **Changes for TotK, by area**
 | Change | Scope |
@@ -1140,3 +1140,32 @@ a crash), `SAVAGEWIND_CRASH_THREADS=1`.
 
 Also fixed: `thread_new` took the thread id and the thread-local area outside `klock`, so two threads creating threads at once
 could share a TLS slot (not the cause of either crash).
+
+## HD rumble (both games)
+
+The SDK mixes its vibration nodes itself and sends the host one value per side: an amplitude and a frequency for each of two bands.
+`runtime/hle/vibration.c` now gives those values to the controllers that can play a frequency; everything else keeps the
+shaped amplitudes on two motors. `SAVAGEWIND_VIBRATION_HD=0` turns the new paths off.
+
+| Controller | Path | What it plays |
+| --- | --- | --- |
+| Nintendo Pro Controller, Joy-Con | `SDL_SendGamepadEffect` with the rumble packet | both bands, both sides, as on the console |
+| Steam Controller on its dongle (`28de:1304`, `1305`) | output report `0x83` on its own `SDL_hid` handle | one tone, the strongest band, both sides |
+| Others, Steam Input's virtual pad, a refused or failed send | `SDL_RumbleGamepad` | two motor amplitudes |
+
+Steam Controller, measured with its accelerometer on a desk (spread of the reading, 0 dB tones): 30 Hz 0.6, 50 Hz 1.7, 70 Hz 5.0,
+100 Hz 1.4, 160 Hz 0.4, 320 Hz 0.2, 640 Hz 0.5, silent 0.01. Only side 3 (both) moves it; sides 1 and 2 give about 1%, so left
+and right are lost, and one tone plays at a time, so the weaker band is lost. Frequencies are halved
+(`SAVAGEWIND_VIBRATION_STEAM_SCALE`, default 0.5) to bring the SDK's usual 160 and 320 Hz onto the strong part of that curve, with
++3 dB on top (`SAVAGEWIND_VIBRATION_STEAM_GAIN`). A tone lasts 60 ms and is refreshed, so a stalled loop stops it; duration 0 is
+endless and must not be sent; `0x82` ends a tone at once, then the actuator rings down for about 150 ms.
+
+Checked: `make test-vibration` (report bytes, packet bytes against the known neutral and SDL's amplitude table, refresh, limits,
+fallback); the runtime's own code driving the real Steam Controller from synthetic values with +6 dB: 0.2 / 0.5 / 1.0 at 160 Hz gave 1.0 / 2.6 /
+6.0, 0.5 and 1.0 at 320 Hz gave 0.5 and 0.6, against 0.6 / 0.9 / 1.2 and 0.8 and 0.9 on the motors. +3 dB was not measured. In TotK
+and BOTW runs the controller opens on this path and the game's values reach `vibration_send` on both accepted handles
+(`SAVAGEWIND_LOG_VIBRATION=1`).
+
+Not checked: a nonzero value from either game (scripted runs of 150 s sent only zeros, nothing in them vibrates), how it feels in the hand,
+and any Nintendo controller on real hardware (none here). A Nintendo controller holds its last packet if the loop stalls: only the Steam
+tone has a lease. DualSense's voice coils need its audio channels, which SDL's rumble does not reach: motors.
