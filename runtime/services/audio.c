@@ -1072,6 +1072,10 @@ typedef struct {
     bool open;                   // the game's renderer is open
     _Atomic int threads;         // our render and event threads still running
     _Atomic bool signal;         // a frame was rendered: the event thread signals the game's event
+    _Atomic uint32_t done;       // frames rendered; updated: its value when the game's last Update finished (sdk_update)
+    _Atomic uint32_t updated;
+    _Atomic bool force;          // the game's Update waits for a frame: render one whatever the stream holds
+    _Atomic bool started;        // the renderer is started (frames are being made)
     uint64_t renderer, context;  // the game's AudioRendererHandle
     uint32_t rate, samples;      // AudioRendererParameter +0x00, +0x04
     SDL_AudioStream *stream;
@@ -1162,6 +1166,31 @@ static void sdk_sleep(Cpu *c, uint64_t ns) {
     rt_svc(c, 0x0B, 0);
 }
 
+// Hook on nn::audio::server::AudioRenderSystem::Update (the game's RequestUpdate, on its audio thread). An effect's
+// state moves on with each Update (a new one is initialised, by the command that runs it, in the first frame after the
+// Update that enabled it; the next Update marks it as running), so a frame has to run between two Updates: on the
+// console the DSP's 5 ms frames fall between the game's Updates, but the game sends some of them 0.1 ms apart, and
+// when our render thread was late (the host's CPU busy) both came before any frame: the limiter and reverb states were
+// never initialised, and the first frame to use them read null pointers (the intermittent SIGSEGV in
+// ApplyLightLimiterEffect / ApplyI3dl2ReverbEffect4ch, 4 of 10 runs with the CPU loaded). So an Update that follows an
+// Update with no frame between them asks the render thread for one and waits for it (at most 100 ms).
+static GuestFn g_sdk_update;
+static void sdk_update(Cpu *c) {
+    SdkRen *r = &g_sdkren;
+    uint64_t lr = c->x[30], args[8];
+    memcpy(args, c->x, sizeof args);
+    if (r->open && r->started && atomic_load(&r->done) == atomic_load(&r->updated)) {
+        uint32_t seen = atomic_load(&r->done);
+        r->force = true;
+        for (int i = 0; i < 200 && r->open && atomic_load(&r->done) == seen && !g_rt_unwind; i++) sdk_sleep(c, 500000);
+    }
+    memcpy(c->x, args, sizeof args);
+    c->x[30] = lr;
+    g_sdk_update(c);
+    c->x[30] = lr;
+    atomic_store(&r->updated, atomic_load(&r->done));
+}
+
 // Our render thread (a guest thread: the sdk's code runs on it). One frame each time the stream drops below its
 // target, or in real time without a device: AudioRenderSystem::ExecuteAudioRendererRendering, what the client's
 // ExecuteAudioRendererRendering calls through the renderer object (whose vtable thunks add 0x70 for the system) before
@@ -1196,8 +1225,9 @@ static void sdk_render_thread(Cpu *c) {
             next = plat_now_ns();
             continue;
         }
+        r->started = true;
         if (r->stream) {
-            if (SDL_GetAudioStreamQueued(r->stream) >= target) { sdk_sleep(c, 1000000); continue; }
+            if (SDL_GetAudioStreamQueued(r->stream) >= target && !r->force) { sdk_sleep(c, 1000000); continue; }
         } else {
             uint64_t now = plat_now_ns();
             if (now < next) { sdk_sleep(c, next - now); continue; }
@@ -1218,6 +1248,8 @@ static void sdk_render_thread(Cpu *c) {
         guest_call(c, unlock);
         uint64_t t2 = plat_now_ns();
         r->signal = true;
+        r->force = false;
+        atomic_fetch_add(&r->done, 1);
         uint32_t n = r->out_n ? r->out_n : N;
         if (!r->out_n) memset(r->out, 0, sizeof(float) * 2 * n);
         int bytes = (int)(n * 2 * sizeof(float));
@@ -1326,6 +1358,8 @@ HLE_FUNC("_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11Sy
         g_sdk_process = dispatch_lookup(proc);
         if (!g_sdk_process) FATAL("[audren-sdk] CommandListProcessor::Process %llx isn't recompiled\n", proc);
         hle_override(proc, sdk_process, "CommandListProcessor::Process");
+        uint64_t upd = loader_find_symbol("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm");
+        if (upd && (g_sdk_update = dispatch_lookup(upd))) hle_override(upd, sdk_update, "AudioRenderSystem::Update");
         hooked = proc;
     }
     r->renderer = *(const uint64_t *)(uintptr_t)h;
