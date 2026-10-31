@@ -1,59 +1,57 @@
 # TotK on SavageWind: bring-up and experiment log
 
-## Final report (end of the continuation task)
+## Status (end of session 3)
 
-**Result: TotK 1.0.0 now boots on the SavageWind runtime, plays its opening and renders the world.**
-Observed headless (gamescope, RX 9070), `build/totk-experiment/claude-61` and `claude-60`: "Nintendo
-Presents", "Tears of the Kingdom", the opening cutscene in the textured cave (torch, Link, Zelda with the
-"Zelda, Princess of Hyrule" caption and subtitles), then gameplay with HUD hearts and control hints
-(frames 1500-3000). No fatal error in 150 s runs and a 420 s run. No title *menu* was seen: a clean save goes
-straight to the intro; the reference shows the menu only once a save exists.
+**Result: TotK 1.0.0 boots on the SavageWind runtime, plays its opening with sound and reaches the first gameplay in the
+cave. It is not shown to be playable past that.** The sections after this one are the log in order: their stops, open
+questions and frame rates are history, and where they disagree with this section, this section is right.
 
-**What did not work / is not verified**
-- (Fixed after the first version of this report: Zelda's broken body and the white streaks were `LDC c[reg + imm]`
-  read with an unsigned imm16, so skinning shaders read their bone palette 64 KB off; now sign-extended as in
-  the reference. `claude-67`: Zelda and Link render correctly in the cutscene, close-up and gameplay.)
-- An intermittent SIGSEGV in SDK audio mixing `f_7004f31b50` (read of address 0, ~9 s into the run) **is not fixed**.
-  It did not occur in 72 consecutive 25 s starts through the plain runner (24 serial, 48 as four parallel loops, 24 more
-  with `SAVAGEWIND_AUDIO_LOG=1`), but it did occur once in a headless-gamescope run of the same branch (`u6-totk`), so
-  the rate is low and may depend on timing. The cause is still not identified.
-  What is known (session 3): the faulting function varies: `nn::audio::ApplyLightLimiterEffect` (reads address 0, its
-  input pointer array from `Process` holds a null) or `ApplyI3dl2ReverbEffect4ch` (reads -4), both called from
-  `CommandListProcessor::Process`, ~8 s into the run, in the first frames whose command list has the reverb (0x16) and
-  limiter (0x1b) commands. In a frame where it works those commands' states are all zero at first and `Process`
-  itself initialises them (the next frame shows delay-line pointers). The earlier theory (a null `list + 0xf30` table:
-  skip the frame) is WRONG: that field takes other values (`4b000001c20`) and skipping the frames before the first
-  update kept the states from being initialised, so the very next frame crashed every time (6 of 6). The same frames
-  run fine without the skip. The renderer's mutex (`system + 0x1f0`) is the one `AudioRenderSystem::Update` takes for
-  its whole body. 0 crashes in 27 gamescope starts with diagnostics (3 right after a rebuild, 10 under full CPU load);
-  the earlier ones had all come in runs with extra `--env` switches. Under load one start crashed elsewhere: a null
-  dereference in the game's own `main` code (`f_70007a5078`, called from `0x70024067d4`) after 22 s.
-- TotK's audio renderer runs (about 265 us per frame, no underruns) but its output peak is 0.000 for the first 60 s in
-  the opening cave, with the code before and after the unification commits alike: no sound is produced there yet.
-- Audio output, input, saving, performance (10-30 fps headless), a physical display, anything past the
-  opening cave. 20 more minutes of play or the open world were not exercised.
+**Observed in runs** (headless under gamescope, RX 9070, unless said otherwise)
+- "Nintendo Presents", "Tears of the Kingdom", the opening cutscene in the textured cave (torch, Link, Zelda with caption and
+  subtitles), then gameplay with HUD hearts and control hints (frames 1500-3000). Zelda and Link render correctly.
+- Sound: the renderer's final mix reaches the host (peak > 0, 0 underruns), voice decoders open. Heard on a real display.
+- 60 fps unloaded (held for 100 s), the game's speed right at 80 s of wall time; 52-57 fps with 16 busy loops on 16 cores.
+- Scene sizes up to 3840x2160: 1920x1080 at 60 fps, 3840x2160 at about 50 fps.
+- Under host CPU load: 26 of 26 runs alive since the core mask fix, the opening's scene at frame 2400 in 4 of 4 loaded and 3 of 3
+  unloaded runs (see "Crashes under host CPU load").
+- BOTW after the last shared change: "Open your eyes..." at frame 3100, 298-301k draws/interval.
 
-**Changes (27 commits after 860f372, 35 files, +1738/-26; nothing generated or game-owned committed)**
-| Change | Cost / scope |
+**Not verified**
+- Saving and loading, the title menu (a clean save goes straight to the intro; the reference shows the menu only once a save
+  exists).
+- Anything past the opening cave: the Sky Islands, the descent to Hyrule, the Depths, scene changes and long loads.
+- Ultrahand, Fuse, Ascend, Recall; performance in the open world; sessions of an hour or more.
+- Physical input was tried only by hand and briefly; audio correctness beyond "it plays".
+
+**Known limits**
+- A core hand-over under host load costs far more than on the console (see "Crashes under host CPU load"); `AudioRenderSystem::Update`
+  runs about 91 times a second instead of the game's 125.
+- Dynamic resolution is not pinned. The final image is scaled by the host. The default scene cap costs about 530 MB more
+  GPU heap even at 1600x900 (`SAVAGEWIND_SCENE_MAX`).
+- Hair and cloth at 60 fps: the `cloth` set is on, its effect is not measured.
+- FOV, wide-screen, TAA, FSR 3 and frame generation are BOTW's only. The settings overlay offers only what works in TotK.
+- Steam Controller: X opens the on-screen keyboard when started through Steam (a Steam Input layout, not fixed here).
+- Vibration reaches the controller as two motor amplitudes (`runtime/hle/vibration.c`), not as HD rumble.
+
+**Changes for TotK, by area**
+| Change | Scope |
 | --- | --- |
-| VAMM budget, ADR continuations, physical-memory intervals, audio renderer, cache info reader (earlier fixes) | kernel, generator, fs, audio |
-| Conditional render + rasterizer discard | cmdbuf.c, exec.c, TotK only |
-| `totk_texels_2d` ReadTexels/WriteTexels (tested against a layout oracle) | objects.c |
+| VAMM budget, ADR continuations, physical-memory intervals, audio renderer, cache info reader | kernel, generator, fs, audio |
+| 64-bit exclusive pairs | lifter (Cpu offsets preserved) |
+| Conditional render + rasterizer discard, 2D texel copies, `nvnTextureGetViewOffset` | NVN, one path for both games |
 | Region table 1024 -> 65536 | kernel.c, one constant |
-| hwopus decoder service on libopus (`-lopus` on Linux) | new `services/hwopus.c`; BOTW keeps the stub |
-| Compute shaders with the 0x100-byte TotK header | translate.c |
-| VOTE, LEA, VMNMX, RED, ATOM, DADD, DMUL, DFMA, F2F.F64; `shaderFloat64` | translate.c, device.c |
-| `nvnTextureGetViewOffset` (the cause of the magenta terrain) | objects.c, TotK only |
-| LDC with register address: signed imm16, LDC.64 latch, sub-word loads (broken skinned meshes) | translate.c, shared with BOTW (semantics now as hardware) |
-| Diagnostics: per-draw texture log, page watch, big-read log, RomFS check, runner `--env` | opt-in |
-No change to Cpu, dispatcher, lifter or the BOTW generated code (997 files unchanged by construction).
-BOTW rechecked after every shared change; last run `claude-botw-06` ("Open your eyes..." frame 3100,
-294k draws/interval).
+| hwopus decoder service on libopus | `services/hwopus.c`, both games |
+| Compute shaders with the 0x100-byte header; VOTE, LEA, VMNMX, RED, ATOM, DADD, DMUL, DFMA, F2F.F64; `shaderFloat64` | translate.c, device.c |
+| LDC with register address: signed imm16, LDC.64 latch, sub-word loads | translate.c, both games (semantics as hardware) |
+| Audio: per-game SDK offsets, DeviceSink command id, one frame between Updates | audio.c |
+| Instruction-word patch sets; scene size, heap growth, 60 fps, hair and cloth clock | gen.py, patches.c, output_scale.c, totk_frame.c, fs.c |
+| Priority preemption at indirect calls, core masks of several cores | dispatch.c, kernel.c, both games |
+| Settings overlay for TotK | menu |
+| Diagnostics: per-draw texture log, page watch, big-read log, crash and preemption logs, runner `--env` | opt-in |
 
-**Recommendation.** Continue on Savage: the remaining defects are specific (one mesh, one race), not
-architectural, and every blocker so far was a missing or stubbed NVN/translator feature. Next: diagnose
-Zelda's mesh with the pick tool, fix the audio race, then run a real scene change (open world) and measure
-performance on a display. The reference remains the playable build until then.
+**Recommendation.** Continue on Savage: every blocker so far was a missing feature or a specific bug, not the architecture.
+Next comes a real test past the cave (save and load, scene changes, the open world), because the next faults are most likely
+there. The reference remains the safer way to play until that passes.
 
 ## Active scope and current result
 
