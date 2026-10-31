@@ -401,7 +401,8 @@ Pendiente:
      sticks y el resto de símbolos quedan los del juego. Nintendo: los glifos del juego, movidos de celda si las
      asignaciones del mando no son las de fábrica. Formas trazadas con SDF; rótulos en Fira Sans (OFL, ya incluida).
      Ajuste `button_icons` (Controles > Iconos de botones: Automático, Teclado, Xbox, PlayStation, Nintendo);
-     Automático sigue al último dispositivo usado (tecla, botón o giro del ratón, o botón / stick del mando) y la
+     Automático empieza por el mando si hay uno conectado y sigue al último dispositivo usado (tecla asignada, botón
+     o giro de verdad del ratón, o botón / stick del mando; cada cambio deja `[input] now using` y su motivo en el log) y la
      hoja se vuelve a subir al cambiar (`glyphs_generation`). `SAVAGEWIND_GLYPH_DUMP=1` guarda cada hoja subida en
      `build/glyph_sheet_<n>.pgm`.
      Pendiente (2026-10-22, visto por el usuario jugando con teclado y ratón): el aviso de acción del HUD (el rombo

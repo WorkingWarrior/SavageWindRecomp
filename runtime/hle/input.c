@@ -310,9 +310,19 @@ bool input_user_blocked(const SDL_Event *e) {
     }
 }
 
-// The device the player used last (button icons, runtime/nvn/glyphs.c): a key, a mouse button or a mouse turn, or a
-// controller's button or stick
+// The device the player used last (button icons, runtime/nvn/glyphs.c): a controller from the moment it is there, until
+// a bound key, a mouse button or a real mouse turn; then back with a controller's button or stick
 int input_last_device(void) { return pad ? last_device : DEVICE_KEYBOARD; }
+static void use_device(int device, const char *why) {
+    if (device == last_device) return;
+    LOG("[input] now using the %s (%s)\n", device == DEVICE_PAD ? "controller" : "keyboard", why);
+    last_device = device;
+}
+static bool key_bound(int scancode) {
+    for (int i = 0; i < BIND_KEY_COUNT; i++)
+        if (g_bind_key[i] == scancode) return true;
+    return false;
+}
 
 // Controller family for the Controls tab labels (runtime/hle/bindings.c): 0 Nintendo / other / none, 1 Xbox, 2 PlayStation.
 // SAVAGEWIND_PAD_TYPE=xbox|playstation|nintendo pretends one is attached (tests).
@@ -322,7 +332,7 @@ static void note_family(void) {
     if (pad) switch (SDL_GetGamepadType(pad)) {
         case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: f = 1; break;
         case SDL_GAMEPAD_TYPE_PS3: case SDL_GAMEPAD_TYPE_PS4: case SDL_GAMEPAD_TYPE_PS5: f = 2; break;
-        default: break;
+        default: if (SDL_GetGamepadVendor(pad) == 0x28de) f = 1; break;  // (Valve's: labelled and laid out as Xbox's)
     }
     if (f != pad_family) LOG("[input] button prompts: %s controller\n", f == 1 ? "Xbox" : f == 2 ? "PlayStation" : "Nintendo / other");
     pad_family = f;
@@ -343,7 +353,7 @@ void input_handle_event(const SDL_Event *e) {
         int n = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&n);
         if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
-        if (pad) motion_pad_opened(pad);
+        if (pad) { motion_pad_opened(pad); if (!host_test) use_device(DEVICE_PAD, "connected"); }
         SDL_free(ids);
     }
     switch (e->type) {
@@ -356,11 +366,19 @@ void input_handle_event(const SDL_Event *e) {
             LOG("[input] F8: SAVAGEWIND_SKIP_FSHASH shaders %s\n", g_skip_fs_off ? "drawn" : "skipped");
         }
         if (e->key.scancode < SDL_SCANCODE_COUNT) keys_down[e->key.scancode] = e->type == SDL_EVENT_KEY_DOWN;
-        if (e->type == SDL_EVENT_KEY_DOWN) last_device = DEVICE_KEYBOARD;
+        if (e->type == SDL_EVENT_KEY_DOWN && key_bound(e->key.scancode)) use_device(DEVICE_KEYBOARD, SDL_GetScancodeName(e->key.scancode));
         recompute_keyboard();
         break;
     case SDL_EVENT_MOUSE_MOTION:
-        if ((tilt_held || mouse_held) && fabsf(e->motion.xrel) + fabsf(e->motion.yrel) > 4) last_device = DEVICE_KEYBOARD;
+        if (tilt_held || mouse_held) {  // (a turn, not a nudged desk: 200 counts without a quarter second's pause)
+            static uint64_t last_ms;
+            static float travel;
+            uint64_t now = SDL_GetTicks();
+            if (now - last_ms > 250) travel = 0;
+            last_ms = now;
+            travel += fabsf(e->motion.xrel) + fabsf(e->motion.yrel);
+            if (travel > 200) use_device(DEVICE_KEYBOARD, "mouse");
+        }
         if (tilt_held) {
             motion_mouse(e->motion.xrel, e->motion.yrel);
         } else if (mouse_held) {
@@ -372,7 +390,7 @@ void input_handle_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
         if (e->button.button < sizeof mouse_down && mouse_held) {
-            if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) last_device = DEVICE_KEYBOARD;
+            if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) use_device(DEVICE_KEYBOARD, "mouse button");
             mouse_down[e->button.button] = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
             recompute_keyboard();
         }
@@ -385,7 +403,7 @@ void input_handle_event(const SDL_Event *e) {
             pad = SDL_OpenGamepad(e->gdevice.which);
             LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad));
             note_family();
-            if (pad) motion_pad_opened(pad);
+            if (pad) { motion_pad_opened(pad); if (!host_test) use_device(DEVICE_PAD, "connected"); }
         }
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
@@ -404,7 +422,7 @@ void input_handle_event(const SDL_Event *e) {
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
         if (pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
                                   (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000)))
-            last_device = DEVICE_PAD;
+            use_device(DEVICE_PAD, e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "button" : "stick");
         recompute_pad();
         break;
     }
