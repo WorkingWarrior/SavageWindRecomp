@@ -1169,3 +1169,32 @@ and BOTW runs the controller opens on this path and the game's values reach `vib
 Not checked: a nonzero value from either game (scripted runs of 150 s sent only zeros, nothing in them vibrates), how it feels in the hand,
 and any Nintendo controller on real hardware (none here). A Nintendo controller holds its last packet if the loop stalls: only the Steam
 tone has a lease. DualSense's voice coils need its audio channels, which SDL's rumble does not reach: motors.
+
+## Does `VK_KHR_present_wait` improve the frame pacing? (measured, nothing changed)
+
+TotK headless under gamescope at a fixed refresh rate, frame limit 60, Fast VSync (mailbox), 50 s runs from frame 700 on, one run each,
+so the opening's own hitches are in the numbers. "Off" = 2 ms or more from the median interval between shown frames
+(`SAVAGEWIND_LOG_PRESENT`, `SAVAGEWIND_PRESENT_CSV`). A trial pacer set the period to a whole number of refreshes (rounded up, so
+never above the limit); "+ feedback" also measured the refresh from the shown times and moved the grid a quarter refresh after a
+missed one.
+
+| Display | Pacer | fps | sd (ms) | Off | Present to shown (ms) |
+| --- | --- | --- | --- | --- | --- |
+| 175 Hz | today | 60.00 | 2.23 | 9.9% | 3.11 |
+| 175 Hz | whole refreshes | 58.39 | 1.69 | 4.8% | 4.37 |
+| 175 Hz | + feedback | 58.35 | 1.50 | 1.4% | 2.70 |
+| 144 Hz | today | 60.01 | 3.72 | 40.1% | 3.25 |
+| 144 Hz | + feedback | 48.00 | 0.44 | 0.4% | 6.31 |
+| 59 Hz | today | 59.66 | 2.65 | 2.3% | 8.65 |
+| 59 Hz | whole refreshes | 59.06 | 1.58 | 0.9% | 12.41 |
+| 59 Hz | + feedback | 59.06 | 1.74 | 1.0% | 7.16 |
+
+At 60 Hz today's pacer has nothing to gain: shown every 16.67 ms, sd 0.01, in a stretch without hitches.
+
+So the smoothness comes from the whole number of refreshes, which needs only the display's rate and costs frame rate; the shown times
+add a lower latency and fewer misses at 175 Hz. Both on a fixed refresh only. The monitor here is 175 Hz with VRR on Automatic, and with
+VRR in full screen 60 fps needs none of this, while the lock would cost 1.7 fps. The real display could not be measured: the window stopped being
+shown after about 250 presents in two tries. The VRR case and the feeling in the hand are not measured. The trial code is not in the tree.
+
+Found on the way: BOTW's pacer takes a frame rate within 1% of refresh / n exactly (`on_refresh`, framepace.c); TotK's branch of
+`present_pace` does not, so 60 fps on a 59.94 or 239.77 Hz display drifts against the refreshes.
