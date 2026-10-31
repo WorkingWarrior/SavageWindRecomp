@@ -8,6 +8,7 @@
 int framepace_target(void);
 // The time between presents for it, nanoseconds (no limit: 1/300 s).
 uint64_t framepace_period_ns(void);
+uint64_t framepace_refresh_period_ns(int fps);  // 1 / fps, on the display's refreshes when it is close (on_refresh)
 // false: the game paces itself and keeps its own clock (SAVAGEWIND_FRAMEPACE=0)
 bool framepace_on(void);
 // An event is running: a cutscene, a talk, an item fanfare (the game's event manager has an active event)

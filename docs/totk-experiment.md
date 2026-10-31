@@ -1196,5 +1196,8 @@ add a lower latency and fewer misses at 175 Hz. Both on a fixed refresh only. Th
 VRR in full screen 60 fps needs none of this, while the lock would cost 1.7 fps. The real display could not be measured: the window stopped being
 shown after about 250 presents in two tries. The VRR case and the feeling in the hand are not measured. The trial code is not in the tree.
 
-Found on the way: BOTW's pacer takes a frame rate within 1% of refresh / n exactly (`on_refresh`, framepace.c); TotK's branch of
-`present_pace` does not, so 60 fps on a 59.94 or 239.77 Hz display drifts against the refreshes.
+Found on the way and fixed: BOTW's pacer takes a frame rate within 1% of refresh / n exactly (`on_refresh`, framepace.c), and TotK's branch of
+`present_pace` skipped that. It no longer does: 60 fps on a 119 Hz display (gamescope reports 118.90) went from 60.05 fps and 2.9% off to 59.42
+and 1.9%. A display under the frame rate is left alone, as for BOTW: gamescope reports 59.86 Hz for a real 60, and taking that dropped TotK to 59.89 fps
+with the display still at 60, so a true 59.94 Hz display still drifts. The same reporting error reaches multiples: if gamescope reports 119.7 for 120,
+60 fps becomes 59.85, as it already did for BOTW.

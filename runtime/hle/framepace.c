@@ -162,6 +162,8 @@ uint64_t framepace_period_ns(void) {
     return (uint64_t)((g_fg_active ? 2e9 : 1e9) / on_refresh(fps) + 0.5);
 }
 
+uint64_t framepace_refresh_period_ns(int fps) { return (uint64_t)(1e9 / on_refresh(fps) + 0.5); }
+
 // The frame loop's vsync wait: the present keeps the pace instead (1: skipped; 0: the game's own wait).
 int rt_frame_wait(void) { return framepace_on(); }
 
