@@ -1089,7 +1089,7 @@ positive and the later rendering risk remains unmeasured.
 
 Reported: the audio crash comes more often while another game runs. Reproduced with 16 busy loops on 16 cores (TotK
 headless, 22-30 s runs): without load none crashed in 10+ runs; with load roughly every second to third run died after
-16-23 s. There are **two different** crashes, both a read of address 0.
+16-23 s. There were **two different** crashes, both a read of address 0; both are fixed.
 
 **1. Audio (`f_7004f31b50` = `ApplyLightLimiterEffect`, sometimes `ApplyI3dl2ReverbEffect4ch`): found and fixed.**
 An effect's state advances with each `AudioRenderSystem::Update`: the Update that enables a new effect marks it new (state
@@ -1100,26 +1100,45 @@ thread had to be scheduled in between, and with the host's CPU busy it was not: 
 frame that had the limiter already carried state 2, the initialisation never ran, and `Apply` read the null pointers of its
 zeroed state (traced: the first generated list with the limiter command had state 2 in every crashed run and 0 in every good
 one). `sdk_update` (audio.c) now hooks `AudioRenderSystem::Update`: when no frame was rendered since the last Update ended it
-asks the render thread for one and waits (at most 100 ms) before the Update runs. 14 of 14 loaded runs lived (the same load
+waits for the next one (at most 100 ms) before the Update runs. With the final code 26 of 26 loaded runs lived (the same load
 killed 4 of 10 before); audio is unchanged otherwise (peak > 0, 0 underruns).
 
-**2. A data parser in a worker thread (`f_70007a5078`, called from `EventMgr::EventSettingLoad`, prio 55 on core 1): NOT
-fixed, avoided.** It is caused by `kernel_preempt` (priority preemption at indirect calls, added for BOTW's open world): with
-it on, about three of four loaded runs died; with `SAVAGEWIND_NO_PREEMPT=1` 3 of 3 lived, with `SAVAGEWIND_CORES=0` 2 of 2 lived 90 s,
-`SAVAGEWIND_ONE_CORE=1` still crashed 2 of 2. The preemption is off for TotK by default (`SAVAGEWIND_PREEMPT=1` turns it on);
-this is a workaround. What is known:
-- The thread is always the first `EventSettingLoad` worker; it parses a name through a copy of an object whose first field
-  comes from `[[0x7004557b18]]+0x78`, a slot of a per-index heap table of the event manager that reads 0 (its neighbours are
-  set). The same slot also reads 0 in runs that do not crash, and in those runs the function is not entered in the first 60 s,
-  so the difference is in what the game decides before it (the opening is at a different point under load).
-- Not a start-latency race: delaying every new thread by 10 ms does not help (4 of 4 still crashed). Not the creator being
-  preempted (it loses its core for 0.07 ms), not the worker's own preemption: exempting the worker (159) or its creator from
-  preemption changes nothing, but exempting **thread 127** (prio 56, core 0, a resource worker that runs the same parser and
-  shares a mutex with the loader) from preemption made 4 of 4 loaded runs live. Preempting only at the parser's own virtual
-  call (the most frequent point, 334 of 1304) is not what matters (5 of 6 still crashed).
-- Tools left for the next try: `SAVAGEWIND_LOG_PREEMPT=1` (every preemption with its call target and how long the core was
-  lost, StartThread with its creator), `SAVAGEWIND_TRACE_SVC=1` (now with the thread handle), `SAVAGEWIND_CRASH_MEM=1`
-  (memory behind each register and the frame records at a crash) and `SAVAGEWIND_CRASH_THREADS=1` (every thread's state).
+**2. The event-setting loader (`f_70007a5078`, the data parser, under `EventMgr::EventSettingLoad`): found and fixed; the
+cause was in `SetThreadCoreMask`.** The game gives both `BootupBackgroundWorkThread`s the mask 6 (cores 1 and 2) with ideal core
+-1. `svcSetThreadCoreMask` only acted on masks of one core, so they stayed on core 0, behind every better thread there (the
+main thread among them). A boot step of thread 127 (`f_700078a044`, at `L_700078a2d8`) stores a static factory (`0x70042fa310`)
+at the resource system's `+0x60` (`[[0x7004557b30]]`) and calls `f_700078aa3c`, which starts the loader thread once; a module
+worker (prio 44, `f_7001964020`) calls the same function without storing the factory. Normally 127 is far ahead. Starved on
+core 0, with each preemption costing it a host wake-up (0.1-30 ms with the host's CPU busy; 1500 of them turned a 1 s parse into
+3-4 s), it lost: the loader (`f_7000d0a584`) found `+0x60` empty and made the engine's default factory, whose objects
+(`f_70024016ac`, vtable `0x700452f618`) take a reader from `G+0x78` (`G` = `[[0x7004557b18]]`), a slot nothing sets in the
+opening, and the parser read address 0. Every crashed run had the worker start the loader, every good one thread 127.
+
+A thread outside its new mask now goes to the mask's highest core, as Horizon's `SetCoreMask`, and a thread with a mask of several
+cores takes an idle one of them when it gets a core. With `kernel_preempt` on (the workaround that kept it off for TotK is
+gone; `SAVAGEWIND_NO_PREEMPT=1` still turns it off for any game) the loader was started by thread 127, well before `BancModule`, in
+12 of 12 loaded runs. A code patch making the loader take the static factory also stopped the crash (14 of 14), but with the cause
+gone it was not needed and is not in the tree.
+
+**3. The fix of crash 1 itself broke the opening.** Its first form asked the render thread for a frame at each Update that had
+none before it. That is nearly every Update, and forced frames ignore the stream's fill level: about 700 frames a second instead of
+200, the audio clock 3.5 times too fast. With preemption on the opening then stayed on a black screen with the loading icon
+(the scene ran behind it; no voice decoders opened). Update now waits for the next regular frame: 200 frames a second, measured.
+The game's own Update rate is 125 a second; the wait brings it to about 91, because the stream takes frames in bursts of 21 ms. That
+is left as it is. A survival test does not show this kind of fault: runs must be checked by their picture too. Checked with the
+final code: the opening's scene at frame 2400 in 4 of 4 loaded and 3 of 3 unloaded runs, voice decoders open, 0 underruns.
+
+Found on the way (not a cause of either crash, Horizon's behaviour): a preempted thread took a new ticket and went behind the
+other threads of its priority on the core; in Horizon it stays first. `core_preempted` keeps its ticket and joins the waiters
+before the core is free.
+
+Not addressed: the cost of a core hand-over itself. A low-priority thread still loses much more to preemption than on the
+console while the host is busy.
+
+Tools left: `SAVAGEWIND_LOG_PREEMPT=1` (every preemption with its call target and how long the core was lost; each StartThread
+with its creator, the thread's name and the creator's guest call chain), `SAVAGEWIND_LOG_CORES=1` (the masks),
+`SAVAGEWIND_TRACE_SVC=1` (with the thread handle), `SAVAGEWIND_CRASH_MEM=1` (memory behind each register and the frame records at
+a crash), `SAVAGEWIND_CRASH_THREADS=1`.
 
 Also fixed: `thread_new` took the thread id and the thread-local area outside `klock`, so two threads creating threads at once
 could share a TLS slot (not the cause of either crash).
