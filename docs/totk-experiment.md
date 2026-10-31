@@ -1105,7 +1105,7 @@ killed 4 of 10 before); audio is unchanged otherwise (peak > 0, 0 underruns).
 
 **2. A data parser in a worker thread (`f_70007a5078`, called from `EventMgr::EventSettingLoad`, prio 55 on core 1): NOT
 fixed, avoided.** It is caused by `kernel_preempt` (priority preemption at indirect calls, added for BOTW's open world): with
-it on, 10 of 14 loaded runs died; with `SAVAGEWIND_NO_PREEMPT=1` 3 of 3 lived, with `SAVAGEWIND_CORES=0` 2 of 2 lived 90 s,
+it on, about three of four loaded runs died; with `SAVAGEWIND_NO_PREEMPT=1` 3 of 3 lived, with `SAVAGEWIND_CORES=0` 2 of 2 lived 90 s,
 `SAVAGEWIND_ONE_CORE=1` still crashed 2 of 2. The preemption is off for TotK by default (`SAVAGEWIND_PREEMPT=1` turns it on);
 this is a workaround. What is known:
 - The thread is always the first `EventSettingLoad` worker; it parses a name through a copy of an object whose first field
