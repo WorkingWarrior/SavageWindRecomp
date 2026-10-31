@@ -1074,7 +1074,6 @@ typedef struct {
     _Atomic bool signal;         // a frame was rendered: the event thread signals the game's event
     _Atomic uint32_t done;       // frames rendered; updated: its value when the game's last Update finished (sdk_update)
     _Atomic uint32_t updated;
-    _Atomic bool force;          // the game's Update waits for a frame: render one whatever the stream holds
     _Atomic bool started;        // the renderer is started (frames are being made)
     uint64_t renderer, context;  // the game's AudioRendererHandle
     uint32_t rate, samples;      // AudioRendererParameter +0x00, +0x04
@@ -1173,7 +1172,8 @@ static void sdk_sleep(Cpu *c, uint64_t ns) {
 // when our render thread was late (the host's CPU busy) both came before any frame: the limiter and reverb states were
 // never initialised, and the first frame to use them read null pointers (the intermittent SIGSEGV in
 // ApplyLightLimiterEffect / ApplyI3dl2ReverbEffect4ch, 4 of 10 runs with the CPU loaded). So an Update that follows an
-// Update with no frame between them asks the render thread for one and waits for it (at most 100 ms).
+// Update with no frame between them waits for the next frame (at most 100 ms). The render thread keeps its own time: a
+// frame made for the Update alone ran the audio clock 3.5 times too fast, and the opening never left its black screen.
 static GuestFn g_sdk_update;
 static void sdk_update(Cpu *c) {
     SdkRen *r = &g_sdkren;
@@ -1181,7 +1181,6 @@ static void sdk_update(Cpu *c) {
     memcpy(args, c->x, sizeof args);
     if (r->open && r->started && atomic_load(&r->done) == atomic_load(&r->updated)) {
         uint32_t seen = atomic_load(&r->done);
-        r->force = true;
         for (int i = 0; i < 200 && r->open && atomic_load(&r->done) == seen && !g_rt_unwind; i++) sdk_sleep(c, 500000);
     }
     memcpy(c->x, args, sizeof args);
@@ -1227,7 +1226,7 @@ static void sdk_render_thread(Cpu *c) {
         }
         r->started = true;
         if (r->stream) {
-            if (SDL_GetAudioStreamQueued(r->stream) >= target && !r->force) { sdk_sleep(c, 1000000); continue; }
+            if (SDL_GetAudioStreamQueued(r->stream) >= target) { sdk_sleep(c, 1000000); continue; }
         } else {
             uint64_t now = plat_now_ns();
             if (now < next) { sdk_sleep(c, next - now); continue; }
@@ -1248,7 +1247,6 @@ static void sdk_render_thread(Cpu *c) {
         guest_call(c, unlock);
         uint64_t t2 = plat_now_ns();
         r->signal = true;
-        r->force = false;
         atomic_fetch_add(&r->done, 1);
         uint32_t n = r->out_n ? r->out_n : N;
         if (!r->out_n) memset(r->out, 0, sizeof(float) * 2 * n);
