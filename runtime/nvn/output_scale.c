@@ -86,15 +86,17 @@ static uint32_t g_world_proj[4];  // tan(fovy / 2), aspect, near, far of the wor
 // TotK: the game renders its 3D scene at the size the patch set `scene` (tools/patches-totk-100.txt) reads from the patch
 // page (+16: width, height as floats), not at the graphics parameters' docked 1600x900, and sizes every scene target
 // from it, so its own shaders see the size they are drawn at (scaling the targets from the host left them wrong: the
-// lighting came out 10-40% darker). Only up to the shipped 1600x900: the game's texture heap is sized for that (a
-// bigger scene needs the heap definition grown, as totk-pc-recomp does). The library generated without the set: the
+// lighting came out 10-40% darker). Up to rt_scene_max (3840x2160): the game's texture heap is grown for it at boot (fs.c
+// heapdef_patch, as totk-pc-recomp does). The library generated without the set: the
 // host scales the scene targets, as for BOTW.
 static void totk_scene_size(double w, double h, OutScale *o) {
     static int set = -2;
     if (set == -2) set = rt_patch_set("scene");
     uint8_t *page = rt_patch_page();
     if (set < 0 || !page) return;
-    double k = fmin(1.0, fmin(1600.0 / w, 900.0 / h));
+    unsigned mw, mh;
+    rt_scene_max(&mw, &mh);
+    double k = fmin(1.0, fmin(mw / w, mh / h));
     unsigned pw = (unsigned)lround(w * k) & ~1u, ph = (unsigned)lround(h * k) & ~1u;
     if (pw < 320) pw = 320;
     if (ph < 180) ph = 180;

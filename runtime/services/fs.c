@@ -6,12 +6,15 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <zlib.h>
+#include <zstd.h>
 
+#include "../code_patches.h"
 #include "../game_sites.h"
 #include "../hle.h"
 #include "../ipc.h"
@@ -779,6 +782,88 @@ static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
             R->ngrown, changed, (unsigned long long)(added >> 10));
 }
 
+// TotK: the game's texture heap is sized for its 1600x900 scene (System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs,
+// sizes in KiB). A bigger scene (patch set `scene`, runtime/nvn/output_scale.c) needs room: DynamicTextureAllocatorMem and its
+// parent Graphics grow by the shipped size times the scene's pixels over 1600x900 (up to rt_scene_max), as
+// totk-pc-recomp's resolution.c does. The file is served from memory with the two sizes changed.
+// the entry of a BYML hash node (at off) with this key: the address of its 4 value bytes, NULL if none
+static uint8_t *byml_hash_entry(uint8_t *d, size_t n, uint32_t off, const char *key, uint8_t *type) {
+    uint32_t kt = rd32(d + 4);
+    if (off + 4 > n || d[off] != 0xC1 || kt + 4 > n || d[kt] != 0xC2) return NULL;
+    uint32_t cnt = rd32(d + off) >> 8, nk = rd32(d + kt) >> 8;
+    if (off + 4 + (uint64_t)cnt * 8 > n || kt + 4 + (uint64_t)nk * 4 > n) return NULL;
+    for (uint32_t i = 0; i < cnt; i++) {
+        uint8_t *e = d + off + 4 + i * 8;
+        uint32_t k = rd32(e) & 0xFFFFFF;
+        if (k >= nk || rd32(d + kt + 4 + k * 4) >= n - kt) continue;
+        if (strncmp((const char *)d + kt + rd32(d + kt + 4 + k * 4), key, 64)) continue;
+        *type = e[3];
+        return e + 4;
+    }
+    return NULL;
+}
+
+static uint8_t *heapdef_size(uint8_t *d, size_t n, const char *heap) {
+    uint8_t t;
+    uint8_t *heaps = byml_hash_entry(d, n, rd32(d + 12), "Heaps", &t);
+    if (!heaps || t != 0xC1) return NULL;
+    uint8_t *h = byml_hash_entry(d, n, rd32(heaps), heap, &t);
+    if (!h || t != 0xC1) return NULL;
+    uint8_t *sz = byml_hash_entry(d, n, rd32(h), "Size", &t);
+    return sz && t == 0xD1 ? sz : NULL;
+}
+
+static void heapdef_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    static const char path[] = "System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs";
+    if (game_is_botw()) return;
+    unsigned mw, mh;
+    rt_scene_max(&mw, &mh);
+    if ((uint64_t)mw * mh <= 1600u * 900u) return;
+    int k = 0;
+    while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, path)) k++;
+    char host[1200];
+    if (k == R->rom_nfiles || overlay_file(path, host, sizeof host)) return;
+    size_t zn = R->rom_files[k].size;
+    uint8_t *z = malloc(zn), *d = NULL, *out = NULL;
+    const char *why = NULL;
+    size_t n = 0, on = 0;
+    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) != (ssize_t)zn) why = "not readable";
+    unsigned long long cn = why ? 0 : ZSTD_getFrameContentSize(z, zn);
+    if (!why && (cn == ZSTD_CONTENTSIZE_UNKNOWN || cn == ZSTD_CONTENTSIZE_ERROR || cn > (16u << 20))) why = "not a zstd frame";
+    if (!why) {
+        d = malloc(cn);
+        n = ZSTD_decompress(d, cn, z, zn);
+        if (ZSTD_isError(n) || n != cn || n < 16 || memcmp(d, "YB", 2)) why = "not a BYML";
+    }
+    uint8_t *dta = why ? NULL : heapdef_size(d, n, "DynamicTextureAllocatorMem"), *gfx = why ? NULL : heapdef_size(d, n, "Graphics");
+    if (!why && (!dta || !gfx)) why = "no DynamicTextureAllocatorMem / Graphics size";
+    uint32_t extra_kib = rt_totk_heap_extra_kib();
+    if (!why && rd32(dta) != 113664u) why = "not the 1.0.0 sizes";  // (the pool extra in kernel.c is computed from them)
+    if (!why) {
+        uint32_t a = rd32(dta) + extra_kib, b = rd32(gfx) + extra_kib;
+        memcpy(dta, &a, 4);
+        memcpy(gfx, &b, 4);
+        on = ZSTD_compressBound(n);
+        out = malloc(on);
+        on = ZSTD_compress(out, on, d, n, 3);
+        if (ZSTD_isError(on)) why = "not compressible";
+    }
+    if (why) {
+        LOG("[fs] heap definition: %s, the game's sizes stay (scenes above 1600x900 are not possible)\n", why);
+        free(z), free(d), free(out);
+        return;
+    }
+    meta_copy(fmeta, foff, fsz);
+    uint64_t rel = R->ov_end - R->rom_data_off, size = on;
+    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, out};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    LOG("[fs] heap definition: scenes up to %ux%u, texture and graphics heaps +%u MiB\n", mw, mh, extra_kib >> 10);
+    free(z), free(d);
+}
+
 static void rom_index(void) {
     uint64_t h[10];
     if (romfs_image_pread(R->img, h, sizeof h, 0) != (ssize_t)sizeof h) return;
@@ -854,6 +939,7 @@ static void rom_index(void) {
         R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
         break;
     }
+    heapdef_patch(fmeta, foff, fsz);
     hud_letters_patch(fmeta, foff, fsz);
     rstb_patch(fmeta, foff, fsz);
     if (R->ov_n) LOG("[fs] overlay: %d romfs files replaced\n", R->ov_n);

@@ -466,9 +466,20 @@ PYTHONDONTWRITEBYTECODE=1 tools/venv/bin/python tools/gen.py all ../totk-recomp/
 (`+16`) instead of 1600x900. `output_scale.c` writes the size the Video settings ask for (window size for Upscaler Off,
 divided by the FSR 1 mode's factor) and switches the set on when it differs. Measured in the cave scene at a 1280x720
 window: scene 640x360 (Performance) brightness 33.0, 852x480 (Quality) 32.9, against 32.8 at the game's size; BOTW
-unchanged (298k draws/interval, "Open your eyes..."). Not done: sizes above 1600x900 (the game's texture heap is sized
-for the shipped scene; totk-pc-recomp grows it through the HeapDef table), the final-image size (the host still scales
+unchanged (298k draws/interval, "Open your eyes..."). Not done: the final-image size (the host still scales
 that) and the dynamic resolution controller (its scale is still the game's).
+
+**Scenes above 1600x900** (session 3): the game itself allocates its scene targets from its texture heap, so a bigger scene needs
+that heap grown (BOTW doesn't: the host makes bigger images and the guest keeps its 1600x900 constants, which BOTW's
+shaders tolerate; TotK's lighting came out darker that way, see above). `heapdef_patch` (`runtime/services/fs.c`) serves
+`System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs` from memory with `DynamicTextureAllocatorMem` (shipped 113664 KiB) and its
+parent `Graphics` (201728 KiB) grown by 113664 KiB x (scene pixels / 1600x900 - 1), as totk-pc-recomp's `resolution.c` does,
+and `svc GetInfo` (`kernel.c`) reports the same growth in the application memory, because the game sizes its heap from that
+before it reads any file (`SetHeapSize` 2140 -> 2670 MB). The cap is `SAVAGEWIND_SCENE_MAX=<w>x<h>` (default 3840x2160, +529 MiB;
+`1600x900`: no growth, scene capped at 1600x900); the scene size follows the window and Upscaler setting up to it.
+Measured headless at 1280x720 with `SAVAGEWIND_SCALE`: 1920x1080 scene 60 fps, 3840x2160 scene about 50 fps, both boot and
+render correctly (4K: sharp, lit as at the shipped size). Needs libzstd (`-lzstd`). The heap is GPU-backed, so the default
+costs about 530 MB more of it even at 1600x900; set a smaller `SAVAGEWIND_SCENE_MAX` to save it.
 
 **60 fps** (sets `fps60`, `realtime`, `bounce`, `cloth`; `runtime/totk_frame.c`): the present-interval controller's minimum goes from 2
 to 1, the game's step comes from the page (average of the last 5 display intervals, at most 1/15 s) instead of whole vsyncs, and

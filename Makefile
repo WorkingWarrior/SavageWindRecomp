@@ -90,7 +90,7 @@ SHADERC  ?= $(if $(DEPS),-lshaderc_shared,$(or $(shell pkg-config --libs shaderc
              $(shell echo '$(SHADERC_TEST)' | $(CC) -x c - -lshaderc -o /dev/null 2>/dev/null && echo -lshaderc),-lshaderc))
 # -rdynamic: crash backtraces name host functions (runtime/platform/linux.c)
 LDFLAGS  := -fuse-ld=lld -rdynamic $(if $(DEPS),-L$(DEPS)/lib) -lSDL3 -lavformat -lavcodec -lavutil -lswscale \
-            -lvulkan $(SHADERC) -lz $(if $(wildcard /usr/include/opus/opus.h),-lopus) -lpthread -ldl -lm
+            -lvulkan $(SHADERC) -lz -lzstd $(if $(wildcard /usr/include/opus/opus.h),-lopus) -lpthread -ldl -lm
 BACKEND_SRC := $(wildcard runtime/nvn/vulkan/*.c) $(wildcard runtime/nvn/vulkan/*.cpp)
 BACKEND_OBJ := $(patsubst runtime/%.cpp,$(B)/rt/%.o,$(patsubst runtime/%.c,$(B)/rt/%.o,$(BACKEND_SRC)))
 IMGUI_OBJ += $(B)/imgui/imgui_impl_vulkan.o

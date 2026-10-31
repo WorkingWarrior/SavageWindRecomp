@@ -5,6 +5,7 @@
 //
 // The patch page is a guest page inside the module window, within an ADRP's reach of the patched code; its layout
 // belongs to the sets that use it (scene: +16 the scene size {w, h} as floats).
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,3 +62,26 @@ void rt_patch_switch(int set, int on) {
 }
 
 int rt_patch_enabled(int set) { return set >= 0 && set < RT_PATCH_COUNT && rt_patch_on[set]; }
+
+void rt_scene_max(unsigned *w, unsigned *h) {
+    static unsigned mw, mh;
+    if (!mw) {
+        const char *e = getenv("SAVAGEWIND_SCENE_MAX");
+        unsigned a = 0, b = 0;
+        if (!e || sscanf(e, "%ux%u", &a, &b) != 2 || a < 1600 || b < 900 || a > 7680 || b > 4320) a = 3840, b = 2160;
+        mw = a & ~1u, mh = b & ~1u;
+    }
+    *w = mw, *h = mh;
+}
+
+// DynamicTextureAllocatorMem's shipped size (TotK 1.0.0 HeapDef, KiB) grown by the scene's pixels over 1600x900, in whole MiB
+// (totk-pc-recomp's resolution.c); the heaps it sits in (Graphics) grow by the same
+#define TOTK_DTA_KIB 113664u
+uint32_t rt_totk_heap_extra_kib(void) {
+    unsigned w, h;
+    rt_scene_max(&w, &h);
+    double grow = (double)w * h / (1600.0 * 900.0) - 1.0;
+    return grow > 0 ? (uint32_t)(ceil(TOTK_DTA_KIB * grow / 1024.0) * 1024.0) : 0;
+}
+
+uint64_t rt_totk_pool_extra(void) { return (((uint64_t)rt_totk_heap_extra_kib() << 10) + 0x1FFFFF) & ~0x1FFFFFull; }

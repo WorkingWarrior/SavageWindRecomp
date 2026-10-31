@@ -5,6 +5,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "code_patches.h"
 #include "hle.h"
 #include "kernel.h"
 #include "game_profile.h"
@@ -1116,7 +1117,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         case 3: v = ALIAS_SIZE; break;
         case 4: v = HEAP_BASE; break;
         case 5: v = HEAP_MAX; break;
-        case 6: case 21: v = 0xCD500000ull; break;  // application memory (3.2 GB, as on hardware)
+        case 6: case 21: v = 0xCD500000ull + (game_is_botw() ? 0 : rt_totk_pool_extra()); break;  // application memory (3.2 GB, as on hardware; TotK: and its grown heaps)
         case 7: case 22: v = heap_size + 0x4000000; break;
         case 8: v = 0; break;
         case 9: v = 0; break;
