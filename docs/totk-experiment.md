@@ -1084,3 +1084,21 @@ continuation was not attempted because the one-additional-iteration limit is
 exhausted. Recommendation remains to use the reference for TotK rather than
 claim a completed Savage port; the compiler/early-runtime feasibility result is
 positive and the later rendering risk remains unmeasured.
+
+## Crashes under host CPU load (session 3)
+
+Reported: the audio crash comes more often while another game runs. Reproduced with 16 busy loops on 16 cores (TotK
+headless, 30-60 s runs): without load none crashed in 10+ runs; with load 4 of 4 died after 17-22 s, and there are **two**
+different crashes, both a read of address 0:
+
+- `f_70007a5078` (a data parser; 3 of 4): in a worker thread just after it started. It is caused by the priority
+  preemption at indirect calls (`kernel_preempt`, added for BOTW's open world): with `SAVAGEWIND_NO_PREEMPT=1` 3 of 3 loaded
+  runs lived 40 s, with `SAVAGEWIND_CORES=0` 2 of 2 lived 90 s, `SAVAGEWIND_ONE_CORE=1` still crashed 2 of 2. What exactly the
+  game does not survive in the preempted thread is not found. Fix (workaround): preemption is off for TotK by default
+  (`SAVAGEWIND_PREEMPT=1` turns it on); after it 2 of 3 loaded runs lived 60 s and the third died in the audio crash below.
+- `f_7004f31b50+54e` (the audio limiter/reverb crash in the SDK renderer; 1 of 4 loaded runs before and 1 of 3 after): not
+  related to preemption, still open. Its thread runs off the cores (parallel with the game's threads), so a data race with the
+  game's own audio thread is the main suspect.
+
+Also fixed: `thread_new` took the thread id and the thread-local area outside `klock`, so two threads creating threads at once
+could share a TLS slot (not the cause of either crash above).

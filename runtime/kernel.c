@@ -142,12 +142,13 @@ static Core g_cores[4] = {
 static int g_cores_on = -1;
 // The best (lowest) priority among the threads waiting for each core, INT_MAX with none: what dispatch.c checks at every
 // indirect call (kernel_preempt). SAVAGEWIND_NO_PREEMPT=1: kept at INT_MAX (preemption at syscalls only, as before).
+// TotK: off unless SAVAGEWIND_PREEMPT=1; with it TotK crashed at once under host CPU load (see docs/totk-experiment.md).
 // One cache line per core, written only when it changes: every indirect call of every guest thread reads its core's
 // entry, and one shared line rewritten at each core hand-over missed in their caches.
 CoreBestWait g_core_best_wait[4] = {{INT_MAX}, {INT_MAX}, {INT_MAX}, {INT_MAX}};
 static void core_best_update(Core *k) {  // (k->m held)
     static int off = -1;
-    if (off < 0) off = getenv("SAVAGEWIND_NO_PREEMPT") != NULL;
+    if (off < 0) off = getenv("SAVAGEWIND_NO_PREEMPT") != NULL || (!game_is_botw() && !getenv("SAVAGEWIND_PREEMPT"));
     int best = INT_MAX;
     for (int i = 0; i < k->nwaiting && !off; i++)
         if (k->waiting[i]->prio < best) best = k->waiting[i]->prio;
@@ -453,15 +454,15 @@ static KThread *thread_new(uint64_t entry, uint64_t arg, uint64_t stack_top, int
     t->prio = t->base_prio = prio;
     t->core = core < 0 ? 0 : core & 3;  // (-2: the process's default core, 0)
     t->core_held = -1;
-    t->id = next_thread_id++;
     t->cpu.x[0] = arg;
     t->cpu.sp = stack_top & ~15ull;
     t->cpu.excl_addr = ~0ull;
+    t->cpu.thread = t;
+    klock();  // (threads create threads: two of them must not get the same id or thread-local area)
+    t->id = next_thread_id++;
     t->tlr = tls_next;
     tls_next += 0x200;
     t->cpu.tpidrro = t->tlr;
-    t->cpu.thread = t;
-    klock();
     t->anext = g_threads;
     g_threads = t;
     pthread_mutex_unlock(&g_klock);
