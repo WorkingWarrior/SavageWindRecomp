@@ -41,6 +41,7 @@ struct KThread {
     // core scheduling (runtime/kernel.c "cores"): the core it runs on, the one it holds (-1: none) and its turn
     int core_held;
     uint64_t core_ticket;
+    uint8_t core_mask;  // SetThreadCoreMask's; 0 until it is set (the thread stays on its core)
     bool off_cores;  // runs beside the cores, never holding one (kernel_thread_off_cores)
 };
 

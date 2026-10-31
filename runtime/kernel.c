@@ -142,14 +142,12 @@ static Core g_cores[4] = {
 static int g_cores_on = -1;
 // The best (lowest) priority among the threads waiting for each core, INT_MAX with none: what dispatch.c checks at every
 // indirect call (kernel_preempt). SAVAGEWIND_NO_PREEMPT=1: kept at INT_MAX (preemption at syscalls only, as before).
-// TotK: off unless SAVAGEWIND_PREEMPT=1 - a workaround, not a fix: with it, and the host's CPU busy, its event-setting loader
-// thread dies in the data parser a few seconds into the opening (docs/totk-experiment.md, "Crashes under host CPU load").
 // One cache line per core, written only when it changes: every indirect call of every guest thread reads its core's
 // entry, and one shared line rewritten at each core hand-over missed in their caches.
 CoreBestWait g_core_best_wait[4] = {{INT_MAX}, {INT_MAX}, {INT_MAX}, {INT_MAX}};
 static void core_best_update(Core *k) {  // (k->m held)
     static int off = -1;
-    if (off < 0) off = getenv("SAVAGEWIND_NO_PREEMPT") != NULL || (!game_is_botw() && !getenv("SAVAGEWIND_PREEMPT"));
+    if (off < 0) off = getenv("SAVAGEWIND_NO_PREEMPT") != NULL;
     int best = INT_MAX;
     for (int i = 0; i < k->nwaiting && !off; i++)
         if (k->waiting[i]->prio < best) best = k->waiting[i]->prio;
@@ -171,14 +169,8 @@ static bool core_next(Core *k, KThread *t) {
     return true;
 }
 
-static void core_acquire(KThread *t) {
-    if (!t || !cores_on() || t->core_held >= 0 || t->off_cores) return;
-    static int one_core = -1;  // (debug) SAVAGEWIND_ONE_CORE=1: every thread on core 0, one guest thread at a time
-    if (one_core < 0) one_core = getenv("SAVAGEWIND_ONE_CORE") != NULL;
-    int idx = one_core ? 0 : t->core & 3;
-    Core *k = &g_cores[idx];
-    pthread_mutex_lock(&k->m);
-    t->core_ticket = k->next_ticket++;
+// t joins the core's waiters and returns as its owner. Caller holds k->m, which this releases.
+static void core_wait(Core *k, KThread *t) {
     if (k->nwaiting < 64) k->waiting[k->nwaiting++] = t;
     core_best_update(k);
     while ((k->owner || !core_next(k, t)) && !g_rt_unwind) pthread_cond_wait(&k->cv, &k->m);
@@ -186,8 +178,24 @@ static void core_acquire(KThread *t) {
         if (k->waiting[i] == t) { k->waiting[i] = k->waiting[--k->nwaiting]; break; }
     core_best_update(k);
     if (!k->owner) k->owner = t;  // (during a reboot the core may stay with another thread: run anyway)
-    t->core_held = k->owner == t ? idx : -1;
+    t->core_held = k->owner == t ? (int)(k - g_cores) : -1;
     pthread_mutex_unlock(&k->m);
+}
+
+static void core_acquire(KThread *t) {
+    if (!t || !cores_on() || t->core_held >= 0 || t->off_cores) return;
+    static int one_core = -1;  // (debug) SAVAGEWIND_ONE_CORE=1: every thread on core 0, one guest thread at a time
+    if (one_core < 0) one_core = getenv("SAVAGEWIND_ONE_CORE") != NULL;
+    if (!one_core && t->core_mask & (t->core_mask - 1))  // Horizon moves a thread the mask allows to an idle core
+        for (int i = 0; i < 4; i++)
+            if (t->core_mask >> i & 1 && !__atomic_load_n(&g_cores[i].owner, __ATOMIC_RELAXED) && !__atomic_load_n(&g_cores[i].nwaiting, __ATOMIC_RELAXED)) {
+                t->core = i;
+                break;
+            }
+    Core *k = &g_cores[one_core ? 0 : t->core & 3];
+    pthread_mutex_lock(&k->m);
+    t->core_ticket = k->next_ticket++;
+    core_wait(k, t);
 }
 
 static void core_release(KThread *t) {
@@ -198,6 +206,18 @@ static void core_release(KThread *t) {
     t->core_held = -1;
     pthread_cond_broadcast(&k->cv);
     pthread_mutex_unlock(&k->m);
+}
+
+// A better thread takes t's core. t did not wait or yield, so as in Horizon's queues it stays first among its own
+// priority: its ticket stays, and it is among the waiters before the core is free.
+static void core_preempted(KThread *t) {
+    if (!t || t->core_held < 0) return;
+    Core *k = &g_cores[t->core_held];
+    pthread_mutex_lock(&k->m);
+    if (k->owner == t) k->owner = NULL;
+    t->core_held = -1;
+    pthread_cond_broadcast(&k->cv);
+    core_wait(k, t);
 }
 
 // A thread that does a coprocessor's work runs beside the four cores, as on the console: the in-process audio
@@ -242,7 +262,7 @@ static void core_preempt_point(KThread *t) {
     for (int i = 0; i < k->nwaiting; i++)
         if (k->waiting[i]->prio < t->prio) better = true;
     pthread_mutex_unlock(&k->m);
-    if (better) { core_release(t); core_acquire(t); }
+    if (better) core_preempted(t);
 }
 
 // Horizon runs a better (lower priority number) thread the moment it can run, taking the core from a worse one.
@@ -256,8 +276,7 @@ void kernel_preempt(KThread *t) {
     if (lg < 0) lg = getenv("SAVAGEWIND_LOG_PREEMPT") != NULL;
     uint64_t t0 = lg ? plat_now_ns() : 0;
     int core = t->core_held;
-    core_release(t);
-    core_acquire(t);
+    core_preempted(t);
     if (lg) LOG("[preempt] %.3f thread %x prio %d core %d lost its core for %.3f ms at call to %llx from %llx\n", t0 / 1e6, t->handle, t->prio, core, (plat_now_ns() - t0) / 1e6, (unsigned long long)t->cpu.pc, (unsigned long long)t->cpu.x[30]);
 }
 
@@ -281,6 +300,8 @@ static void core_move(KThread *t, int core) {
     }
 }
 
+void kernel_log_guest_chain(void);
+static bool guest_mapped(uint64_t a, uint64_t n);
 static bool kwait(int64_t timeout_ns, const struct timespec *ts) {
     pthread_cond_t *cv = t_cur ? &t_cur->cond : &g_nothread_cond;
     KThread *t = t_cur;
@@ -967,6 +988,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         KObject *o = handle_get((uint32_t)x[0]);
         if (!o || o->type != KOBJ_THREAD) { x[0] = R_INVALID_HANDLE; break; }
         if (ENV("SAVAGEWIND_LOG_PREEMPT")) LOG("[kernel] %.3f StartThread %x by thread %x (prio %d core %d)\n", plat_now_ns() / 1e6, ((KThread *)o)->handle, kernel_current_thread_handle(), t_cur ? t_cur->prio : -1, t_cur ? t_cur->core : -1);
+        if (ENV("SAVAGEWIND_LOG_PREEMPT")) { uint64_t arg = ((KThread *)o)->cpu.x[0]; LOG("[kernel] thread %x is '%.48s'\n", ((KThread *)o)->handle, arg && guest_mapped(arg + 0x180, 48) ? (const char *)(uintptr_t)(arg + 0x180) : "?"); kernel_log_guest_chain(); }
         thread_start((KThread *)o);
         x[0] = R_OK;
         break;
@@ -1017,7 +1039,10 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
         if (ENV("SAVAGEWIND_LOG_CORES"))
             LOG("[kernel] SetThreadCoreMask %x: ideal %d mask %llx (prio %d)\n", ((KThread *)o)->handle, ideal,
                 (unsigned long long)mask, ((KThread *)o)->prio);
-        if (core < 0 && mask && !(mask & (mask - 1))) core = __builtin_ctzll(mask);  // pinned to one core
+        // Out of the mask (a mask of one core, or BootupBackgroundWorkThread's 1 and 2 with the thread on 0): the highest
+        // core of the mask, as Horizon's SetCoreMask. TotK's boot threads stayed on core 0, behind every better thread there.
+        if (core < 0 && mask && !(mask >> ((KThread *)o)->core & 1)) core = 63 - __builtin_clzll(mask);
+        ((KThread *)o)->core_mask = mask;
         if (core >= 0) core_move((KThread *)o, core);
         x[0] = R_OK;
         break;
@@ -1249,16 +1274,16 @@ static bool guest_mapped(uint64_t a, uint64_t n) {
 void kernel_log_guest_chain(void) {
     KThread *t = t_cur;
     if (!t) return;
-    fprintf(stderr, "[watch]   guest lr %llx chain", (unsigned long long)t->cpu.x[30]);
+    char line[512]; int n = snprintf(line, sizeof line, "[watch]   guest lr %llx chain", (unsigned long long)t->cpu.x[30]);
     uint64_t fp = t->cpu.x[29];
-    for (int i = 0; i < 10 && fp && !(fp & 7) && guest_mapped(fp, 16); i++) {
+    for (int i = 0; i < 16 && fp && !(fp & 7) && guest_mapped(fp, 16); i++) {
         const uint64_t *rec = (const uint64_t *)(uintptr_t)fp;
         if (!rec[1]) break;
-        fprintf(stderr, " %llx", (unsigned long long)rec[1]);
+        n += snprintf(line + n, sizeof line - n, " %llx", (unsigned long long)rec[1]);
         if (rec[0] <= fp) break;
         fp = rec[0];
     }
-    fprintf(stderr, "\n");
+    fprintf(stderr, "%s\n", line);
 }
 
 static void dump_threads(void) {
