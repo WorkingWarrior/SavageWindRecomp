@@ -1088,17 +1088,38 @@ positive and the later rendering risk remains unmeasured.
 ## Crashes under host CPU load (session 3)
 
 Reported: the audio crash comes more often while another game runs. Reproduced with 16 busy loops on 16 cores (TotK
-headless, 30-60 s runs): without load none crashed in 10+ runs; with load 4 of 4 died after 17-22 s, and there are **two**
-different crashes, both a read of address 0:
+headless, 22-30 s runs): without load none crashed in 10+ runs; with load roughly every second to third run died after
+16-23 s. There are **two different** crashes, both a read of address 0.
 
-- `f_70007a5078` (a data parser; 3 of 4): in a worker thread just after it started. It is caused by the priority
-  preemption at indirect calls (`kernel_preempt`, added for BOTW's open world): with `SAVAGEWIND_NO_PREEMPT=1` 3 of 3 loaded
-  runs lived 40 s, with `SAVAGEWIND_CORES=0` 2 of 2 lived 90 s, `SAVAGEWIND_ONE_CORE=1` still crashed 2 of 2. What exactly the
-  game does not survive in the preempted thread is not found. Fix (workaround): preemption is off for TotK by default
-  (`SAVAGEWIND_PREEMPT=1` turns it on); after it 2 of 3 loaded runs lived 60 s and the third died in the audio crash below.
-- `f_7004f31b50+54e` (the audio limiter/reverb crash in the SDK renderer; 1 of 4 loaded runs before and 1 of 3 after): not
-  related to preemption, still open. Its thread runs off the cores (parallel with the game's threads), so a data race with the
-  game's own audio thread is the main suspect.
+**1. Audio (`f_7004f31b50` = `ApplyLightLimiterEffect`, sometimes `ApplyI3dl2ReverbEffect4ch`): found and fixed.**
+An effect's state advances with each `AudioRenderSystem::Update`: the Update that enables a new effect marks it new (state
+byte 0 in the command, +0x70), the command that runs it in the first frame afterwards initialises its work state (pointers
+into the effect's work buffer, `f_7004f31a50`), and the next Update moves it to running (2). The game sends some Updates
+0.1 ms apart (two RequestUpdate calls in a row). On the console the DSP's 5 ms frames fall between Updates; here our render
+thread had to be scheduled in between, and with the host's CPU busy it was not: both Updates came before any frame, the first
+frame that had the limiter already carried state 2, the initialisation never ran, and `Apply` read the null pointers of its
+zeroed state (traced: the first generated list with the limiter command had state 2 in every crashed run and 0 in every good
+one). `sdk_update` (audio.c) now hooks `AudioRenderSystem::Update`: when no frame was rendered since the last Update ended it
+asks the render thread for one and waits (at most 100 ms) before the Update runs. 14 of 14 loaded runs lived (the same load
+killed 4 of 10 before); audio is unchanged otherwise (peak > 0, 0 underruns).
+
+**2. A data parser in a worker thread (`f_70007a5078`, called from `EventMgr::EventSettingLoad`, prio 55 on core 1): NOT
+fixed, avoided.** It is caused by `kernel_preempt` (priority preemption at indirect calls, added for BOTW's open world): with
+it on, 10 of 14 loaded runs died; with `SAVAGEWIND_NO_PREEMPT=1` 3 of 3 lived, with `SAVAGEWIND_CORES=0` 2 of 2 lived 90 s,
+`SAVAGEWIND_ONE_CORE=1` still crashed 2 of 2. The preemption is off for TotK by default (`SAVAGEWIND_PREEMPT=1` turns it on);
+this is a workaround. What is known:
+- The thread is always the first `EventSettingLoad` worker; it parses a name through a copy of an object whose first field
+  comes from `[[0x7004557b18]]+0x78`, a slot of a per-index heap table of the event manager that reads 0 (its neighbours are
+  set). The same slot also reads 0 in runs that do not crash, and in those runs the function is not entered in the first 60 s,
+  so the difference is in what the game decides before it (the opening is at a different point under load).
+- Not a start-latency race: delaying every new thread by 10 ms does not help (4 of 4 still crashed). Not the creator being
+  preempted (it loses its core for 0.07 ms), not the worker's own preemption: exempting the worker (159) or its creator from
+  preemption changes nothing, but exempting **thread 127** (prio 56, core 0, a resource worker that runs the same parser and
+  shares a mutex with the loader) from preemption made 4 of 4 loaded runs live. Preempting only at the parser's own virtual
+  call (the most frequent point, 334 of 1304) is not what matters (5 of 6 still crashed).
+- Tools left for the next try: `SAVAGEWIND_LOG_PREEMPT=1` (every preemption with its call target and how long the core was
+  lost, StartThread with its creator), `SAVAGEWIND_TRACE_SVC=1` (now with the thread handle), `SAVAGEWIND_CRASH_MEM=1`
+  (memory behind each register and the frame records at a crash) and `SAVAGEWIND_CRASH_THREADS=1` (every thread's state).
 
 Also fixed: `thread_new` took the thread id and the thread-local area outside `klock`, so two threads creating threads at once
-could share a TLS slot (not the cause of either crash above).
+could share a TLS slot (not the cause of either crash).

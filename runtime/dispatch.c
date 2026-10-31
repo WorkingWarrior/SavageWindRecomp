@@ -218,15 +218,53 @@ static const char *host_sym(uint64_t pc, uint64_t *offset) {
     return s ? s : rt_host_fn_name(pc, offset);
 }
 
+// Reads guest memory for a crash report without faulting (pipe write: the kernel copies from mappings process_vm_readv can't read)
+static bool crash_read(uint64_t a, void *dst, size_t n) {
+    int p[2];
+    if (pipe(p)) return false;
+    bool ok = write(p[1], (const void *)(uintptr_t)a, n) == (ssize_t)n && read(p[0], dst, n) == (ssize_t)n;
+    close(p[0]), close(p[1]);
+    return ok;
+}
+
 void rt_fatal_trace(void) {
     fprintf(stderr, "host backtrace (guest functions are f_<addr>):\n");
     plat_print_backtrace();
     Cpu *c = kernel_current_cpu();
     if (c) {
-        fprintf(stderr, "guest: sp=%llx lr=%llx\n", c->sp, c->x[30]);
+        fprintf(stderr, "guest: thread %x sp=%llx lr=%llx\n", kernel_current_thread_handle(), c->sp, c->x[30]);
         for (int i = 0; i < 31; i += 4)
             fprintf(stderr, "  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx  x%-2d %016llx\n", i, c->x[i], i + 1,
                     c->x[i + 1], i + 2, c->x[i + 2], i + 3, c->x[i + 3]);
+    }
+    if (getenv("SAVAGEWIND_CRASH_THREADS")) { extern void kernel_dump_threads(void); kernel_dump_threads(); }
+    if (c && getenv("SAVAGEWIND_CRASH_MEM")) {  // 64 bytes at every register that points into the guest (read safely: it may not be mapped)
+        for (int i = 0; i < 31; i++) {
+            uint64_t a = c->x[i];
+            if (a < 0x7000000000ull || a >= 0x7400000000ull) continue;
+            uint64_t buf[8];
+            if (!crash_read(a, buf, sizeof buf)) continue;
+            fprintf(stderr, "  [x%d=%llx]", i, (unsigned long long)a);
+            for (int k = 0; k < 8; k++) fprintf(stderr, " %016llx", (unsigned long long)buf[k]);
+            fprintf(stderr, "\n");
+        }
+        uint64_t fp = c->x[29];
+        for (int d = 0; d < 6 && fp >= 0x7000000000ull && fp < 0x7400000000ull; d++) {  // the frame records: saved x29, lr, then the callee-saved pairs
+            uint64_t buf[8];
+            if (!crash_read(fp, buf, sizeof buf)) break;
+            fprintf(stderr, "  [frame %llx]", (unsigned long long)fp);
+            for (int k = 0; k < 8; k++) fprintf(stderr, " %016llx", (unsigned long long)buf[k]);
+            fprintf(stderr, "\n");
+            if (d == 1)
+                for (int k = 2; k < 8; k++) {  // what the callee-saved registers of that frame point at
+                    uint64_t a = buf[k] - 0x80, m[24];
+                    if (buf[k] < 0x7240000000ull || buf[k] >= 0x7400000000ull || !crash_read(a, m, sizeof m)) continue;
+                    fprintf(stderr, "  [%llx-80]", (unsigned long long)buf[k]);
+                    for (int q = 0; q < 24; q++) fprintf(stderr, " %llx", (unsigned long long)m[q]);
+                    fprintf(stderr, "\n");
+                }
+            fp = buf[0];
+        }
     }
     plat_fatal_notice();
     // our crash handler also catches SIGABRT: without this abort() re-entered it forever (a 5 GB log)

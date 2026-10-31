@@ -142,7 +142,8 @@ static Core g_cores[4] = {
 static int g_cores_on = -1;
 // The best (lowest) priority among the threads waiting for each core, INT_MAX with none: what dispatch.c checks at every
 // indirect call (kernel_preempt). SAVAGEWIND_NO_PREEMPT=1: kept at INT_MAX (preemption at syscalls only, as before).
-// TotK: off unless SAVAGEWIND_PREEMPT=1; with it TotK crashed at once under host CPU load (see docs/totk-experiment.md).
+// TotK: off unless SAVAGEWIND_PREEMPT=1 - a workaround, not a fix: with it, and the host's CPU busy, its event-setting loader
+// thread dies in the data parser a few seconds into the opening (docs/totk-experiment.md, "Crashes under host CPU load").
 // One cache line per core, written only when it changes: every indirect call of every guest thread reads its core's
 // entry, and one shared line rewritten at each core hand-over missed in their caches.
 CoreBestWait g_core_best_wait[4] = {{INT_MAX}, {INT_MAX}, {INT_MAX}, {INT_MAX}};
@@ -251,8 +252,13 @@ static void core_preempt_point(KThread *t) {
 // dispatch.c calls this at every indirect call (a safe point: the guest state is all in Cpu).
 void kernel_preempt(KThread *t) {
     if (t->core_held < 0 || __atomic_load_n(&g_core_best_wait[t->core_held].v, __ATOMIC_RELAXED) >= t->prio) return;
+    static int lg = -1;
+    if (lg < 0) lg = getenv("SAVAGEWIND_LOG_PREEMPT") != NULL;
+    uint64_t t0 = lg ? plat_now_ns() : 0;
+    int core = t->core_held;
     core_release(t);
     core_acquire(t);
+    if (lg) LOG("[preempt] %.3f thread %x prio %d core %d lost its core for %.3f ms at call to %llx from %llx\n", t0 / 1e6, t->handle, t->prio, core, (plat_now_ns() - t0) / 1e6, (unsigned long long)t->cpu.pc, (unsigned long long)t->cpu.x[30]);
 }
 
 // svcSleepThread(0) and friends: let the threads of the same priority waiting for this core go first.
@@ -429,6 +435,7 @@ int kernel_running_threads(pthread_t *host, uint32_t *handle, uint64_t *entry, i
 void rt_unwind_point(void) {
     if (__builtin_expect(g_rt_unwind, 0) && t_cur) longjmp(t_cur->unwind, 1);
 }
+
 
 static void *thread_main(void *arg) {
     KThread *t = arg;
@@ -908,7 +915,7 @@ static void svc_entry(Cpu *c, uint32_t imm, uint64_t pc) {
     if (!trace_svc) return svc_impl(c, imm, pc);
     uint64_t in[4] = {c->x[0], c->x[1], c->x[2], c->x[3]};
     svc_impl(c, imm, pc);
-    LOG("[svc] %02x(%llx, %llx, %llx, %llx) -> %llx %llx %llx  @%llx\n", imm, in[0], in[1], in[2], in[3], c->x[0],
+    LOG("[svc] t%x %02x(%llx, %llx, %llx, %llx) -> %llx %llx %llx  @%llx\n", kernel_current_thread_handle(), imm, in[0], in[1], in[2], in[3], c->x[0],
         c->x[1], c->x[2], pc);
 }
 
@@ -959,6 +966,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint64_t pc) {
     case 0x09: {  // StartThread
         KObject *o = handle_get((uint32_t)x[0]);
         if (!o || o->type != KOBJ_THREAD) { x[0] = R_INVALID_HANDLE; break; }
+        if (ENV("SAVAGEWIND_LOG_PREEMPT")) LOG("[kernel] %.3f StartThread %x by thread %x (prio %d core %d)\n", plat_now_ns() / 1e6, ((KThread *)o)->handle, kernel_current_thread_handle(), t_cur ? t_cur->prio : -1, t_cur ? t_cur->core : -1);
         thread_start((KThread *)o);
         x[0] = R_OK;
         break;
@@ -1432,4 +1440,14 @@ KSharedMem *kernel_create_shared_memory(uint64_t size, void (*on_map)(KSharedMem
     s->on_map = on_map;
     *handle = kernel_new_handle(&s->obj);
     return s;
+}
+
+// (debug, SAVAGEWIND_CRASH_THREADS) every thread's state at a crash: what it waits for and where it stands
+void kernel_dump_threads(void) {
+    for (KThread *t = g_threads; t; t = t->anext) {
+        if (!t->started || t->finished) continue;
+        fprintf(stderr, "  [thread %x] prio %d (base %d) core %d held %d wait %d addr %llx pc %llx lr %llx sp %llx x0 %llx\n", t->handle, t->prio,
+                t->base_prio, t->core, t->core_held, (int)t->wait_kind, (unsigned long long)t->wait_addr, (unsigned long long)t->cpu.pc,
+                (unsigned long long)t->cpu.x[30], (unsigned long long)t->cpu.sp, (unsigned long long)t->cpu.x[0]);
+    }
 }
