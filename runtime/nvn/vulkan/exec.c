@@ -14,9 +14,11 @@
 #include "../../kernel.h"
 #include "shaders.h"
 #include "vk.h"
+#include "vram.h"
 #include "fsr3.h"
 #include "mvec.h"
 #include "../output_scale.h"
+#include "record.h"
 #include "../renderer.h"
 #include "../../settings.h"
 #include "../../game_profile.h"
@@ -24,6 +26,8 @@
 #include "../output_scale.h"
 #include "framegen.h"
 #include "../../game_sites.h"
+#include "../../framepace.h"
+#include "../../services/fs_layout.h"
 
 static uint64_t stat_build_waits;  // draws that waited for their pipeline (draw_must_happen)
 static uint64_t stat_draws, stat_skipped, stat_passes, stat_dispatches, stat_wait_ns, stat_flushes, stat_feedback_copies;
@@ -141,6 +145,8 @@ void gpu_lock(void) { pthread_once(&gpu_mutex_once, gpu_mutex_init); pthread_mut
 void gpu_unlock(void) { pthread_mutex_unlock(&gpu_mutex); }
 
 static void readbacks_apply(void);
+static void hc_cpu_wrote(uint64_t addr, uint64_t size);
+static bool hc_all_stale;  // a shader stored to guest memory where gw_note could not tell: the next list copies all geometry
 uint64_t vk_completed_seq(void) {
     uint64_t v = 0;
     vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &v);
@@ -149,6 +155,12 @@ uint64_t vk_completed_seq(void) {
 
 void vk_wait_seq(uint64_t seq) {
     if (!seq) return;
+    if (seq > rec_submitted()) {  // not handed to the driver yet (record.c): the recorder first
+        pthread_mutex_lock(&seq_lock);
+        uint64_t queued = submit_seq;
+        pthread_mutex_unlock(&seq_lock);
+        rec_wait_submitted(seq < queued ? seq : queued);
+    }
     // (NVIDIA's vkWaitSemaphores is not cheap even for a value already reached: ~6% of the submission thread went
     // there in the open world, recycling submission slots whose work had long finished)
     if (vk_completed_seq() >= seq) { readbacks_apply(); return; }
@@ -189,15 +201,9 @@ static Sub *sub(void) {
     return s;
 }
 
-static void begin_cb(VkCommandBuffer *cb, bool *begun) {
+static void begin_cb(VkCommandBuffer *cb, bool *begun) {  // (the buffers: allocated once, vk_exec_init)
     if (*begun) return;
-    if (!*cb) {
-        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = g_vk.pool,
-                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
-        VK_CHECK(vkAllocateCommandBuffers(g_vk.dev, &ai, cb));
-    }
-    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    VK_CHECK(vkBeginCommandBuffer(*cb, &bi));
+    rec_BeginCommandBuffer(*cb);
     *begun = true;
 }
 
@@ -209,8 +215,8 @@ VkCommandBuffer vk_cmd(void) {
         dyn_epoch++;
         gp_mark(s->main, "(submission start; includes GPU idle before it)");
         if (prof && prof_qp) {
-            vkCmdResetQueryPool(s->main, prof_qp, (uint32_t)cur_sub * 2, 2);
-            vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_NONE, prof_qp, (uint32_t)cur_sub * 2);
+            rec_CmdResetQueryPool(s->main, prof_qp, (uint32_t)cur_sub * 2, 2);
+            rec_CmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_NONE, prof_qp, (uint32_t)cur_sub * 2);
             s->ts = true;
         }
     }
@@ -246,7 +252,7 @@ void vk_full_barrier(VkCommandBuffer cb) {
                            .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
-    vkCmdPipelineBarrier2(cb, &di);
+    rec_CmdPipelineBarrier2(cb, &di);
     bar_other = true;  // (what follows may write anything)
     bar_n = 0;
 }
@@ -276,7 +282,7 @@ static void pass_barrier(VkCommandBuffer cb) {
                            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};  // (execution only: reads before writes)
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb,
                            .imageMemoryBarrierCount = (uint32_t)bar_n, .pImageMemoryBarriers = ib};
-    vkCmdPipelineBarrier2(cb, &di);
+    rec_CmdPipelineBarrier2(cb, &di);
     bar_n = 0;
 }
 
@@ -317,14 +323,59 @@ void vk_devlost_dump(void) {
     LOG("[vk] last GPU operations before the device loss (oldest first):\n");
     for (unsigned i = dl_n > 64 ? dl_n - 64 : 0; i < dl_n; i++) LOG("[vk]   %s\n", dl_ring[i & 63]);
 }
+// ---- GPU checkpoints (VK_NV_device_diagnostic_checkpoints, NVIDIA): a marker at each pass, dispatch and post step, so
+// that after a device loss the log says which of them the GPU had begun and finished (#252, #307: "address write
+// invalid" and nothing else to go on). The marker is the count of marks made: a record is still in the ring while fewer
+// than CK_N marks came after it. Records hold numbers only, written out by the report (text for ~200 marks a frame cost
+// ~0.2 ms of the render thread). SAVAGEWIND_VK_CHECKPOINTS=0 (device.c): none.
+#define CK_N 4096
+typedef struct { const char *what; uint32_t a, b, c, d, e; uint64_t code; } CkRec;  // what: "pass", "dispatch", a post shader
+static CkRec ck_rec[CK_N];
+static uint32_t ck_n;
+static void ck_mark(VkCommandBuffer cb, const char *what, uint32_t a, uint32_t b, uint32_t c, uint32_t d, uint32_t e, uint64_t code) {
+    if (!g_vk.nv_checkpoints) return;
+    uint32_t n = ++ck_n;
+    ck_rec[n & (CK_N - 1)] = (CkRec){what, a, b, c, d, e, code};
+    rec_CmdSetCheckpointNV(cb, (const void *)(uintptr_t)n);
+}
+void vk_checkpoints_report(void) {  // (device.c vk_device_fault_report, after the loss)
+    if (!g_vk.nv_checkpoints) return;
+    PFN_vkGetQueueCheckpointDataNV get = (PFN_vkGetQueueCheckpointDataNV)vkGetDeviceProcAddr(g_vk.dev, "vkGetQueueCheckpointDataNV");
+    if (!get) return;
+    VkQueue qs[2] = {g_vk.queue, g_vk.present_queue};
+    for (int q = 0; q < (g_vk.present_queue != g_vk.queue ? 2 : 1); q++) {
+        uint32_t n = 0;
+        get(qs[q], &n, NULL);
+        VkCheckpointDataNV d[16];
+        if (n > 16) n = 16;
+        for (uint32_t i = 0; i < n; i++) d[i] = (VkCheckpointDataNV){.sType = VK_STRUCTURE_TYPE_CHECKPOINT_DATA_NV};
+        get(qs[q], &n, d);
+        LOG("[vk] GPU checkpoints of the %s queue (%u marks made in all):\n", q ? "present" : "game", ck_n);
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t m = (uint32_t)(uintptr_t)d[i].pCheckpointMarker;
+            const char *stage = d[i].stage == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ? "begun" :
+                                d[i].stage == VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT ? "finished" : "reached";
+            const CkRec *r = m && ck_n - m < CK_N ? &ck_rec[m & (CK_N - 1)] : NULL;
+            if (!r) LOG("[vk]   %s mark %u (stage %#x): (record gone)\n", stage, m, (unsigned)d[i].stage);
+            else if (!strcmp(r->what, "pass"))
+                LOG("[vk]   %s mark %u (stage %#x): pass %u color %ux%u fmt %#x, depth %ux%u, fs %016llx\n", stage, m,
+                    (unsigned)d[i].stage, r->a, r->b, r->c, r->d, r->e >> 16, r->e & 0xffff, (unsigned long long)r->code);
+            else if (!strcmp(r->what, "dispatch"))
+                LOG("[vk]   %s mark %u (stage %#x): dispatch %ux%ux%u cs %016llx\n", stage, m, (unsigned)d[i].stage, r->a,
+                    r->b, r->c, (unsigned long long)r->code);
+            else LOG("[vk]   %s mark %u (stage %#x): post %s %ux%u\n", stage, m, (unsigned)d[i].stage, r->what, r->a, r->b);
+        }
+    }
+}
+
 static void gp_mark(VkCommandBuffer cb, const char *fmt, ...) {
     if (!g_gpuprof_frame || gp_n >= GP_MAX - 1) return;
     if (!gp_qp) {
         VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP, .queryCount = GP_MAX};
         if (vkCreateQueryPool(g_vk.dev, &qi, NULL, &gp_qp) != VK_SUCCESS) { g_gpuprof_frame = false; return; }
     }
-    if (!gp_n) vkCmdResetQueryPool(cb, gp_qp, 0, GP_MAX);
-    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gp_qp, (uint32_t)gp_n);
+    if (!gp_n) rec_CmdResetQueryPool(cb, gp_qp, 0, GP_MAX);
+    rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, gp_qp, (uint32_t)gp_n);
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(gp_label[gp_n], sizeof gp_label[0], fmt, ap);
@@ -364,12 +415,12 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     int n = 0;
     if (s->upload_begun) {
         vk_full_barrier(s->upload);  // uploads complete before anything in the main buffer reads them
-        VK_CHECK(vkEndCommandBuffer(s->upload));
+        rec_EndCommandBuffer(s->upload);
         cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->upload};
     }
     vk_cmd();  // (an empty main buffer still carries the semaphores)
-    if (s->ts) vkCmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, prof_qp, (uint32_t)cur_sub * 2 + 1);
-    VK_CHECK(vkEndCommandBuffer(s->main));
+    if (s->ts) rec_CmdWriteTimestamp2(s->main, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, prof_qp, (uint32_t)cur_sub * 2 + 1);
+    rec_EndCommandBuffer(s->main);
     cbs[n++] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = s->main};
     VkSemaphoreSubmitInfo sig[2] = {{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_vk.timeline,
                                      .value = submit_seq + 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT},
@@ -383,9 +434,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     {
         PROF_T0();
         dl_note("submit %llu", (unsigned long long)submit_seq + 1);
-        VkResult sr = vkQueueSubmit2(g_vk.queue, 1, &si, VK_NULL_HANDLE);
-        if (sr == VK_ERROR_DEVICE_LOST) vk_devlost_dump();
-        VK_CHECK(sr);
+        rec_QueueSubmit2(&si, submit_seq + 1);  // (the recorder: in order with the commands)
         PROF_ADD(prof_submit);
     }
     pthread_mutex_lock(&seq_lock);
@@ -448,11 +497,18 @@ uint64_t renderer_fence_seq(void) {
 static int gsnap_mode(void);
 // (device.c, before any translation) the translator's switches that depend on the device: global memory in two bindings
 // where one binding of the whole heap is past maxStorageBufferRange (Mali-G610: 2 GB, the heap 3.25 GB), and read-only
-// global memory through copied ranges where gsnap is on (Mali by default). The split is Mali-only: other drivers with a
-// smaller limit keep the one binding of the whole heap they had (SAVAGEWIND_VK_GMEM_SPLIT=0/1 turns it off or on).
+// global memory through copied ranges where gsnap is on (with the GPU overlap, #263). The split is for Mali and AMD's
+// Windows driver: other drivers with a smaller limit keep the one binding of the whole heap they had
+// (SAVAGEWIND_VK_GMEM_SPLIT=0/1 turns it off or on). AMD's driver (26.10, RX 9070 XT) lost the device seconds into every
+// boot with one 3 GB binding and gsnap's shaders, a "read invalid" GPU page fault (#331): it ran with both bindings
+// under 2 GB, with gsnap off, or with gsnap copying in every pass, so the in-place read of GLD, not the copies.
 void vk_translator_setup(void) {
+    VkPhysicalDeviceDriverProperties drv = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &drv};
+    vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     const char *split = getenv("SAVAGEWIND_VK_GMEM_SPLIT");
-    maxwell_gmem_split = split ? atoi(split) != 0 : g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange;
+    maxwell_gmem_split = split ? atoi(split) != 0 : (g_vk.is_mali && HEAP_MAX > g_vk.props.limits.maxStorageBufferRange) ||
+                                                    drv.driverID == VK_DRIVER_ID_AMD_PROPRIETARY;
     maxwell_gmem_snap = gsnap_mode() != 0;
     LOG("[vk] shader global memory: %s (storage buffer limit %u MB), the HUD's reads %s\n",
         maxwell_gmem_split ? "two bindings" : "one binding", g_vk.props.limits.maxStorageBufferRange >> 20,
@@ -853,27 +909,28 @@ bool renderer_origin_lower_left(void) { return nvn_window_origin() == 0; }
 extern uint64_t g_pace_sleep_ns;  // (objects.c present_pace)
 void vk_prof_frame(uint64_t frame, uint64_t present_ns) {
     if (!prof) return;
-    static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, hitch_ns;
+    static uint64_t last_t, l_exec, l_wait, l_xwait, l_draws, l_subs, l_comp, l_valloc, hitch_ns;
     if (!hitch_ns) hitch_ns = getenv("SAVAGEWIND_HITCH_MS") ? (uint64_t)atoi(getenv("SAVAGEWIND_HITCH_MS")) * 1000000ull : 50000000ull;
     uint64_t now = SDL_GetTicksNS();
-    uint64_t comp = prof_c_tr + prof_c_prog + prof_c_pipe + prof_c_comp;
+    uint64_t comp = prof_c_tr + prof_c_prog + prof_c_pipe + prof_c_comp, valloc = atomic_load(&g_vram_alloc_ns);
     if (comp < l_comp) l_comp = 0;  // (the fps line took the counters)
     if (last_t && now - last_t > hitch_ns) {
         uint64_t dt = now - last_t, ex = cum_exec - l_exec, wt = cum_wait - l_wait;
         extern uint64_t g_present_split[6];
         LOG("[hitch] frame %llu: %.0f ms = backend exec %.1f (of which GPU waits %.1f, compiles %.1f) + present %.1f (acquire %.1f "
             "end %.1f draw %.1f submit %.1f present %.1f slot %.1f) + other %.1f (pace %.1f); %llu draws, %llu submits, compiles %d pending; "
-            "exec waits %.1f\n",
+            "exec waits %.1f; vkAllocateMemory %.1f\n",
             (unsigned long long)frame, dt / 1e6, ex / 1e6, wt / 1e6, (comp - l_comp) / 1e6, present_ns / 1e6,
             g_present_split[0] / 1e6, g_present_split[1] / 1e6, g_present_split[2] / 1e6, g_present_split[3] / 1e6,
             g_present_split[4] / 1e6, g_present_split[5] / 1e6,
             ((double)dt - ex - present_ns) / 1e6, g_pace_sleep_ns / 1e6, (unsigned long long)(cum_draws - l_draws),
             (unsigned long long)(cum_submits - l_subs),
-            atomic_load(&stat_compiles), (cum_xwait - l_xwait) / 1e6);
+            atomic_load(&stat_compiles), (cum_xwait - l_xwait) / 1e6, (valloc - l_valloc) / 1e6);
     }
     { extern uint64_t g_present_split[6]; memset(g_present_split, 0, sizeof g_present_split); }
     g_pace_sleep_ns = 0;
     l_comp = comp;
+    l_valloc = valloc;
     last_t = now; l_exec = cum_exec; l_wait = cum_wait; l_xwait = cum_xwait; l_draws = cum_draws; l_subs = cum_submits;
 }
 
@@ -926,6 +983,15 @@ const char *renderer_stats(void) {
         for (int l = 0; l < 4096; l++)
             if (prof_end_line[l] > 20) { n = strlen(stats_text); snprintf(stats_text + n, sizeof stats_text - n, " %d:%u", l, prof_end_line[l]); }
         memset(prof_end_line, 0, sizeof prof_end_line);
+        RecStats rs;  // (record.c: the recorder thread's work and every wait on it, this interval)
+        rec_stats_take(&rs);
+        n = strlen(stats_text);
+        snprintf(stats_text + n, sizeof stats_text - n,
+                 " | recorder %s: %llu packets (%.1f MB) busy %.0f ms (%llu wakes) submit %.0f ms, waits: drain %llux %.1f ms,"
+                 " seq %llux %.1f ms, full %llux %.1f ms",
+                 rec_on() ? "on" : "off", (unsigned long long)rs.packets, rs.bytes / 1048576.0, rs.busy_ns / 1e6,
+                 (unsigned long long)rs.wakeups, rs.submit_ns / 1e6, (unsigned long long)rs.drains, rs.drain_ns / 1e6,
+                 (unsigned long long)rs.seq_waits, rs.seq_wait_ns / 1e6, (unsigned long long)rs.full_waits, rs.full_ns / 1e6);
         n = strlen(stats_text);
         snprintf(stats_text + n, sizeof stats_text - n, " | views created %llu", (unsigned long long)prof_views_created);
         n = strlen(stats_text);
@@ -969,6 +1035,17 @@ void vk_exec_init(void) {
     }
     st_defaults();
     pso_init();
+    // The command buffers of every slot, before the recorder thread exists: from then on the pool and the buffers are
+    // the recorder's (begun, recorded, ended and submitted in packet order; record.c)
+    for (int i = 0; i < SUBS; i++) {
+        VkCommandBuffer cbs[2];
+        VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = g_vk.pool,
+                                          .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 2};
+        VK_CHECK(vkAllocateCommandBuffers(g_vk.dev, &ai, cbs));
+        subs[i].main = cbs[0];
+        subs[i].upload = cbs[1];
+    }
+    rec_init();
 }
 
 void renderer_texture_scale(NvnTexture *t, float *sx, float *sy);
@@ -1142,6 +1219,7 @@ static void oq_apply(void) {  // (readback_lock held) reports whose submission c
         if (logon < 0) logon = getenv("SAVAGEWIND_LOG_OCCLUSION") ? atoi(getenv("SAVAGEWIND_LOG_OCCLUSION")) : 0;
         if (nlog < logon) { nlog++; LOG("[oq] %d queries: %.0f samples -> %llx\n", p->nq, sum, (unsigned long long)p->addr); }
         kernel_watch_write("ReportCounter", p->addr, 16);
+        hc_cpu_wrote(p->addr, 16);
         uint64_t *out = (uint64_t *)(uintptr_t)p->addr;
         out[0] = (uint64_t)(sum + 0.5);
         out[1] = p->ts;
@@ -1160,6 +1238,7 @@ static void readbacks_apply(void) {
             if (r->seq > done) { readbacks[k++] = *r; continue; }
             kernel_watch_write("linear render target", r->addr, r->stride * r->rows);
             vmaInvalidateAllocation(g_vk.vma, r->mem, 0, VK_WHOLE_SIZE);  // (see below)
+            hc_cpu_wrote(r->addr, r->stride * r->rows);
             static int dump = -1;  // (debugging) SAVAGEWIND_DUMP_LINEAR=1: the first copies of each target as raw files
             if (dump < 0) dump = getenv("SAVAGEWIND_DUMP_LINEAR") != NULL;
             if (dump) {
@@ -1276,7 +1355,7 @@ static void readback_schedule(VkCommandBuffer cb, NvnTexture *t, const NvnTextur
     vk_full_barrier(cb);
     VkBufferImageCopy c = {.bufferRowLength = w, .bufferImageHeight = h, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                            .imageExtent = {w, h, 1}};
-    vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, r->buf, 1, &c);
+    rec_CmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, r->buf, 1, &c);
 }
 
 // (g_vk.feedback_layout) A target between GENERAL and ATTACHMENT_FEEDBACK_LOOP_OPTIMAL, the layout a pass that
@@ -1294,7 +1373,7 @@ static void feedback_layout_move(VkCommandBuffer cb, TexBackend *b, bool to_loop
                                 .image = b->image,
                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
-    vkCmdPipelineBarrier2(cb, &di);
+    rec_CmdPipelineBarrier2(cb, &di);
     b->in_feedback_layout = to_loop;
 }
 
@@ -1425,21 +1504,21 @@ static DepthTwin *depth_twin_update(VkCommandBuffer cb, TexBackend *b) {
                                 .image = t->img, .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers}};
     VkDependencyInfo d0 = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &m0,
                            .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
-    vkCmdPipelineBarrier2(cb, &d0);  // (the source's writes, and the twin's earlier readers, before the copies)
-    vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &r);
+    rec_CmdPipelineBarrier2(cb, &d0);  // (the source's writes, and the twin's earlier readers, before the copies)
+    rec_CmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, buf, 1, &r);
     VkMemoryBarrier2 m1 = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                            .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT, .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                            .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT};
     VkDependencyInfo d1 = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &m1};
-    vkCmdPipelineBarrier2(cb, &d1);
+    rec_CmdPipelineBarrier2(cb, &d1);
     r.imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    vkCmdCopyBufferToImage(cb, buf, t->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    rec_CmdCopyBufferToImage(cb, buf, t->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
     VkMemoryBarrier2 m2 = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
                            .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
                            .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                            .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
     VkDependencyInfo d2 = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &m2};
-    vkCmdPipelineBarrier2(cb, &d2);  // (the twin for its readers; the buffer and the source for later writes)
+    rec_CmdPipelineBarrier2(cb, &d2);  // (the twin for its readers; the buffer and the source for later writes)
     return t;
 }
 
@@ -1517,7 +1596,7 @@ void vk_end_pass(void) { vk_end_pass_at(0); }
 static void vk_end_pass_at(int line) {
     if (!in_pass) return;
     if (prof && line < 4096) prof_end_line[line]++;
-    if (!pass_void) vkCmdEndRendering(vk_cmd());
+    if (!pass_void) rec_CmdEndRendering(vk_cmd());
     in_pass = false;
     pass_void = false;
     if (det_on()) det_note(pass_key, det_written);
@@ -1628,7 +1707,7 @@ static void begin_pass(void) {
                                                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                                .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT};
         VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
-        vkCmdPipelineBarrier2(cb, &di);
+        rec_CmdPipelineBarrier2(cb, &di);
     } else {
         pass_barrier(cb);  // passes, copies and dispatches see each other's results
         vtx_hazard = false;
@@ -1637,6 +1716,9 @@ static void begin_pass(void) {
         NvnTexture *t0n = st.rt.ncolor ? st.rt.color[0] : NULL;
         dl_note("pass %d color %ux%u fmt %#x depth %p", st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
                 (void *)st.rt.depth);
+        ck_mark(cb, "pass", (uint32_t)st.rt.ncolor, t0n ? t0n->width : 0, t0n ? t0n->height : 0, t0n ? t0n->format : 0,
+                st.rt.depth ? st.rt.depth->width << 16 | (st.rt.depth->height & 0xffff) : 0,
+                st.program ? st.program->stages[1].code_addr : 0);
     }
     if (g_gpuprof_frame) {
         NvnTexture *t0 = st.rt.ncolor ? st.rt.color[0] : NULL;
@@ -1847,7 +1929,7 @@ static void begin_pass(void) {
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {minw, minh}}, .layerCount = 1,
                           .colorAttachmentCount = pass_ncolor, .pColorAttachments = ca,
                           .pDepthAttachment = has_d ? &da : NULL, .pStencilAttachment = has_s ? &sa : NULL};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     in_pass = true;
     key_gen++;  // (the pass's formats are in the pipeline key)
     vp_sx = pass_sx; vp_sy = pass_sy; vp_ox = 0; vp_oy = 0;
@@ -1874,6 +1956,22 @@ static VkRect2D scissor_rect(void) {
     extern float output_view_shape(void);
     float shape = output_view_shape();
     if (shape > 1 && pass_out && pass_sx > 0 && sw < 16384) {
+        FsInventoryClipLayout list;
+        if (framepace_menu_ui() && st.rt.color[0] && fs_inventory_clip_layout(&list)) {
+            double sx = (double)st.rt.color[0]->width / list.root_w;
+            double sy = (double)st.rt.color[0]->height / list.root_h;
+            int cx = (int)lround(list.clip_x * sx), cy = (int)lround(list.clip_y * sy);
+            int cw = (int)lround(list.clip_w * sx), ch = (int)lround(list.clip_h * sy);
+            if (abs(x - cx) <= 1 && abs(y - cy) <= 1 && abs(sw - cw) <= 1 && abs(sh - ch) <= 1) {
+                // N_Cut_00 and item centers are in layout space; NVN's scissor is in guest target pixels.
+                // Clip at the previous page's last item center; the next-page hint keeps its original right edge.
+                int item = (int)lround(list.previous_item_x * sx), right = x + sw;
+                if (item > x && item < right) {
+                    x = item;
+                    sw = right - x;
+                }
+            }
+        }
         double gw = w / pass_sx;  // (the target's own width)
         if (x > 0 || x + sw < gw - 0.5) {
             double c = gw / 2, x0 = c + (x - c) / shape, x1 = c + (x + sw - c) / shape;
@@ -1913,7 +2011,7 @@ static void apply_scissor(void) {
     VkRect2D r = scissor_rect();
     dyn_check();
     if (!memcmp(&dc.sc, &r, sizeof r)) return;
-    vkCmdSetScissor(vk_cmd(), 0, 1, &r);
+    rec_CmdSetScissor(vk_cmd(), 0, 1, &r);
     dc.sc = r;
 }
 
@@ -1924,7 +2022,7 @@ static void set_viewport(float x, float y, float w, float h, float zn, float zf)
     VkViewport vp = {x, y + h, w, -h, fminf(fmaxf(zn, 0), 1), fminf(fmaxf(zf, 0), 1)};
     dyn_check();
     if (!memcmp(&dc.vp, &vp, sizeof vp)) return;
-    vkCmdSetViewport(vk_cmd(), 0, 1, &vp);
+    rec_CmdSetViewport(vk_cmd(), 0, 1, &vp);
     dc.vp = vp;
 }
 
@@ -1951,24 +2049,24 @@ static const VkDynamicState DYN[] = {
 
 // Fixed-function state that isn't part of a pipeline is set explicitly on every bind (it persists across pipelines).
 static void dyn_defaults(VkCommandBuffer cb) {
-    vkCmdSetDepthBias(cb, 0, 0, 0);
-    vkCmdSetDepthBiasEnable(cb, VK_FALSE);
+    rec_CmdSetDepthBias(cb, 0, 0, 0);
+    rec_CmdSetDepthBiasEnable(cb, VK_FALSE);
     float bc[4] = {0, 0, 0, 0};
-    vkCmdSetBlendConstants(cb, bc);
-    vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFF);
-    vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFF);
-    vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
-    vkCmdSetCullMode(cb, VK_CULL_MODE_NONE);
-    vkCmdSetFrontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
-    vkCmdSetPrimitiveTopology(cb, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-    vkCmdSetDepthTestEnable(cb, VK_FALSE);
-    vkCmdSetDepthWriteEnable(cb, VK_FALSE);
-    vkCmdSetDepthCompareOp(cb, VK_COMPARE_OP_ALWAYS);
-    vkCmdSetStencilTestEnable(cb, VK_FALSE);
-    vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+    rec_CmdSetBlendConstants(cb, bc);
+    rec_CmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFF);
+    rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0xFF);
+    rec_CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+    rec_CmdSetCullMode(cb, VK_CULL_MODE_NONE);
+    rec_CmdSetFrontFace(cb, VK_FRONT_FACE_COUNTER_CLOCKWISE);
+    rec_CmdSetPrimitiveTopology(cb, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+    rec_CmdSetDepthTestEnable(cb, VK_FALSE);
+    rec_CmdSetDepthWriteEnable(cb, VK_FALSE);
+    rec_CmdSetDepthCompareOp(cb, VK_COMPARE_OP_ALWAYS);
+    rec_CmdSetStencilTestEnable(cb, VK_FALSE);
+    rec_CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
                       VK_COMPARE_OP_ALWAYS);
-    vkCmdSetPrimitiveRestartEnable(cb, VK_FALSE);
-    vkCmdSetLineWidth(cb, 1.0f);
+    rec_CmdSetPrimitiveRestartEnable(cb, VK_FALSE);
+    rec_CmdSetLineWidth(cb, 1.0f);
 }
 
 typedef struct { uint64_t key; VkPipeline pipe; } PipeEnt;
@@ -2060,33 +2158,33 @@ static void clear(int index, int kind, const void *color, uint32_t mask, bool de
         VkImageAspectFlags dsa = (depth && pass_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (stencil && pass_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
         if (dsa) a[n++] = (VkClearAttachment){.aspectMask = dsa, .clearValue.depthStencil = {dval, sval}};
         VkClearRect cr = {rect, 0, 1};
-        if (n) vkCmdClearAttachments(cb, n, a, 1, &cr);
+        if (n) rec_CmdClearAttachments(cb, n, a, 1, &cr);
         return;
     }
     VkPipeline p = clear_pipeline(index, kind, mask, depth, stencil);
     if (!p) return;
     if (index >= 0) pass_color_unsynced |= (uint8_t)(1u << index);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     vk_dyn_forget();
     dyn_defaults(cb);
-    if (depth) { vkCmdSetDepthTestEnable(cb, VK_TRUE); vkCmdSetDepthWriteEnable(cb, VK_TRUE); }
+    if (depth) { rec_CmdSetDepthTestEnable(cb, VK_TRUE); rec_CmdSetDepthWriteEnable(cb, VK_TRUE); }
     if (stencil) {
-        vkCmdSetStencilTestEnable(cb, VK_TRUE);
-        vkCmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE,
+        rec_CmdSetStencilTestEnable(cb, VK_TRUE);
+        rec_CmdSetStencilOp(cb, VK_STENCIL_FACE_FRONT_AND_BACK, VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE,
                           VK_COMPARE_OP_ALWAYS);
-        vkCmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, smask);
-        vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, sval);
+        rec_CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, smask);
+        rec_CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, sval);
     }
     int w, h;
     pass_size(&w, &h);
     VkViewport vp = {0, 0, (float)(w ? w : (int)pass_w), (float)(h ? h : (int)pass_h), 0, 1};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &rect);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &rect);
     float pc[8] = {0};
     if (color) memcpy(pc, color, 16);
     pc[4] = dval;
-    vkCmdPushConstants(cb, pc_layout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
-    vkCmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdPushConstants(cb, pc_layout(), VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
 }
 
 // ================================================================== programs
@@ -3385,7 +3483,7 @@ static void debug_save_depth(TexBackend *b, const char *path) {
     vk_full_barrier(cb);
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1},
                            .imageExtent = {b->width, b->height, 1}};
-    vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    rec_CmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
     vk_readback_sync();
     const float *d = out.ptr;
@@ -3427,7 +3525,7 @@ static void fbdump_flush(void) {
         vk_full_barrier(cb);
         VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                .imageExtent = {b->width, b->height, 1}};
-        vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+        rec_CmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
         renderer_flush();
         vk_readback_sync();
         char path[160];
@@ -3621,7 +3719,7 @@ static void resolve_feedback(Prog *pr) {
                             VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
                                                    .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT, .memoryBarrierCount = 1,
                                                    .pMemoryBarriers = &mb};
-                            vkCmdPipelineBarrier2(vk_cmd(), &di);
+                            rec_CmdPipelineBarrier2(vk_cmd(), &di);
                             pass_color_unsynced = 0;  // (one barrier covers every target)
                             stat_feedback_barriers++;
                         }
@@ -3782,7 +3880,7 @@ static void resolve_feedback(Prog *pr) {
             gp_mark(cb, "feedback snapshot %ux%u fmt %d", src->width, src->height, src->format);
             VkImageCopy rg = {.srcSubresource = {src->aspect, 0, 0, 1}, .dstSubresource = {src->aspect, 0, 0, 1},
                               .extent = {src->width, src->height, 1}};
-            vkCmdCopyImage(cb, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+            rec_CmdCopyImage(cb, src->image, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
             if (g_debug_frame && (src->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)) {
                 static int nd;
                 char path[128];
@@ -3949,15 +4047,45 @@ static bool up_patch_frag(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *
 // the matrix in c3[0-3], the view in c3[4-6], the pane's rectangle - width, height, left, top - in c3[33]):
 // - a layer whose matrix the game made without sead's projection classes (the menus' selection cursor) still projects
 //   16:9, and its pieces landed where the unwidened view puts them: it gets the widened matrix;
-// - a pane that covers the layer's whole 16:9 width (a fade, a loading screen's black, the menus' blurred picture of
-//   the game - a picture of the wider scene) covered only the middle of the wider picture: it gets the 16:9 matrix,
-//   which stretches it over the whole window. (The start screen is shown 16:9 with bars: output_scale.c.)
+// - a pane that covers the layer's whole 16:9 width, and not much more (a fade, a loading screen's black, the menus'
+//   blurred picture of the game - a picture of the wider scene), covered only the middle of the wider picture: it
+//   gets the 16:9 matrix, which stretches it over the whole window. (The start screen is shown 16:9 with bars:
+//   output_scale.c.) A pane much wider than the screen (the world map's picture) is not stretched (#253).
 // On a taller window (16:10, 4:3: shape < 1, #125) the same vertically: the layers' matrices get m11 x shape, and a
 // pane over the whole 16:9 height gets the 16:9 matrix.
+// - a pause frame's vertical ends get the same matrix as the horizontal pieces they meet, so their
+//   line, inset, and shadow all meet the corners when the frame spans a wider window.
 // In a copy of the buffer, as rt_persp makes them: m00 / shape on a wider window, m11 x shape on a narrower one.
 // - a pane wholly past the edges (a layout's parts kept off screen: a pane with a texture nothing draws into, at the
 //   inventory's description box) is not drawn (hud_clip, scissor_rect), as it is never seen on the console.
 // SAVAGEWIND_NO_HUD_FIX=1: off.
+static bool hud_frame_end(const float *g, const float *mv, const float *rc, float m00, float shape) {
+    if (!framepace_menu_ui() || mv[8] || mv[9] || mv[11] >= 0) return false;
+    // ui2d's window block has four border margins at c3[26] and its parent window size at c3[27].
+    // The piece rectangle at c3[33] is local to that window: a right end touches the top/right
+    // parent corners; a left end touches the bottom/left corners. The long horizontal pieces use
+    // the same view and parent bounds. Match those relationships, rather than one layout's pixels.
+    float w = g[108], h = g[109], ew = rc[0], eh = rc[1];
+    if (!isfinite(w) || !isfinite(h) || w <= 0 || h <= 0 || ew <= 0 || ew >= w || eh <= ew || eh >= h) return false;
+    float tol = 8 * FLT_EPSILON * fmaxf(1.0f, fmaxf(w, h));
+    bool width_margin = false, height_margin = false;
+    for (int k = 104; k < 108; k++) {
+        width_margin |= isfinite(g[k]) && fabsf(ew - g[k]) <= tol;
+        height_margin |= isfinite(g[k]) && fabsf(h - eh - g[k]) <= tol;
+    }
+    if (!width_margin || !height_margin) return false;
+    bool right = fabsf(rc[2] + ew - w * 0.5f) <= tol && fabsf(rc[3] - h * 0.5f) <= tol;
+    bool left = fabsf(rc[2] + w * 0.5f) <= tol && fabsf(rc[3] - eh + h * 0.5f) <= tol;
+    // Project the adjacent top or bottom piece, whose size is (window - this end's margins).
+    // It must pass the same full-width test as the real horizontal draw; small windows stay untouched.
+    float span = (fabsf(mv[0]) * (w - ew) + fabsf(mv[1]) * (h - eh)) * m00 / -mv[11];
+    bool end = (right || left) && span >= 2 / shape - 0.02f;
+    if (end && g_debug_frame)
+        LOG("[hud-frame] end %.3f %.3f %.3f %.3f from window %.3fx%.3f (span %.3f)\n",
+            ew, eh, rc[2], rc[3], w, h, span);
+    return end;
+}
+
 static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out) {
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_HUD_FIX") != NULL;
@@ -3967,6 +4095,18 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
     TexBackend *tb = (TexBackend *)st.rt.color[0]->backend;
     if (!tb || tb->rs_group != RS_OUT) return false;
     const float *g = (const float *)(uintptr_t)addr;
+    // ui2d text combines the projection and each label's position into this smaller, Y-flipped matrix.
+    // A cached 16:9 projection can survive a live resize; scale the whole X row so glyph widths and
+    // positions follow the widened HUD together.
+    if (shape > 1 && size == 128 && g[0] > 0 && g[5] < 0 && g[14] == -1 && g[15] > 0 &&
+        !g[1] && !g[2] && !g[4] && !g[6] && !g[8] && !g[9] && !g[12] && !g[13] &&
+        fabsf(-g[5] / g[0] - 16.0f / 9.0f) < 0.002f) {
+        float text_matrix[32];
+        memcpy(text_matrix, g, sizeof text_matrix);
+        for (int k = 0; k < 4; k++) text_matrix[k] /= shape;
+        *out = ubo_span(vk_transient_copy(text_matrix, sizeof text_matrix, 256), sizeof text_matrix);
+        return true;
+    }
     // A layer whose matrix comes with its view already in it (projection x view, a translation in column 3; the HUD's
     // clock and some texts): 16:9 (|m11| / m00), it gets its first row / shape (a taller window: its second x shape),
     // so it stays in the 16:9 layout with the rest of the HUD instead of moving outwards with the wider view.
@@ -4005,7 +4145,15 @@ static bool hud_patch(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out)
                 if (n < lo) lo = n;
                 if (n > hi) hi = n;
             }
-            if (lo <= -edge + 0.01f && hi >= edge - 0.01f) {
+            // Only a pane about the screen's size: one much wider (the world map's picture, 1500 wide, scrolled inside
+            // it; the map frame's 4660-wide strips) keeps the 16:9 layout, or its contents move ~shape x faster than
+            // the icons drawn over them (#253).
+            float over = edge * 1.05f + 0.01f;
+            // Full-width panes slide between pause pages: keep their projection wide throughout the move, so test the
+            // width, not the position.
+            bool frame_end = !tall && hud_frame_end(g, mv, rc, m00, shape);
+            if (lo < 1e8f && (tall ? lo <= -edge + 0.01f && hi >= edge - 0.01f && lo >= -over && hi <= over
+                                    : (hi - lo >= 2 / shape - 0.02f && hi - lo <= 2 * over) || frame_end)) {
                 if (tall) m11 /= shape;
                 else m00 *= shape;
             }
@@ -4432,7 +4580,7 @@ static bool gw_add(uint64_t lo, uint64_t hi) {  // false: no room
 
 static void gsnap_gpu_note(int stage);
 static void gw_note(int stage) {  // a shader of this stage that stores to global memory was recorded
-    if (gsnap_mode()) gsnap_gpu_note(stage);  // (the GPU data list is read only by the copies: gsnap on, Mali)
+    if (gsnap_mode()) gsnap_gpu_note(stage);  // (the GPU data list is read only by the copies: gsnap on)
     vtx_hazard = true;  // (the next pass's vertex stage may read it)
     static int hold = -1;
     if (hold < 0) hold = getenv("SAVAGEWIND_VK_GMEM_HOLD") != NULL;
@@ -4445,7 +4593,7 @@ static void gw_note(int stage) {  // a shader of this stage that stores to globa
         ok = gw_add(r.addr, r.addr + r.size);
         n++;
     }
-    if (!ok || !n) { chunk_hold = true; stat_gw_holds++; }
+    if (!ok || !n) { chunk_hold = true; hc_all_stale = true; stat_gw_holds++; }
 }
 
 // A constant buffer bound in place (in the set, in the heap, aligned for a uniform buffer descriptor), or false.
@@ -4491,6 +4639,489 @@ static void gw_check(const uint32_t cbufs[6], bool vertices, uint64_t iaddr, uin
     guest_copy_flush();  // (the list's shared copies may hold what was there before)
 }
 
+// ---- vertices and indices from a copy of the heap in video memory (discrete GPUs, Windows)
+// The imported heap is system memory on a discrete GPU, so every draw fetched its vertices and indices across PCIe.
+// Now they come from a device-local copy of the heap holding the geometry pages: the 4K pages vertex and index
+// fetches read (hc_geo). Before each list, the ones the CPU wrote since (Windows' write watch, plat_written_pages)
+// and the ones fetched for the first time are copied over from the import, on the GPU, ahead of the list's draws.
+// A fetch from pages the copy doesn't hold as they are now reads the import in place, as before, and its pages join
+// the next list's copy. What shaders store to (the gw set) is always read in place; CPU writes during a list
+// (UpdateUniformBuffer, CopyBufferToBuffer, readbacks) take their pages out of the copy until the next one.
+// Write-watch queries cover only spans around the geometry pages held. One that resets (GetWriteWatch with
+// WRITE_WATCH_FLAG_RESET) costs ~10-15 us a call and ~1 us a MB it covers; one that only looks, ~0.6 us a call. So
+// the spans hug the geometry (up to 128 of them: ~140 MB for BOTW's ~50 MB), each is looked at first, and only the
+// ones written since (~8 a list) are queried and reset: 0.33 ms a list instead of 0.54 (6 spans over ~450 MB).
+// SAVAGEWIND_VK_HEAP_COPY_SPANS=<n>: at most n spans; SAVAGEWIND_VK_HEAP_COPY_PEEK=0: every span queried and reset.
+// Two shapes. With room for the whole heap in video memory and 4 GB besides it (8 GB cards and up): one buffer the
+// heap's size, made at once. With less (4-6 GB cards): the heap in chunks of HC_CHUNK_MB, each a buffer of its own
+// made where geometry is first fetched - on a thread of their own (hc_maker: a block of video memory can take
+// milliseconds), live from the list after - while the video memory in use (VK_EXT_memory_budget: the process's;
+// else VMA's count) stays within the plan: the smaller of the budget and 90% of the video memory, less HC_RESERVE_MB
+// for the game's own growth. A fetch inside one live chunk binds that chunk's buffer at its offset in it; one across a
+// chunk's edge, or in a chunk not made (over the plan), reads the import in place as before. Every HC_LOOK lists:
+// over the plan (the game's own memory grew), the least fetched live chunk goes (destroyed once the GPU is past it);
+// within it, chunks refused before may be made; and a chunk the GPU read in place much more than the least fetched
+// live one takes its place. BOTW's geometry (25-56 MB of the 3120 MB heap) sat in 17-20 chunks of 32 MB (~0.6 GB) in
+// every place tried, with ~1 fetch a list across a chunk's edge.
+// Off on integrated GPUs (the import is already their memory), outside Windows, and with SAVAGEWIND_VK_HEAP_COPY=0
+// (=1: one buffer whatever the room, =2: chunks whatever the room). SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB=<n>: plan for a
+// card of n MB of video memory (the shape, and the chunks' plan: a smaller card simulated). _CHUNK_MB=<n>: the chunk
+// size (a power of 2, 4-1024). SAVAGEWIND_VK_HEAP_COPY_LOG=<lists>: what was copied, every that many lists.
+// (Approach from Demetter's fork, savagewind-native-28oct; reimplemented; chunks ours.)
+#define HC_PAGE 4096ull
+#define HC_SPANS_MAX 256
+#define HC_MAXCH 1024
+#define HC_CHUNK_MB 32
+#define HC_RESERVE_MB 512
+#define HC_LOOK 120
+enum { HC_NONE, HC_WANT, HC_MAKING, HC_MADE, HC_LIVE, HC_DYING, HC_OVER };  // a chunk's state
+typedef struct {
+    VkBuffer buf;
+    VmaAllocation mem;
+    _Atomic int state;       // HC_*: HC_MAKING -> HC_MADE / HC_OVER by hc_maker, every other change by this thread
+    uint64_t fetches, missed;  // fetches from it / in place for want of it, since the last look
+    uint64_t dead_seq;         // (HC_DYING) destroyed once this submission completes
+} HcChunk;
+static int hc_state = -1;  // -1: not decided yet, 0: off, 1: one buffer, 2: chunks
+static HcChunk hc_ch[HC_MAXCH];
+static int hc_nch;              // chunks the heap spans (one buffer: 1); 0: no copy
+static unsigned hc_shift;       // a heap offset's chunk: offset >> hc_shift
+static uint64_t hc_vram;        // video memory planned for (the device's, or SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB)
+static uint64_t hc_size;          // bytes of the heap it mirrors (gmem_size when made)
+static uint64_t *hc_geo, *hc_ok;  // a bit per page: geometry / held by the copy as it is now
+static size_t hc_words;
+static uint64_t *hc_pages;  // (written pages, plat_written_pages)
+static size_t hc_pages_max;
+static struct { uint64_t lo, hi; } hc_span[HC_SPANS_MAX];  // heap offsets the write-watch queries cover
+static int hc_nspans, hc_spans_cap = 128;  // (SAVAGEWIND_VK_HEAP_COPY_SPANS)
+static bool hc_geo_new;  // pages became geometry (or their chunk live) since the spans were made
+static bool hc_want_any, hc_dying_any;
+static uint64_t hc_lists;  // (chunks: lists since made, for HC_LOOK)
+static uint64_t hc_stat_lists, hc_stat_bytes, hc_stat_runs, hc_stat_inplace, hc_stat_mirror, hc_stat_query_ns, hc_stat_written;
+static uint64_t hc_stat_edge, hc_stat_nochunk, hc_made_total, hc_dropped_total, hc_stat_resets;
+static pthread_mutex_t hc_make_lock = PTHREAD_MUTEX_INITIALIZER;  // (hc_maker making a chunk; hc_free waits for it)
+static pthread_cond_t hc_make_cond = PTHREAD_COND_INITIALIZER;
+static bool hc_make_req, hc_maker_up;
+static uint64_t hc_gen;  // (under hc_make_lock) bumped by hc_free: a chunk made for the copy before is destroyed
+
+static uint64_t hc_base(int c) { return (uint64_t)c << hc_shift; }
+static uint64_t hc_chunk_size(int c) { uint64_t b = hc_base(c); return hc_nch == 1 ? hc_size : (hc_size - b < (1ull << hc_shift) ? hc_size - b : 1ull << hc_shift); }
+static bool hc_live(int c) { return atomic_load_explicit(&hc_ch[c].state, memory_order_relaxed) == HC_LIVE; }
+
+// What the plan lets video memory in use come to (chunks), and what is in use now
+static uint64_t hc_limit(uint64_t *usage) {
+    uint64_t budget;
+    vram_device_local(usage, &budget, NULL);
+    uint64_t plan = (budget < hc_vram / 10 * 9 ? budget : hc_vram / 10 * 9), reserve = (uint64_t)HC_RESERVE_MB << 20;
+    return plan > reserve ? plan - reserve : 0;
+}
+
+static bool hc_on(void) {
+    if (hc_state >= 0) return hc_state;
+    const char *e = getenv("SAVAGEWIND_VK_HEAP_COPY");
+    int force = e ? atoi(e) : -1;
+    uint64_t probe;
+    bool ww = plat_written_pages(HEAP_BASE, HC_PAGE, &probe, 2) >= 0;
+    uint64_t vram;
+    vram_device_local(NULL, NULL, &vram);
+    const char *bm = getenv("SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB");
+    hc_vram = bm && atoll(bm) > 0 ? (uint64_t)atoll(bm) << 20 : vram;
+    bool discrete = g_vk.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    uint64_t heap = kernel_heap_size();
+    hc_state = force == 0 || gmem_mapped || !ww ? 0 : force == 1 ? 1 : force == 2 ? 2 : !discrete ? 0
+             : hc_vram >= heap + (4ull << 30) ? 1 : 2;
+    const char *cm = getenv("SAVAGEWIND_VK_HEAP_COPY_CHUNK_MB");
+    unsigned mb = cm ? (unsigned)atoi(cm) : HC_CHUNK_MB;
+    if (mb < 4 || mb > 1024 || (mb & (mb - 1))) mb = HC_CHUNK_MB;
+    hc_shift = 20 + (unsigned)__builtin_ctz(mb);
+    uint64_t usage, lim = hc_limit(&usage);
+    LOG("[vk] heap copy in video memory: %s (%s GPU, %llu MB of video memory%s, heap %llu MB, write watch %s)\n",
+        hc_state == 1 ? "on, one buffer" : hc_state == 2 ? "on, in chunks" : "off", discrete ? "discrete" : "not a discrete",
+        (unsigned long long)(hc_vram >> 20), bm ? " (SAVAGEWIND_VK_HEAP_COPY_BUDGET_MB)" : "", (unsigned long long)(heap >> 20),
+        ww ? "yes" : "no");
+    if (hc_state == 2)
+        LOG("[vk] heap copy: chunks of %u MB while video memory in use stays within %llu MB (%llu MB in use now, budget %s)\n",
+            mb, (unsigned long long)(lim >> 20), (unsigned long long)(usage >> 20),
+            vram_budget_ext() ? "VK_EXT_memory_budget" : "VMA's estimate");
+    return hc_state;
+}
+
+// (thread) makes the chunks asked for (HC_MAKING): a buffer of video memory each, outside the lock
+static void *hc_maker(void *arg) {
+    (void)arg;
+    pthread_mutex_lock(&hc_make_lock);
+    for (;;) {
+        while (!hc_make_req) pthread_cond_wait(&hc_make_cond, &hc_make_lock);
+        hc_make_req = false;
+        for (int c = 0; c < hc_nch; c++) {
+            if (atomic_load(&hc_ch[c].state) != HC_MAKING) continue;
+            uint64_t gen = hc_gen;
+            VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = hc_chunk_size(c),
+                                     .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+            VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                          .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+            VkBuffer b;
+            VmaAllocation m;
+            pthread_mutex_unlock(&hc_make_lock);
+            bool ok = vmaCreateBuffer(g_vk.vma, &bi, &ai, &b, &m, NULL) == VK_SUCCESS;
+            pthread_mutex_lock(&hc_make_lock);
+            if (gen != hc_gen) {  // (hc_free meanwhile: for a copy gone)
+                if (ok) vmaDestroyBuffer(g_vk.vma, b, m);
+                break;
+            }
+            if (ok) hc_ch[c].buf = b, hc_ch[c].mem = m;
+            atomic_store(&hc_ch[c].state, ok ? HC_MADE : HC_OVER);
+        }
+    }
+    return NULL;
+}
+
+static void hc_chunk_destroy(int c) {
+    vmaDestroyBuffer(g_vk.vma, hc_ch[c].buf, hc_ch[c].mem);
+    hc_ch[c].buf = VK_NULL_HANDLE;
+    hc_ch[c].mem = NULL;
+}
+
+static void hc_free(void) {
+    pthread_mutex_lock(&hc_make_lock);  // (hc_maker between chunks)
+    bool any = false;
+    for (int c = 0; c < hc_nch; c++) any |= hc_ch[c].buf != VK_NULL_HANDLE;
+    if (any) {
+        vk_wait_seq(submit_seq);
+        vk_dyn_forget();  // (a new buffer may get the old handle: nothing recorded may be taken as still bound)
+        setc_gen++;
+        for (int c = 0; c < hc_nch; c++)
+            if (hc_ch[c].buf) hc_chunk_destroy(c);
+    }
+    memset(hc_ch, 0, sizeof hc_ch);
+    hc_nch = 0;
+    hc_gen++;
+    pthread_mutex_unlock(&hc_make_lock);
+    hc_size = 0;
+    free(hc_geo), free(hc_ok), free(hc_pages);
+    hc_geo = hc_ok = hc_pages = NULL;
+    hc_nspans = 0;
+    hc_want_any = hc_dying_any = false;
+}
+
+static bool hc_ready(void) {  // the copy, made for the heap as imported now
+    if (!gmem_buf || !hc_on()) return false;
+    if (hc_size == gmem_size) return hc_nch > 0;
+    hc_free();
+    hc_size = gmem_size;
+    while (hc_state == 2 && (hc_size + (1ull << hc_shift) - 1) >> hc_shift > HC_MAXCH) hc_shift++;
+    if (hc_state == 1) {
+        VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = gmem_size,
+                                 .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+                                      .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+        if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &hc_ch[0].buf, &hc_ch[0].mem, NULL) != VK_SUCCESS) {
+            LOG("[vk] heap copy: no room for %llu MB in video memory, in chunks\n", (unsigned long long)(gmem_size >> 20));
+            hc_ch[0].buf = VK_NULL_HANDLE;
+            hc_state = 2;
+            hc_size = 0;
+            return hc_ready();
+        }
+        hc_shift = 63;
+        hc_nch = 1;
+        atomic_store(&hc_ch[0].state, HC_LIVE);
+        LOG("[vk] heap copy: %llu MB in video memory\n", (unsigned long long)(gmem_size >> 20));
+    } else {
+        pthread_mutex_lock(&hc_make_lock);
+        hc_nch = (int)((hc_size + (1ull << hc_shift) - 1) >> hc_shift);
+        pthread_mutex_unlock(&hc_make_lock);
+        if (!hc_maker_up) {
+            pthread_t t;
+            hc_maker_up = pthread_create(&t, NULL, hc_maker, NULL) == 0;
+            if (hc_maker_up) pthread_detach(t);
+            else { hc_nch = 0; hc_state = 0; return false; }
+        }
+        hc_lists = 0;
+    }
+    hc_words = (size_t)((gmem_size / HC_PAGE + 63) / 64);
+    hc_geo = calloc(hc_words, 8), hc_ok = calloc(hc_words, 8);
+    hc_pages_max = 65536;
+    hc_pages = malloc(hc_pages_max * sizeof *hc_pages);
+    return true;
+}
+
+// [lo, hi) of the heap (offsets) no longer as the copy holds it
+static void hc_stale(uint64_t lo, uint64_t hi) {
+    if (!hc_ok) return;
+    if (hi > hc_size) hi = hc_size;
+    for (uint64_t p = lo / HC_PAGE; p < (hi + HC_PAGE - 1) / HC_PAGE; p++) hc_ok[p >> 6] &= ~(1ull << (p & 63));
+}
+
+// The CPU wrote guest memory during a list (the write watch tells the next list)
+static void hc_cpu_wrote(uint64_t addr, uint64_t size) {
+    if (hc_ok && addr >= HEAP_BASE && addr < HEAP_BASE + hc_size) hc_stale(addr - HEAP_BASE, addr - HEAP_BASE + size);
+}
+
+// (chunks: a word of hc_geo / hc_ok, 64 pages, lies in one chunk)
+static int hc_word_chunk(size_t w) { return (int)(((uint64_t)w * 64 * HC_PAGE) >> hc_shift); }
+
+// The spans the queries cover: runs of geometry words (64 pages, 256 KB) of live chunks joined across gaps, with the
+// smallest gap that leaves at most hc_spans_cap of them
+static void hc_spans_make(void) {
+    static bool env;
+    if (!env) {
+        env = true;
+        const char *e = getenv("SAVAGEWIND_VK_HEAP_COPY_SPANS");
+        if (e && atoi(e) > 0) hc_spans_cap = atoi(e) < HC_SPANS_MAX ? atoi(e) : HC_SPANS_MAX;
+    }
+    for (size_t gap = 1;; gap *= 2) {
+        int n = 0;
+        size_t w = 0;
+        bool over = false;
+        while (w < hc_words) {
+            while (w < hc_words && !(hc_geo[w] && hc_live(hc_word_chunk(w)))) w++;
+            if (w == hc_words) break;
+            size_t lo = w, last = w;
+            for (; w < hc_words && w - last <= gap; w++)
+                if (hc_geo[w] && hc_live(hc_word_chunk(w))) last = w;
+            if (n == hc_spans_cap) { over = true; break; }
+            hc_span[n].lo = (uint64_t)lo * 64 * HC_PAGE;
+            hc_span[n].hi = (uint64_t)(last + 1) * 64 * HC_PAGE;
+            if (hc_span[n].hi > hc_size) hc_span[n].hi = hc_size;
+            n++;
+            w = last + 1;
+        }
+        if (!over) { hc_nspans = n; break; }
+    }
+    hc_geo_new = false;
+}
+
+// A live chunk goes: out of the copy now, its buffer destroyed once the GPU is past what was recorded with it
+static void hc_chunk_drop(int c) {
+    atomic_store(&hc_ch[c].state, HC_DYING);
+    hc_ch[c].dead_seq = vk_pending_seq();
+    hc_stale(hc_base(c), hc_base(c) + hc_chunk_size(c));
+    hc_dying_any = true;
+    hc_geo_new = true;  // (spans without it)
+    hc_dropped_total++;
+}
+
+// (chunks, as a list begins) made chunks go live, dead ones are destroyed, wanted ones are asked for within the plan,
+// and every HC_LOOK lists the plan is looked at again
+static void hc_chunks_step(void) {
+    int live = 0, making = 0;
+    bool req = false;
+    uint64_t done = hc_dying_any ? vk_completed_seq() : 0;
+    bool dying = false;
+    for (int c = 0; c < hc_nch; c++) {
+        int s = atomic_load(&hc_ch[c].state);
+        if (s == HC_MADE) {  // (its pages aren't in hc_ok: this list copies them)
+            atomic_store(&hc_ch[c].state, s = HC_LIVE);
+            hc_geo_new = true;
+            hc_made_total++;
+        } else if (s == HC_DYING) {
+            if (done >= hc_ch[c].dead_seq) {
+                vk_dyn_forget();  // (as hc_free)
+                setc_gen++;
+                hc_chunk_destroy(c);
+                atomic_store(&hc_ch[c].state, s = HC_NONE);
+            } else dying = true;
+        }
+        live += s == HC_LIVE;
+        making += s == HC_MAKING;
+    }
+    hc_dying_any = dying;
+    uint64_t chunk = 1ull << hc_shift;
+    bool look = ++hc_lists % HC_LOOK == 0;
+    if (hc_want_any || look) {
+        uint64_t usage, lim = hc_limit(&usage);
+        usage += (uint64_t)making * chunk;
+        if (look) {
+            int worst = -1, best = -1;  // (the least fetched live chunk, the most missed one not made)
+            for (int c = 0; c < hc_nch; c++) {
+                int s = atomic_load(&hc_ch[c].state);
+                if (s == HC_LIVE && (worst < 0 || hc_ch[c].fetches < hc_ch[worst].fetches)) worst = c;
+                if ((s == HC_OVER || s == HC_WANT) && (best < 0 || hc_ch[c].missed > hc_ch[best].missed)) best = c;
+            }
+            if (worst >= 0 && usage > lim) hc_chunk_drop(worst), live--;  // (over the plan: one a look)
+            else if (worst >= 0 && best >= 0 && hc_ch[best].missed > 64 && hc_ch[best].missed > 4 * hc_ch[worst].fetches + 64 &&
+                     usage + chunk > lim)
+                hc_chunk_drop(worst), live--;  // (the room for a busier one, made from a later look)
+            for (int c = 0; c < hc_nch; c++) {
+                if (atomic_load(&hc_ch[c].state) == HC_OVER) atomic_store(&hc_ch[c].state, hc_ch[c].missed ? HC_WANT : HC_NONE);
+                hc_ch[c].fetches = hc_ch[c].missed = 0;
+            }
+            hc_want_any = true;
+        }
+        if (hc_want_any) {
+            hc_want_any = false;
+            for (;;) {  // (the most missed first)
+                int best = -1;
+                for (int c = 0; c < hc_nch; c++)
+                    if (atomic_load(&hc_ch[c].state) == HC_WANT && (best < 0 || hc_ch[c].missed > hc_ch[best].missed)) best = c;
+                if (best < 0) break;
+                if (usage + chunk > lim || hc_dying_any) { atomic_store(&hc_ch[best].state, HC_OVER); continue; }
+                atomic_store(&hc_ch[best].state, HC_MAKING);
+                usage += chunk;
+                req = true;
+            }
+        }
+    }
+    if (req) {
+        pthread_mutex_lock(&hc_make_lock);
+        hc_make_req = true;
+        pthread_cond_signal(&hc_make_cond);
+        pthread_mutex_unlock(&hc_make_lock);
+    }
+}
+
+static void hc_copy_flush(VkCommandBuffer *cb, VkBuffer dst, VkBufferCopy *rg, int *nrg) {
+    if (!*nrg) return;
+    if (!*cb) {
+        *cb = vk_upload_cmd();
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,  // (earlier lists' fetches of these pages)
+                               .srcStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT};
+        rec_CmdPipelineBarrier2(*cb, &(VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                                                         .pMemoryBarriers = &mb});
+    }
+    rec_CmdCopyBuffer(*cb, gmem_buf, dst, (uint32_t)*nrg, rg);
+    for (int i = 0; i < *nrg; i++) hc_stat_bytes += rg[i].size;
+    hc_stat_runs += (uint64_t)*nrg;
+    *nrg = 0;
+}
+
+// A list begins: the written geometry pages leave the copy, and every geometry page of a live chunk it doesn't hold
+// is copied over (runs of pages, in the list's upload commands: before its draws)
+static void hc_list_begin(void) {
+    if (!hc_ready()) return;
+    uint64_t t0 = SDL_GetTicksNS();
+    uint64_t b0 = hc_stat_bytes, r0 = hc_stat_runs, w0 = hc_stat_written;  // (the slow-list line below)
+    if (hc_state == 2) hc_chunks_step();
+    bool remade = hc_geo_new, all = hc_all_stale;
+    int full = 0;
+    if (hc_geo_new) hc_spans_make();
+    if (hc_all_stale) memset(hc_ok, 0, hc_words * 8), hc_all_stale = false;
+    static int peek = -1;
+    if (peek < 0) peek = !getenv("SAVAGEWIND_VK_HEAP_COPY_PEEK") || atoi(getenv("SAVAGEWIND_VK_HEAP_COPY_PEEK"));
+    for (int i = 0; i < hc_nspans; i++) {
+        // (a write after the look is in the next list's query, as one after the query is)
+        if (peek && plat_any_written(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo) == 0) continue;
+        hc_stat_resets++;
+        long n = plat_written_pages(HEAP_BASE + hc_span[i].lo, hc_span[i].hi - hc_span[i].lo, hc_pages, hc_pages_max);
+        if (n < 0) { hc_stale(hc_span[i].lo, hc_span[i].hi); full++; continue; }
+        hc_stat_written += (uint64_t)n;
+        for (long k = 0; k < n; k++) {
+            uint64_t p = (hc_pages[k] - HEAP_BASE) / HC_PAGE;
+            hc_ok[p >> 6] &= ~(1ull << (p & 63));
+        }
+    }
+    uint64_t tq = SDL_GetTicksNS() - t0;
+    hc_stat_query_ns += tq;
+    VkBufferCopy rg[256];
+    int nrg = 0, rc = -1;  // (rc: the chunk rg's runs go to)
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    for (size_t w = 0; w < hc_words; w++) {
+        uint64_t need = hc_geo[w] & ~hc_ok[w];
+        if (!need) continue;
+        int c = hc_nch == 1 ? 0 : hc_word_chunk(w);
+        if (!hc_live(c)) continue;  // (not held: fetched in place)
+        if (c != rc) hc_copy_flush(&cb, rc >= 0 ? hc_ch[rc].buf : VK_NULL_HANDLE, rg, &nrg), rc = c;
+        uint64_t base = hc_base(c);
+        hc_ok[w] |= hc_geo[w];
+        for (; need; need &= need - 1) {
+            uint64_t off = ((uint64_t)w * 64 + (uint64_t)__builtin_ctzll(need)) * HC_PAGE;
+            if (nrg && rg[nrg - 1].srcOffset + rg[nrg - 1].size == off) { rg[nrg - 1].size += HC_PAGE; continue; }
+            if (nrg == 256) hc_copy_flush(&cb, hc_ch[c].buf, rg, &nrg);
+            rg[nrg++] = (VkBufferCopy){off, off - base, HC_PAGE};
+        }
+    }
+    if (rc >= 0) hc_copy_flush(&cb, hc_ch[rc].buf, rg, &nrg);
+    if (cb) {
+        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+                               .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT | VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+                               .dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT};
+        rec_CmdPipelineBarrier2(cb, &(VkDependencyInfo){.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
+                                                        .pMemoryBarriers = &mb});
+    }
+    uint64_t tt = SDL_GetTicksNS() - t0;
+    if (tt > 5000000) {  // a list the copy held up: what it did
+        uint64_t spanned = 0;
+        for (int i = 0; i < hc_nspans; i++) spanned += hc_span[i].hi - hc_span[i].lo;
+        LOG("[vk] heap copy, slow list: %.1f ms (query %.1f ms over %d spans, %.0f MB; %llu pages written, %d spans over the "
+            "page list), %.1f MB copied in %llu runs%s%s\n", tt / 1e6, tq / 1e6, hc_nspans, spanned / 1048576.0,
+            (unsigned long long)(hc_stat_written - w0), full, (hc_stat_bytes - b0) / 1048576.0,
+            (unsigned long long)(hc_stat_runs - r0), remade ? ", spans remade" : "", all ? ", all stale" : "");
+    }
+    static int every = -1;
+    if (every < 0) every = getenv("SAVAGEWIND_VK_HEAP_COPY_LOG") ? atoi(getenv("SAVAGEWIND_VK_HEAP_COPY_LOG")) : 0;
+    if (every > 0 && ++hc_stat_lists >= (uint64_t)every) {
+        size_t geo = 0, geo_held = 0;
+        for (size_t w = 0; w < hc_words; w++) {
+            geo += (size_t)__builtin_popcountll(hc_geo[w]);
+            if (hc_live(hc_nch == 1 ? 0 : hc_word_chunk(w))) geo_held += (size_t)__builtin_popcountll(hc_geo[w]);
+        }
+        double f = (double)hc_stat_lists;
+        uint64_t spanned = 0;
+        for (int i = 0; i < hc_nspans; i++) spanned += hc_span[i].hi - hc_span[i].lo;
+        LOG("[vk] heap copy, a list: %.1f KB copied in %.1f runs, %.0f pages written, query %.3f ms over %d spans (%.0f MB, %.1f reset); "
+            "fetches %.0f from the copy, %.0f in place (%.0f across a chunk's edge, %.0f in chunks not held); geometry %.1f MB "
+            "(%.1f MB in held chunks)\n", hc_stat_bytes / f / 1024, hc_stat_runs / f, hc_stat_written / f,
+            hc_stat_query_ns / f / 1e6, hc_nspans, spanned / 1048576.0, hc_stat_resets / f, hc_stat_mirror / f, hc_stat_inplace / f, hc_stat_edge / f,
+            hc_stat_nochunk / f, geo * HC_PAGE / 1048576.0, geo_held * HC_PAGE / 1048576.0);
+        if (hc_state == 2) {
+            int n[HC_OVER + 1] = {0};
+            for (int c = 0; c < hc_nch; c++) n[atomic_load(&hc_ch[c].state)]++;
+            uint64_t usage, lim = hc_limit(&usage);
+            LOG("[vk] heap copy, chunks of %u MB: %d live (%d made, %d dropped so far), %d being made, %d over the plan, "
+                "%d going; video memory in use %llu MB of %llu MB\n", 1u << (hc_shift - 20), n[HC_LIVE],
+                (int)hc_made_total, (int)hc_dropped_total, n[HC_MAKING] + n[HC_MADE], n[HC_OVER] + n[HC_WANT], n[HC_DYING],
+                (unsigned long long)(usage >> 20), (unsigned long long)(lim >> 20));
+        }
+        hc_stat_lists = hc_stat_bytes = hc_stat_runs = hc_stat_inplace = hc_stat_mirror = hc_stat_query_ns = hc_stat_written = 0;
+        hc_stat_edge = hc_stat_nochunk = hc_stat_resets = 0;
+    }
+}
+
+// A vertex or index fetch: from the copy if it holds [addr, addr + size) as it is now - within one live chunk - else
+// in place from the import (guest_direct), its pages then geometry for the next list's copy (and its chunk wanted).
+// While a storing shader whose stores aren't known holds the list (chunk_hold), in place.
+static bool guest_fetch(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSize *off) {
+    if (!guest_direct(addr, size, buf, off)) return false;
+    if (!hc_nch) return true;
+    if (chunk_hold || !size || addr + size > HEAP_BASE + hc_size || gw_overlaps(addr, addr + size)) {
+        hc_stat_inplace++;
+        return true;
+    }
+    uint64_t o = addr - HEAP_BASE, p0 = o / HC_PAGE, p1 = (o + size - 1) / HC_PAGE;
+    bool all = true;
+    for (uint64_t w = p0 >> 6; w <= p1 >> 6; w++) {
+        uint64_t m = ~0ull;
+        if (w == p0 >> 6) m &= ~0ull << (p0 & 63);
+        if (w == p1 >> 6) m &= ~0ull >> (63 - (p1 & 63));
+        if ((hc_ok[w] & m) != m) all = false;
+        if ((hc_geo[w] & m) != m) hc_geo[w] |= m, hc_geo_new = true;
+    }
+    int c = (int)(o >> hc_shift), c1 = (int)((o + size - 1) >> hc_shift);
+    HcChunk *ch = &hc_ch[c];
+    if (c != c1) {  // (both wanted: their other fetches)
+        for (int k = c; k <= c1; k++)
+            if (atomic_load_explicit(&hc_ch[k].state, memory_order_relaxed) == HC_NONE)
+                atomic_store_explicit(&hc_ch[k].state, HC_WANT, memory_order_relaxed), hc_want_any = true;
+        hc_stat_edge++, hc_stat_inplace++;
+        return true;
+    }
+    int s = atomic_load_explicit(&ch->state, memory_order_relaxed);
+    if (s != HC_LIVE) {
+        if (s == HC_NONE) atomic_store_explicit(&ch->state, HC_WANT, memory_order_relaxed), hc_want_any = true;
+        ch->missed++;
+        hc_stat_nochunk++, hc_stat_inplace++;
+        return true;
+    }
+    if (!all) { hc_stat_inplace++; return true; }
+    hc_stat_mirror++;
+    ch->fetches++;
+    *buf = ch->buf;
+    *off = o - hc_base(c);
+    return true;
+}
+
 static int g_cs_n;  // (compute program table below)
 
 // In-place reboot (device.c backend_reset; GPU idle): drop what is keyed by guest addresses - programs by code
@@ -4513,6 +5144,7 @@ void vk_exec_reset(void) {
     key_gen++;
     g_cs_n = 0;
     gcopy_gen++;
+    hc_free();  // (before the import goes: the copy mirrors it)
     if (gmem_buf) {
         vkDestroyBuffer(g_vk.dev, gmem_buf, NULL);
         vkFreeMemory(g_vk.dev, gmem_mem, NULL);
@@ -4666,7 +5298,7 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
     }
     VkDescriptorSet ds = vk_alloc_set(layout);
     for (int i = 0; i < n; i++) w[i].dstSet = ds;
-    if (n) vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
+    if (n) rec_UpdateDescriptorSets((uint32_t)n, w);
     if (e) {
         e->seq = vk_pending_seq() + (setc_gen << 40);  // (the set lives in this submission's pools)
         e->hash = h; e->hash2 = h2; e->layout = layout; e->set = ds; e->n = (uint32_t)n;
@@ -4684,7 +5316,11 @@ static VkDescriptorSet set_finish(VkDescriptorSetLayout layout, VkWriteDescripto
 // buffers a read-only stage has bound (and the bytes after them, gsnap_info) are copied with its constants, and its
 // shader reads those ranges from the copy (translate.c GLD, GSNAP_BUFFER_INDEX; the rest in place). Never ranges a
 // storing shader has bound (GPU data: gsnap_gpu_note).
-// Only with the overlap on, and by default on Mali only (other GPUs: as before). SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
+// Not only Mali: a desktop GPU that falls behind (1440p at 90-120 fps, NVIDIA) read the speech and item text the same
+// way, a frame or two of misplaced letters as the text came up (#263). With the overlap, a dialogue line at the
+// Shrine of Resurrection's pedestal on an RTX 5060: 4 of its bound ranges and 98 times the bytes after them rewritten
+// before the GPU was done with them, none with the overlap off; with the copies, under 1 ms of CPU in 2 s in the game.
+// Only with the overlap on, on every GPU. SAVAGEWIND_VK_GSNAP=0: off, =1: on; =all: the global memory copies in every pass (the vertex data
 // still only the HUD's); SAVAGEWIND_VK_GSNAP_MAX=<KB>: the largest storage buffer copied (1024); SAVAGEWIND_DEBUG_GSNAP=1:
 // counts every 2 s.
 // GPU data (ranges a storing shader had bound): kept as sorted, merged intervals. When full, the two closest are
@@ -4698,7 +5334,7 @@ static int gsnap_mode(void) {
     static int m = -1;
     if (m < 0) {
         const char *e = getenv("SAVAGEWIND_VK_GSNAP");
-        m = !gpu_overlap() ? 0 : !e ? (g_vk.is_mali ? 1 : 0) : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;  // (Mali by default)
+        m = !gpu_overlap() ? 0 : !e ? 1 : !strcmp(e, "all") ? 2 : atoi(e) ? 1 : 0;
         LOG("[vk] global memory the HUD reads: %s\n",
             m == 2 ? "copied at translation (every pass, vertex data the HUD's)" : m ? "copied at translation (final image)" : "in place");
     }
@@ -5505,6 +6141,7 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
     gp_mark(cb, "dispatch %ux%ux%u (local %ux%ux%u)", gx, gy, gz, cp->local[0], cp->local[1], cp->local[2]);
+    ck_mark(cb, "dispatch", gx, gy, gz, 0, 0, st.program->stages[5].code_addr);
     dl_note("dispatch %ux%ux%u cs %llx gmem %d", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr, cp->si->uses_gmem);
     if (g_debug_frame) {
         LOG("[dispatch] %ux%ux%u cs %llx gmem %d cb %#x sbuf:", gx, gy, gz, (unsigned long long)st.program->stages[5].code_addr,
@@ -5515,9 +6152,9 @@ static void dispatch_compute(uint32_t gx, uint32_t gy, uint32_t gz) {
     }
     nfeedback = 0;
     VkDescriptorSet ds = stage_set(&cp->p, cp->p.set_layout[0], 0, 5, cp->si, NULL, NULL, gx, gy, gz, NULL, NULL, NULL);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
-    vkCmdDispatch(cb, gx, gy, gz);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cp->p.layout, 0, 1, &ds, 0, NULL);
+    rec_CmdDispatch(cb, gx, gy, gz);
     stat_dispatches++;
     chunk_draws++;
     if (cp->si->writes_gmem) {
@@ -5582,7 +6219,7 @@ static void pick_after_draw(void) {
         VkBufferImageCopy c = {.bufferOffset = ((VkDeviceSize)pick.n * 4 + k) * 16,
                                .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, layer, 1},
                                .imageOffset = {(int32_t)x, (int32_t)y, 0}, .imageExtent = {1, 1, 1}};
-        vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, pick.buf, 1, &c);
+        rec_CmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, pick.buf, 1, &c);
     }
     PickRec *r = &pick.rec[pick.n++];
     r->vs = st.program->stages[0].code_addr;
@@ -6058,7 +6695,7 @@ have_pipe:
     }
     if (no_dyn_cache) vk_dyn_forget();
     dyn_check();
-    if (!DYN_SAME(pipe, pp->pipe)) vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe);
+    if (!DYN_SAME(pipe, pp->pipe)) rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pp->pipe);
     uint64_t prof_td_ = profd ? SDL_GetTicksNS() : 0;
     if (profd) prof_key += prof_td_ - prof_tk_;
 
@@ -6066,8 +6703,8 @@ have_pipe:
     static int nodt = -1;
     if (nodt < 0) nodt = getenv("SAVAGEWIND_NO_DEPTH_TEST") != NULL;
     bool dt = st.ds[0] && !nodt && pass_depth;
-    if (!DYN_SAME(dt, (uint32_t)dt)) vkCmdSetDepthTestEnable(cb, dt);
-    if (!DYN_SAME(dw, (uint32_t)(dt && st.ds[1]))) vkCmdSetDepthWriteEnable(cb, dt && st.ds[1]);
+    if (!DYN_SAME(dt, (uint32_t)dt)) rec_CmdSetDepthTestEnable(cb, dt);
+    if (!DYN_SAME(dw, (uint32_t)(dt && st.ds[1]))) rec_CmdSetDepthWriteEnable(cb, dt && st.ds[1]);
     VkCompareOp dop = dt ? compare_fn(st.ds[2]) : VK_COMPARE_OP_ALWAYS;
     // EQUAL against a depth pre-pass written by a different vertex shader (foliage, trees) needs both shaders to land
     // on identical depths. They do since the translator stopped using unpackHalf2x16 (NVIDIA ran the half math after
@@ -6078,9 +6715,9 @@ have_pipe:
     if (tol < 0) tol = getenv("SAVAGEWIND_VK_EQUAL_TOL") != NULL;
     bool equal_tol = dop == VK_COMPARE_OP_EQUAL && tol;
     if (equal_tol) dop = VK_COMPARE_OP_LESS_OR_EQUAL;
-    if (!DYN_SAME(dop, (uint32_t)dop)) vkCmdSetDepthCompareOp(cb, dop);
+    if (!DYN_SAME(dop, (uint32_t)dop)) rec_CmdSetDepthCompareOp(cb, dop);
     bool sten = st.ds[3] && pass_stencil;
-    if (!DYN_SAME(sten, (uint32_t)sten)) vkCmdSetStencilTestEnable(cb, sten);
+    if (!DYN_SAME(sten, (uint32_t)sten)) rec_CmdSetStencilTestEnable(cb, sten);
     if (sten) {
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
         for (int f = 0; f < 2; f++) {
@@ -6090,33 +6727,33 @@ have_pipe:
             uint32_t fail = stencil_op(o & 0xF), pass = stencil_op((o >> 8) & 0xF), zfail = stencil_op((o >> 4) & 0xF);
             uint32_t cmp = compare_fn(f ? st.ds[4] >> 4 : st.ds[4] & 0xF);
             if (c[0] != fail || c[1] != pass || c[2] != zfail || c[3] != cmp) {
-                vkCmdSetStencilOp(cb, face, fail, pass, zfail, cmp);
+                rec_CmdSetStencilOp(cb, face, fail, pass, zfail, cmp);
                 c[0] = fail; c[1] = pass; c[2] = zfail; c[3] = cmp;
             }
-            if (c[4] != (st.stencil_vmask[f] & 0xFF)) vkCmdSetStencilCompareMask(cb, face, c[4] = st.stencil_vmask[f] & 0xFF);
-            if (c[5] != (st.stencil_mask[f] & 0xFF)) vkCmdSetStencilWriteMask(cb, face, c[5] = st.stencil_mask[f] & 0xFF);
-            if (c[6] != (uint32_t)st.stencil_ref[f]) vkCmdSetStencilReference(cb, face, c[6] = st.stencil_ref[f]);
+            if (c[4] != (st.stencil_vmask[f] & 0xFF)) rec_CmdSetStencilCompareMask(cb, face, c[4] = st.stencil_vmask[f] & 0xFF);
+            if (c[5] != (st.stencil_mask[f] & 0xFF)) rec_CmdSetStencilWriteMask(cb, face, c[5] = st.stencil_mask[f] & 0xFF);
+            if (c[6] != (uint32_t)st.stencil_ref[f]) rec_CmdSetStencilReference(cb, face, c[6] = st.stencil_ref[f]);
         }
     }
     if (memcmp(dc.blend, st.blend_color, sizeof dc.blend)) {
-        vkCmdSetBlendConstants(cb, st.blend_color);
+        rec_CmdSetBlendConstants(cb, st.blend_color);
         memcpy(dc.blend, st.blend_color, sizeof dc.blend);
     }
 
     // ---- rasterizer
     uint8_t cull = st.poly[0];
     VkCullModeFlags cm = cull == 1 ? VK_CULL_MODE_FRONT_BIT : cull == 2 ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE;
-    if (!DYN_SAME(cull, (uint32_t)cm)) vkCmdSetCullMode(cb, cm);
+    if (!DYN_SAME(cull, (uint32_t)cm)) rec_CmdSetCullMode(cb, cm);
     bool ccw = st.poly[1] == 1;
     static int flipw = -1;  // SAVAGEWIND_VK_FLIP_WINDING: invert the front-face mapping (A/B against Metal)
     if (flipw < 0) flipw = getenv("SAVAGEWIND_VK_FLIP_WINDING") != NULL;
     bool front_ccw = (ccw != vkey_flip) != (flipw != 0);
     VkFrontFace ff = front_ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE;
-    if (!DYN_SAME(front, (uint32_t)ff)) vkCmdSetFrontFace(cb, ff);
+    if (!DYN_SAME(front, (uint32_t)ff)) rec_CmdSetFrontFace(cb, ff);
     VkPrimitiveTopology pt = native ? topo : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    if (!DYN_SAME(topo, (uint32_t)pt)) vkCmdSetPrimitiveTopology(cb, pt);
+    if (!DYN_SAME(topo, (uint32_t)pt)) rec_CmdSetPrimitiveTopology(cb, pt);
     bool restart = st.prim_restart && native && (mode == 3 || mode == 5);
-    if (!DYN_SAME(restart, (uint32_t)restart)) vkCmdSetPrimitiveRestartEnable(cb, restart);
+    if (!DYN_SAME(restart, (uint32_t)restart)) rec_CmdSetPrimitiveRestartEnable(cb, restart);
     {   // nvnCommandBufferSetLineWidth, at the target's scale (BOTW's noise meter strokes its wave at 3 px, then 1.5 px)
         float lw = 1.0f;
         if (cls == 1 && g_vk.wide_lines) {
@@ -6125,7 +6762,7 @@ have_pipe:
             lw = lw < range[0] ? range[0] : lw > range[1] ? range[1] : lw;
         }
         if (dc.line_w != lw) {  // (NaN after dyn_check: always set)
-            vkCmdSetLineWidth(cb, lw);
+            rec_CmdSetLineWidth(cb, lw);
             dc.line_w = lw;
         }
     }
@@ -6136,9 +6773,9 @@ have_pipe:
         bool on = (st.poly[3] & 4) && !off;
         if (on) memcpy(f, st.poly_offset, sizeof f);
         if (equal_tol) { f[1] -= 8; on = true; }  // (see the EQUAL comment above: a few depth ulps nearer)
-        if (!DYN_SAME(bias_on, (uint32_t)on)) vkCmdSetDepthBiasEnable(cb, on);
+        if (!DYN_SAME(bias_on, (uint32_t)on)) rec_CmdSetDepthBiasEnable(cb, on);
         if (memcmp(dc.bias, f, sizeof f)) {
-            vkCmdSetDepthBias(cb, f[1], f[2], f[0]);
+            rec_CmdSetDepthBias(cb, f[1], f[2], f[0]);
             memcpy(dc.bias, f, sizeof f);
         }
     }
@@ -6223,6 +6860,40 @@ have_pipe:
             vp_oy = (ph - st.rt.color[0]->height * u) * 0.5f;
         }
     }
+    // A full-screen draw into a smaller, fixed-size capture samples the reshaped final image.
+    // Derive the crop from the source's guest/backing dimensions, never a window or thumbnail size.
+    // Expand the viewport about its center so the target clips the original guest aspect.
+    // The vertex-count guard admits simple full-screen triangles/quads; other capture meshes need
+    // coverage information before opting in. Scaled blur targets and partial draws stay untouched.
+    if (st.rt.ncolor == 1 && st.rt.color[0] && pr->fi->ntex == 1 && r->x[2] <= 6 &&
+        vp[0] == 0 && vp[1] == 0 && vp[2] == st.rt.color[0]->width && vp[3] == st.rt.color[0]->height) {
+        NvnTexture *dst = st.rt.color[0], *src = shader_texture_object(1, &pr->fi->tex[0]);
+        TexBackend *d = dst->backend, *s = src ? src->backend : NULL;
+        if (d && !d->scalable && pass_w == d->width && pass_h == d->height &&
+            s && s->rs_group == RS_OUT && src->target == 1 && dst->target == 1 &&
+            src->levels == 1 && s->samples == 1 && d->samples == 1 &&
+            d->aspect == VK_IMAGE_ASPECT_COLOR_BIT && s->aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
+            dst->width < src->width && dst->height < src->height &&
+            // A whole-pixel target can round the source aspect by up to one destination pixel.
+            fabs((double)dst->width - (double)dst->height * src->width / src->height) <= 1 &&
+            st.scissor[0][0] <= 0 && st.scissor[0][1] <= 0 &&
+            (int64_t)st.scissor[0][0] + st.scissor[0][2] >= dst->width &&
+            (int64_t)st.scissor[0][1] + st.scissor[0][3] >= dst->height) {
+            float shape = (float)((double)s->width * src->height / ((double)s->height * src->width));
+            float sx = vp_sx * fmaxf(shape, 1), sy = vp_sy / fminf(shape, 1);
+            float w = dst->width * sx, h = dst->height * sy, x = (pass_w - w) * 0.5f, y = (pass_h - h) * 0.5f;
+            const VkPhysicalDeviceLimits *lim = &g_vk.props.limits;
+            if (isfinite(w) && isfinite(h) && w > 0 && h > 0 &&
+                w <= lim->maxViewportDimensions[0] && h <= lim->maxViewportDimensions[1] &&
+                x >= lim->viewportBoundsRange[0] && y >= lim->viewportBoundsRange[0] &&
+                x + w <= lim->viewportBoundsRange[1] && y + h <= lim->viewportBoundsRange[1]) {
+                vp_sx = sx; vp_sy = sy; vp_ox = x; vp_oy = y;
+                if (getenv("SAVAGEWIND_LOG_COPIES"))
+                    LOG("[copy] fixed-aspect capture %ux%u backing %ux%u -> %ux%u: viewport %.3fx%.3f at %.3f,%.3f\n",
+                        src->width, src->height, s->width, s->height, dst->width, dst->height, w, h, x, y);
+            }
+        }
+    }
     {
         float k = 1.0f;  // (horizontal stretch of a camera-attached effect: none, the view keeps its 16:9 shape)
         float vx = vp[0] * vp_sx + vp_ox, vw = vp[2] * vp_sx;
@@ -6245,12 +6916,12 @@ have_pipe:
     if (ndyn > 32) ndyn = 32;
     if (dc.layout != pr->layout || dc.sets[0] != vset || dc.sets[1] != fset || dc.ndyn != (uint32_t)ndyn ||
         memcmp(dc.dyn, dyn, (size_t)ndyn * 4)) {
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, (uint32_t)ndyn, dyn);
+        rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, (uint32_t)ndyn, dyn);
         dc.layout = pr->layout; dc.sets[0] = vset; dc.sets[1] = fset;
         dc.ndyn = (uint32_t)ndyn;
         memcpy(dc.dyn, dyn, (size_t)ndyn * 4);
     }
-    if (mvec_draw) vkCmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, mvec_pc);
+    if (mvec_draw) rec_CmdPushConstants(cb, pr->layout, VK_SHADER_STAGE_VERTEX_BIT, 0, MVEC_PUSH, mvec_pc);
 
     uint64_t prof_t2_ = profd ? SDL_GetTicksNS() : 0;
     // ---- indices (copied; the largest index bounds the vertex data copied below)
@@ -6282,7 +6953,7 @@ have_pipe:
             uint32_t isz = itype == 1 ? 2 : 4;
             itype_vk = itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
             icount = count;
-            if (iaddr % isz == 0 && guest_direct(iaddr, (uint64_t)count * isz, &ib.buf, &ib.off)) {
+            if (iaddr % isz == 0 && guest_fetch(iaddr, (uint64_t)count * isz, &ib.buf, &ib.off)) {
                 scan_src = src; scan_isz = isz; scan_restart = restart;  // max_index only if a stream gets copied
             } else {
                 ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
@@ -6308,7 +6979,7 @@ have_pipe:
         }
     }
     if (use_index && (dc.ibuf != ib.buf || dc.ioff != ib.off || dc.itype != (uint32_t)itype_vk)) {
-        vkCmdBindIndexBuffer(cb, ib.buf, ib.off, itype_vk);
+        rec_CmdBindIndexBuffer(cb, ib.buf, ib.off, itype_vk);
         dc.ibuf = ib.buf; dc.ioff = ib.off; dc.itype = itype_vk;
     }
 
@@ -6323,9 +6994,9 @@ have_pipe:
             Range v = st.vbuf[s];
             VkBuffer dbuf;
             VkDeviceSize doff;
-            if (v.addr && v.size && guest_direct(v.addr, v.size, &dbuf, &doff)) {
+            if (v.addr && v.size && guest_fetch(v.addr, v.size, &dbuf, &doff)) {
                 if (dc.vbuf[s] != dbuf || dc.voff[s] != doff) {
-                    vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
+                    rec_CmdBindVertexBuffers(cb, (uint32_t)s, 1, &dbuf, &doff);
                     dc.vbuf[s] = dbuf; dc.voff[s] = doff;
                 }
                 continue;
@@ -6347,7 +7018,7 @@ have_pipe:
         }
         VkDeviceSize off = sp.off;
         if (dc.vbuf[s] != sp.buf || dc.voff[s] != off) {
-            vkCmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
+            rec_CmdBindVertexBuffers(cb, (uint32_t)s, 1, &sp.buf, &off);
             dc.vbuf[s] = sp.buf; dc.voff[s] = off;
         }
     }
@@ -6361,15 +7032,15 @@ have_pipe:
             if (oq_seq[i] > vk_completed_seq()) vk_wait_seq(oq_seq[i]);
             oq_seq[i] = vk_pending_seq();
             oq_scale[i] = vp_sx * vp_sy > 0 ? vp_sx * vp_sy : 1;
-            vkCmdResetQueryPool(vk_upload_cmd(), oq_pool, i, 1);
-            vkCmdBeginQuery(cb, oq_pool, i, g_vk.occlusion_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+            rec_CmdResetQueryPool(vk_upload_cmd(), oq_pool, i, 1);
+            rec_CmdBeginQuery(cb, oq_pool, i, g_vk.occlusion_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
             oq_run[oq_nrun++] = i;
             oq = (int)i;
         }
     }
-    if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
-    else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
-    if (oq >= 0) vkCmdEndQuery(cb, oq_pool, (uint32_t)oq);
+    if (!use_index) rec_CmdDraw(cb, count, inst, first, base_inst);
+    else rec_CmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
+    if (oq >= 0) rec_CmdEndQuery(cb, oq_pool, (uint32_t)oq);
     stat_draws++;
     chunk_draws++;
     if (pr->vi->writes_gmem || pr->fi->writes_gmem) {
@@ -6698,7 +7369,7 @@ static void copy_buffer_to_texture(uint64_t src, const TexRefRec *dst) {
                                                 (uint32_t)level, array ? (uint32_t)rg[2] : 0, array ? nz : 1},
                            .imageOffset = {rg[0], rg[1], array ? 0 : rg[2]},
                            .imageExtent = {(uint32_t)rg[3], (uint32_t)rg[4], array ? 1 : nz}};
-    vkCmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    rec_CmdCopyBufferToImage(cb, s.buf, b->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
 }
 
 // (debugging) the last texture-to-buffer copies: backend_debug_copies_at logs those that wrote a guest address
@@ -6738,9 +7409,26 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         VK_CHECK(vmaCreateImage(g_vk.vma, &ci, &ai, &srcimg, &small_mem, NULL));
         vk_image_init_layout(cb, srcimg, VK_IMAGE_ASPECT_COLOR_BIT);
-        VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)b->width, (int32_t)b->height, 1}},
+        int32_t sx0 = 0, sy0 = 0, sx1 = (int32_t)b->width, sy1 = (int32_t)b->height;
+        if (b->scalable && rg[0] == 0 && rg[1] == 0 && rg[3] == (int32_t)t->width && rg[4] == (int32_t)t->height) {
+            // A wide render target keeps its guest dimensions (for example the save caption's 256x144) but its
+            // backing image includes the extra sides. Crop those sides before returning it to the guest; scaling the
+            // whole backing to the guest's fixed 16:9 size squeezes the save screenshot horizontally.
+            double guest_aspect = (double)t->width / t->height;
+            double backing_aspect = (double)b->width / b->height;
+            if (backing_aspect > guest_aspect) {
+                sx1 = (int32_t)lround(b->height * guest_aspect);
+                sx0 = ((int32_t)b->width - sx1) / 2;
+                sx1 += sx0;
+            } else if (backing_aspect < guest_aspect) {
+                sy1 = (int32_t)lround(b->width / guest_aspect);
+                sy0 = ((int32_t)b->height - sy1) / 2;
+                sy1 += sy0;
+            }
+        }
+        VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{sx0, sy0, 0}, {sx1, sy1, 1}},
                           .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int32_t)t->width, (int32_t)t->height, 1}}};
-        vkCmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, srcimg, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
+        rec_CmdBlitImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, srcimg, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_LINEAR);
         vk_full_barrier(cb);
     }
     bool array = b->layers > 1 && b->depth == 1;
@@ -6753,9 +7441,10 @@ static void copy_texture_to_buffer(const TexRefRec *src, uint64_t dst) {
                                                 (uint32_t)level, array ? (uint32_t)rg[2] : 0, array ? nz : 1},
                            .imageOffset = {rg[0], rg[1], array ? 0 : rg[2]},
                            .imageExtent = {(uint32_t)rg[3], (uint32_t)rg[4], array ? 1 : nz}};
-    vkCmdCopyImageToBuffer(cb, srcimg, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    rec_CmdCopyImageToBuffer(cb, srcimg, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();  // the CPU may read the result right after the fence
     kernel_watch_write("CopyTextureToBuffer", dst, total);
+    hc_cpu_wrote(dst, total);
     vk_trace_dump(t);
     {
         unsigned k = t2b_next++ & 15;
@@ -6842,14 +7531,14 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     if (s->samples > 1 && d->samples == 1 && sw == dw && sh == dh && s->format == d->format && !(sa & VK_IMAGE_ASPECT_DEPTH_BIT)) {
         VkImageResolve rv = {.srcSubresource = {sa, slv, sly, 1}, .srcOffset = {sx0, sy0, 0}, .dstSubresource = {da, dlv, dly, 1},
                              .dstOffset = {dx0, dy0, 0}, .extent = {(uint32_t)sw, (uint32_t)sh, 1}};
-        vkCmdResolveImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rv);
+        rec_CmdResolveImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rv);
         return;
     }
     if (s->samples != d->samples) return;
     if (sw == dw && sh == dh && s->format == d->format) {
         VkImageCopy c = {.srcSubresource = {sa, slv, sly, 1}, .srcOffset = {sx0, sy0, 0}, .dstSubresource = {da, dlv, dly, 1},
                          .dstOffset = {dx0, dy0, 0}, .extent = {(uint32_t)sw, (uint32_t)sh, 1}};
-        vkCmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        rec_CmdCopyImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
         return;
     }
     // scaled / converting copy: the game builds its depth pyramid this way (nearest), colour copies filter if asked
@@ -6862,7 +7551,7 @@ static void copy_texture(const TexRefRec *src, const TexRefRec *dst, uint64_t fl
     bool linear = (flags & 1) && !depth && !rt_kind(st_->format);
     dl_note("  blit %p lv%u/%u %ux%u (%d,%d %dx%d) -> %p lv%u/%u %ux%u (%d,%d %dx%d) %s", (void *)s->image, slv, s->levels, s->width,
             s->height, sx0, sy0, sw, sh, (void *)d->image, dlv, d->levels, d->width, d->height, dx0, dy0, dw, dh, linear ? "linear" : "nearest");
-    vkCmdBlitImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
+    rec_CmdBlitImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
 }
 
 // ================================================================== present helpers (device.c)
@@ -7030,7 +7719,7 @@ static VkImageView smaa_lut(int i) {
         vk_image_init_layout(cb, d->image, d->aspect);
         VkSpan s = vk_transient_copy(i ? smaa_search_tex() : smaa_area_tex(), (uint64_t)w * h * bpp, 16);
         VkBufferImageCopy c = {.bufferOffset = s.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
-        vkCmdCopyBufferToImage(cb, s.buf, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+        rec_CmdCopyBufferToImage(cb, s.buf, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     }
     return post_view(d);
 }
@@ -7042,13 +7731,14 @@ static void post_pass_pc(VkCommandBuffer cb, const char *fs, const VkImageView *
     VkPipeline pipe = post_pipeline(fs, dst->format);  // (before the rendering begins: created inside it, the NVIDIA driver crashed)
     vk_full_barrier(cb);
     gp_mark(cb, "post %s %ux%u", fs, dst->width, dst->height);
+    ck_mark(cb, fs, dst->width, dst->height, 0, 0, 0, 0);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = post_view(dst),
                                     .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                     .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {dst->width, dst->height}},
                           .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkDescriptorSet ds = vk_alloc_set(post_set_layout);
     VkDescriptorImageInfo ii[3];
     VkWriteDescriptorSet w[3];
@@ -7058,17 +7748,17 @@ static void post_pass_pc(VkCommandBuffer cb, const char *fs, const VkImageView *
                                       .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                       .pImageInfo = &ii[i]};
     }
-    vkUpdateDescriptorSets(g_vk.dev, (uint32_t)n, w, 0, NULL);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    rec_UpdateDescriptorSets((uint32_t)n, w);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     vk_dyn_forget();
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout, 0, 1, &ds, 0, NULL);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, post_layout, 0, 1, &ds, 0, NULL);
     VkViewport vp = {0, 0, (float)dst->width, (float)dst->height, 0, 1};
     VkRect2D sc = {{0, 0}, {dst->width, dst->height}};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
-    vkCmdPushConstants(cb, post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc_bytes, pc);
-    vkCmdDraw(cb, 3, 1, 0, 0);
-    vkCmdEndRendering(cb);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdPushConstants(cb, post_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, pc_bytes, pc);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdEndRendering(cb);
 }
 
 static void post_pass(VkCommandBuffer cb, const char *fs, const VkImageView *srcs, int n, TexBackend *dst, const float pc[8],
@@ -7109,6 +7799,7 @@ static void cpost_pass(VkCommandBuffer cb, const char *cs, const VkImageView *sr
     }
     vk_full_barrier(cb);
     gp_mark(cb, "post %s %ux%u", cs, w, h);
+    ck_mark(cb, cs, w, h, 0, 0, 0, 0);
     VkDescriptorSet ds = vk_alloc_set(cpost_set_layout);
     VkDescriptorImageInfo ii[16];
     VkWriteDescriptorSet wr[16];
@@ -7124,11 +7815,11 @@ static void cpost_pass(VkCommandBuffer cb, const char *cs, const VkImageView *sr
         wr[k] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 8 + (uint32_t)i,
                                        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &ii[k]};
     }
-    vkUpdateDescriptorSets(g_vk.dev, (uint32_t)k, wr, 0, NULL);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cpost_layout, 0, 1, &ds, 0, NULL);
-    vkCmdPushConstants(cb, cpost_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 64, pc);
-    vkCmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
+    rec_UpdateDescriptorSets((uint32_t)k, wr);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, cpost_layout, 0, 1, &ds, 0, NULL);
+    rec_CmdPushConstants(cb, cpost_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 64, pc);
+    rec_CmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
 }
 
 // The view the present samples: the game image, or its anti-aliased / upscaled version. ow x oh: the whole image's
@@ -7224,7 +7915,7 @@ static VkImageView grade_lut(int *n, float dmin[3], float dscale[3]) {
             vk_full_barrier(cb);
             VkBufferImageCopy c = {.bufferOffset = sp.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                    .imageExtent = {m, m, m}};
-            vkCmdCopyBufferToImage(cb, sp.buf, t.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+            rec_CmdCopyBufferToImage(cb, sp.buf, t.image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
             vk_full_barrier(cb);
             size = l->n;
             for (int i = 0; i < 3; i++) lo[i] = l->dmin[i], sc[i] = 1 / (l->dmax[i] - l->dmin[i]);
@@ -7494,7 +8185,7 @@ static void fg_copy_hudless(void) {
     VkImageBlit bl = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                       .srcOffsets = {{0, 0, 0}, {(int32_t)s->width, (int32_t)s->height, 1}},
                       .dstOffsets = {{0, 0, 0}, {(int32_t)s->width, (int32_t)s->height, 1}}};
-    vkCmdBlitImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    rec_CmdBlitImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
     vk_full_barrier(cb);
     fg.hudless_ok = true;
 }
@@ -7716,6 +8407,7 @@ TexBackend *vk_fg_generate(NvnTexture *t, TexBackend *b) {
             if (g_gpuprof_frame) gp_mark(cb, "frame generation: FSR 3 optical flow + interpolation");
             static int test = -1;  // (measuring) SAVAGEWIND_FG_TEST=2: no interpolation (the HUD-less copy shown instead)
             if (test < 0) test = getenv("SAVAGEWIND_FG_TEST") ? atoi(getenv("SAVAGEWIND_FG_TEST")) : 0;
+            if (test != 2) rec_drain();  // (FidelityFX records into cb itself: what was queued before goes first)
             ok = test == 2 ? true : fg_dispatch(cb, &cfg, &f);
             if (test == 2) o = hl;
             vk_full_barrier(cb);
@@ -7867,7 +8559,7 @@ static TexBackend *mvec_taa(VkCommandBuffer cb, TexBackend *b, uint64_t frame) {
     vk_full_barrier(cb);
     VkClearColorValue inf = {.uint32 = {0x7F800000u, 0, 0, 0}};
     VkImageSubresourceRange rr = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cb, recon->image, VK_IMAGE_LAYOUT_GENERAL, &inf, 1, &rr);
+    rec_CmdClearColorImage(cb, recon->image, VK_IMAGE_LAYOUT_GENERAL, &inf, 1, &rr);
     {
         VkImageView in[] = {color, vec, depth};
         TexBackend *o[] = {dil, luma[c], recon};
@@ -7974,6 +8666,7 @@ static TexBackend *fsr3_scene(VkCommandBuffer cb, TexBackend *b, uint32_t ow, ui
     };
     last_ns = ns;
     if (g_gpuprof_frame) gp_mark(cb, "FSR 3 upscaler");
+    rec_drain();  // (FidelityFX records into cb itself, and may wait for the device: what was queued before goes first)
     if (!fsr3_dispatch(&d)) return NULL;
     if (g_gpuprof_frame) gp_mark(cb, "after FSR 3");
     last = frame;
@@ -7992,16 +8685,16 @@ void vk_present_draw(VkCommandBuffer cb, TexBackend *b, float vx, float vy, floa
     VkDescriptorImageInfo ii = {vk_default_sampler(true), src, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &w, 0, NULL);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    rec_UpdateDescriptorSets(1, &w);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     vk_dyn_forget();
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
     VkViewport vp = {vx, vy, vw, vh, 0, 1};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
-    vkCmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
     VkViewport full = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
-    vkCmdSetViewport(cb, 0, 1, &full);
+    rec_CmdSetViewport(cb, 0, 1, &full);
 }
 
 static void save_view_png(TexBackend *b, VkImageView src, const char *path);
@@ -8057,28 +8750,28 @@ static void save_view_png(TexBackend *b, VkImageView src, const char *path) {
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
     VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {w, h}}, .layerCount = 1,
                           .colorAttachmentCount = 1, .pColorAttachments = &ca};
-    vkCmdBeginRendering(cb, &ri);
+    rec_CmdBeginRendering(cb, &ri);
     VkPipeline p = present_pipeline(VK_FORMAT_R8G8B8A8_UNORM);
     VkDescriptorSet ds = vk_alloc_set(present_set_layout);
     VkDescriptorImageInfo ii = {vk_default_sampler(true), src, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = 0, .descriptorCount = 1,
                                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
-    vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    rec_UpdateDescriptorSets(1, &wr);
+    rec_CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     vk_dyn_forget();
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
+    rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, present_layout, 0, 1, &ds, 0, NULL);
     VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
     VkRect2D sc = {{0, 0}, {w, h}};
-    vkCmdSetViewport(cb, 0, 1, &vp);
-    vkCmdSetScissor(cb, 0, 1, &sc);
+    rec_CmdSetViewport(cb, 0, 1, &vp);
+    rec_CmdSetScissor(cb, 0, 1, &sc);
     float pv[8] = {renderer_origin_lower_left() && !strstr(path, "window") ? 1.0f : 0.0f, 0, 0, 0, crop[0], crop[1], crop[2], crop[3]};
-    vkCmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
-    vkCmdDraw(cb, 3, 1, 0, 0);
-    vkCmdEndRendering(cb);
+    rec_CmdPushConstants(cb, present_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, 32, pv);
+    rec_CmdDraw(cb, 3, 1, 0, 0);
+    rec_CmdEndRendering(cb);
     vk_full_barrier(cb);
     VkSpan out = vk_readback((uint64_t)w * h * 4);
     VkBufferImageCopy c = {.bufferOffset = out.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
-    vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
+    rec_CmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_flush();
     vk_readback_sync();
     vk_save_png(path, out.ptr, w, h);
@@ -8448,6 +9141,7 @@ static void exec_list(uint64_t handle, int depth) {
             // The same bytes again (~1 update in 5 in the open world): the copies over the range stay good.
             if (!memcmp((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3])) { stat_uub_same++; break; }
             memcpy((void *)(uintptr_t)(r->x[0] + r->x[2]), x, r->x[3]);
+            hc_cpu_wrote(r->x[0] + r->x[2], r->x[3]);
             uub_note(r->x[0] + r->x[2], r->x[0] + r->x[2] + r->x[3]);  // (the shared copies over it are stale now)
             break;
         case CMD_BARRIER:
@@ -8514,6 +9208,7 @@ static void exec_list(uint64_t handle, int depth) {
             renderer_flush();
             kernel_watch_write("CopyBufferToBuffer", r->x[1], r->x[2]);
             memmove((void *)(uintptr_t)r->x[1], (void *)(uintptr_t)r->x[0], r->x[2]);
+            hc_cpu_wrote(r->x[1], r->x[2]);
             guest_copy_flush();
             break;
         default: break;
@@ -8529,6 +9224,7 @@ void backend_execute(uint64_t handle) {
     PROF_T0();
     in_execute = true;
     guest_copy_flush();  // (a new list: the game may have written the memory of the last one's copies since)
+    hc_list_begin();
     exec_list(handle, 0);
     in_execute = false;
     PROF_ADD(prof_exec);
