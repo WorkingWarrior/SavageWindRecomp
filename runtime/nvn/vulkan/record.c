@@ -179,8 +179,9 @@ void rec_init(void) {
         pthread_attr_init(&attr);
         pthread_attr_setstacksize(&attr, 1 << 20);
         ring_cap = cap;  // (before the thread exists)
-        if (!ring || pthread_create(&th, &attr, run, NULL) != 0) {
-            LOG("[vk] recorder thread: could not start (%s): Vulkan calls on the queue thread\n", ring ? "thread" : "memory");
+        int err = ring ? pthread_create(&th, &attr, run, NULL) : 0;
+        if (!ring || err) {
+            LOG("[vk] recorder thread: could not start (%s): Vulkan calls on the queue thread\n", ring ? strerror(err) : "memory");
             free(ring);
             ring = NULL;
             ring_cap = 0;

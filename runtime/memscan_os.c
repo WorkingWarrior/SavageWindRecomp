@@ -2,6 +2,8 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+#include <stdlib.h>
+
 #include "memscan.h"
 
 #ifdef _WIN32
@@ -77,22 +79,29 @@ bool ms_resident(uint64_t addr, size_t npages, uint8_t *resident) {
 }
 
 bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret) {
-    // Unix callers pass at most 1 MB. One snapshot preserves fn's length and byte-offset semantics.
-    // Each worker owns its buffer; the callback must not recursively call ms_guarded on this thread.
-    static _Thread_local union { max_align_t align; unsigned char bytes[1024 * 1024]; } copy;
-    if (n > sizeof copy.bytes) return false;
+    // Unix callers pass at most 1 MB. One snapshot preserves fn's length and byte-offset semantics. On the heap, not
+    // thread-local: 1 MB in every thread's static TLS is more than the stack of a 1 MB thread (the recorder, EINVAL).
+    if (n > 1024 * 1024) return false;
+    unsigned char *copy = malloc(n ? n : 1);
+    if (!copy) return false;
     if (n) {
 #ifdef __APPLE__
         mach_vm_size_t got = 0;
         if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)p, n,
-                                  (mach_vm_address_t)(uintptr_t)copy.bytes, &got) != KERN_SUCCESS || got != n)
+                                  (mach_vm_address_t)(uintptr_t)copy, &got) != KERN_SUCCESS || got != n) {
+            free(copy);
             return false;
+        }
 #else
-        struct iovec local = {copy.bytes, n}, remote = {(void *)p, n};
-        if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != (ssize_t)n) return false;
+        struct iovec local = {copy, n}, remote = {(void *)p, n};
+        if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != (ssize_t)n) {
+            free(copy);
+            return false;
+        }
 #endif
     }
-    *ret = fn(copy.bytes, n, ctx);
+    *ret = fn(copy, n, ctx);
+    free(copy);
     return true;
 }
 #endif
