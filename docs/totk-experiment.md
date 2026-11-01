@@ -53,6 +53,42 @@ questions and frame rates are history, and where they disagree with this section
 Next comes a real test past the cave (save and load, scene changes, the open world), because the next faults are most likely
 there. The reference remains the safer way to play until that passes.
 
+## Upstream 0.4.1-alpha.4 merged (2026-11-01)
+
+`revivedx/main` at `bf6146c` merged into this branch, both games regenerated from the merged `tools/` (BOTW 49 s, TotK 77 s;
+compiling: 2:39 and 12:51 at -j8). Seven conflicts, one hunk each.
+
+**TotK has no sites** (`g_site` is all zero), so BOTW-only code that reads them has to stay off it. Added: `pc_cursor_frame`
+and the pointer (`game_is_botw()`), the Saves tab (its format and importer are BOTW's), Draw distance and upstream's Frame
+rate row (BOTW only, TotK keeps its 30/60 row), `test_warp_frame`, `framepace_title_ui`, the inventory clip log line.
+`pc_gyro_scene.c`, `perfmon.c` and the `control_*.c` commands already check their sites or the version.
+
+**A bug of upstream's, fixed here:** the recorder thread never started on Linux. `ms_guarded` had 1 MB of `_Thread_local`
+buffer, which took static TLS to 1.19 MB, over the recorder's 1 MB stack, and `pthread_create` returned EINVAL. The buffer
+is on the heap now: static TLS 143 KB, recorder on in both games. `SAVAGEWIND_VK_RECORDER=0` still turns it off.
+
+The heap copy in video memory stays off on Linux by design: it needs Windows' write watch (`plat_written_pages`).
+
+**Observed** (headless gamescope 1280x720, RX 9070, with another game holding the GPU at 77-79% and about 3.5 cores)
+| Run | Result |
+|---|---|
+| BOTW, 110 s, recorder on | no crash, 60.0 fps, about 304k draws per interval, "Open your eyes..." at frame 3100 viewed |
+| BOTW, 100 s, `SAVAGEWIND_TRAVERSE_SCALE=1.6`, `_FAR_SCALE=1.5` | no crash, 60.0 fps, about 319k draws |
+| TotK, 100 s, recorder on | no crash, the cave scene at frame 2400 viewed and correct |
+| TotK, 6 runs of 30 s, recorder on | 6 of 6 alive |
+| TotK, old build (`build/totk-run`), 60 s, same load | 38-51 fps, as the merged build without the recorder (39-52): no regression |
+| TotK, end of 100 s runs, same load | 33-35 fps with the recorder off, 39-42 fps on |
+| Console endpoint on TotK | `help state time pos report`, `time 12`, `time freeze`: answers or "No world loaded", no crash |
+| Console endpoint on BOTW | `state sites pos time report`: correct values, in the world |
+
+The fps pair for the recorder is one run each under a load that was not controlled. Host tests pass: `test-vibration`,
+`test-pc-controls`, `test-input-focus`, `test-gyro`, `test-control`, `test-console`, `test-swkbd`, `test-save-convert`,
+`test-hour`.
+
+**Not observed:** the mouse pointer in BOTW's menus (scripted runs ignore the mouse), Draw distance at places with distant
+buildings, DLC, the save import in the real launcher, a run on an unloaded GPU, the 16-busy-loop load test with the recorder
+on, and TotK or BOTW past the openings on this merge.
+
 ## Active scope and current result
 
 The later user goal supersedes the bounded/diagnostic-only stops below: continue
