@@ -32,7 +32,7 @@ void motion_virtual_end(void);
 // TURN_RIGHT): a held tilt in degrees and turning speeds in degrees per second, this frame
 void motion_script(float pitch_deg, float roll_deg, float pitch_speed, float yaw_speed);
 
-bool motion_has_sensors(void);  // usable motion source (Linux: fresh SDL sensor pair or DSU)
+bool motion_has_sensors(void);  // the game gets motion from a controller or DSU (a stream that just stopped still counts)
 
 // For the Controller page. source: what feeds the fusion now (MOTION_SOURCE_AUTO: nothing).
 typedef struct {

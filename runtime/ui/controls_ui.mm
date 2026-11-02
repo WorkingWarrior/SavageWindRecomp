@@ -89,7 +89,7 @@ static void controller_panel(int fam) {
             }
             ImGui::TextDisabled("%s", st.pair == PAD_PAIR_OK ? (st.virtual_live ? tr("Steam's virtual pad works.") : tr("Steam's virtual pad has sent nothing yet: the controller itself is used."))
                                     : st.pair == PAD_PAIR_AMBIGUOUS ? tr("Several controllers under Steam can't be told apart: each is used by itself.") : tr("Started through Steam."));
-            if (!st.steam_controller && !ms.sensors) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Steam's virtual pad has no motion sensors."));
+            if (!ms.sensors) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Steam's virtual pad has no motion sensors."));
         }
     }
     if (ImGui::CollapsingHeader(tr("Motion"))) {

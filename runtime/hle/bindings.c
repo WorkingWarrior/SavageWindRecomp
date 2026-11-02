@@ -114,7 +114,7 @@ int bind_label_family(void) {
     for (int i = 0; ids && i < n; i++) steam |= pad_is_triton(SDL_GetGamepadVendorForID(ids[i]), SDL_GetGamepadProductForID(ids[i]));
     if (ids && n > 0) t = SDL_GetGamepadTypeForID(ids[0]);
     SDL_free(ids);
-    if (steam && f <= 1) return 3;
+    if (steam && f <= 1 && !getenv("SAVAGEWIND_PAD_TYPE")) return 3;
     if (f) return f;
     return t == SDL_GAMEPAD_TYPE_XBOX360 || t == SDL_GAMEPAD_TYPE_XBOXONE ? 1 :
            t == SDL_GAMEPAD_TYPE_PS3 || t == SDL_GAMEPAD_TYPE_PS4 || t == SDL_GAMEPAD_TYPE_PS5 ? 2 : 0;

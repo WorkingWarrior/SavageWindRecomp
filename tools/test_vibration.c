@@ -20,7 +20,7 @@ const char *SDL_GetError(void) { return "test"; }
 static uint16_t pad_vendor, pad_product;
 static SDL_GamepadType pad_type = SDL_GAMEPAD_TYPE_STANDARD;
 static uint8_t sent[16];
-static int sent_size, send_result = 1;
+static int sent_size, send_result = 1, stops;
 Uint16 SDL_GetGamepadVendor(SDL_Gamepad *p) { (void)p; return pad_vendor; }
 Uint16 SDL_GetGamepadProduct(SDL_Gamepad *p) { (void)p; return pad_product; }
 SDL_GamepadType SDL_GetGamepadType(SDL_Gamepad *p) { (void)p; return pad_type; }
@@ -29,6 +29,7 @@ SDL_hid_device *SDL_hid_open_path(const char *path) { (void)path; return (SDL_hi
 int SDL_hid_close(SDL_hid_device *d) { (void)d; return 0; }
 int SDL_hid_write(SDL_hid_device *d, const unsigned char *data, size_t size) {
     (void)d; memcpy(sent, data, size); sent_size = (int)size;
+    stops += data[0] == 0x82;
     return send_result ? (int)size : -1;
 }
 bool SDL_SendGamepadEffect(SDL_Gamepad *p, const void *data, int size) {
@@ -205,8 +206,9 @@ int main(int argc, char **argv) {
     assert(sent[3] + (sent[4] << 8) <= 1000);
     // Handover: the tone stops on the old device before it's let go of, the new one starts clean
     now += 20; sent_size = 0;
+    int stopped = stops;
     vibration_update(b, true);
-    assert(sent_size == 10 || sent_size == 4);
+    assert(stops == stopped + 1);
     pad_vendor = 0x045e; pad_product = 0x28e;
     SDL_Gamepad *c = (SDL_Gamepad *)(uintptr_t)6;
     sent_size = 0; now += 20; vibration_update(c, true);

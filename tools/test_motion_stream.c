@@ -134,6 +134,12 @@ static void stall_and_recovery(void) {
     clock_ns += RETRY_SLOW_NS;
     motion_watch(true);
     assert(fake_on == tried + 2);
+    assert(!motion_has_sensors());  // (gone for good so far: a shrine apparatus goes to the sticks)
+    for (int i = 0; i < RETRY_MAX + 2; i++) { clock_ns += RETRY_SLOW_NS + 1; motion_watch(true); }
+    tried = fake_on;
+    clock_ns += RETRY_SLOW_NS + 1;
+    motion_watch(true);
+    assert(fake_on == tried);  // (left alone at last)
     // Back: its first report carries the whole gap on the sensor clock. No snap, no integration of the gap
     clock_ns += 18000000, sensor_ns += 3320000000ull;
     report(sensor_ns, 2.0, 0, 9.80665f, 0);
@@ -144,7 +150,16 @@ static void stall_and_recovery(void) {
     assert(fabs(newest()->gyro[2]) < 0.1);
     assert(hs.jumped == 0);
     motion_status(&st);
-    assert(!st.stalled && st.recovered == 1);
+    assert(!st.stalled && st.recovered == 1 && motion_has_sensors());
+    g_settings.motion_off = true;
+    assert(!motion_has_sensors());
+    g_settings.motion_off = false;
+    motion_pad_closed();
+    assert(fake_off >= 2);
+    int off = fake_off;
+    motion_pad_opened(pad_a);
+    motion_pad_closed();
+    assert(fake_off == off + 2);  // (a controller losing the job has its sensors turned off)
     puts("stream stops: found at 300 ms, retried with limits, resumes without a jump PASS");
 }
 
@@ -190,9 +205,13 @@ static void source_switch(void) {
     assert(fabs(wrap((y2 - y1) * PI / 180)) * 180 / PI < 1);
     for (int i = 0; i < 3; i++) assert(fabs(newest()->gyro[i]) < 0.1);
     // A setting holds the source
+    assert(motion_has_sensors());
     g_settings.motion_source = MOTION_SOURCE_DSU;
     stream(5, 4000000, 0);
-    assert(backend.source == 1 && !native_fresh(clock_ns + DSU_TIMEOUT_NS + 1));
+    motion_poll();
+    assert(backend.source == 0 && !motion_has_sensors());
+    stream(20, 4000000, 0);
+    assert(backend.source == 0);
     g_settings.motion_source = MOTION_SOURCE_AUTO;
     backend.dsu.fresh = false;
     puts("SDL <-> DSU: no jump, no silent fall to a dead DSU PASS");

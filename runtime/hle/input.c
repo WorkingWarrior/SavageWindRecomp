@@ -56,6 +56,8 @@ static _Atomic int64_t sampling;
 static _Atomic bool win_focused = true;  // main thread writes; guest input polls read
 static _Atomic bool routes_dirty;       // a setting changed: routes_apply on the main thread
 static void routes_apply(void);
+static void virtual_check(void);
+static bool no_user_input(void);
 static _Atomic uint32_t live_buttons;    // (the Controls tab's live view)
 static _Atomic int live_axes[6];
 
@@ -69,6 +71,7 @@ static bool tilt_held;  // the tilt key: the mouse tilts the controller instead 
 extern bool menu_input_captured(void);  // runtime/ui/menu.mm: overlay menu or name entry up (it has the keys / pad)
 
 // The gyro keys work: in a shrine apparatus (runtime/pc_gyro_scene.c) with Controls > Shrine keyboard gyro on
+static bool pad_not_ours(const SDL_Event *e);
 static bool pc_gyro_enabled(void) { return g_settings.pc_gyro && pc_gyro_keyboard_active(); }
 
 static int held_key(int sc) {
@@ -369,7 +372,8 @@ void input_mouse_update(SDL_Window *w) {
     motion_poll();
     input_focus_update(w);
     if (atomic_exchange(&routes_dirty, false)) routes_apply();
-    motion_watch(win_focused && !host_test);
+    virtual_check();
+    motion_watch(win_focused && !host_test && !no_user_input());
     static bool gyro_keys;  // (the gyro keys start or stop working without a key event: entering an apparatus)
     if (gyro_keys_live() != gyro_keys) {
         gyro_keys = !gyro_keys;
@@ -419,6 +423,16 @@ static bool test_event(const SDL_Event *e) {
     }
 }
 
+static bool no_user_input(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *v = getenv("SAVAGEWIND_NO_USER_INPUT");
+        on = v ? atoi(v) != 0 : (getenv("SAVAGEWIND_INPUT") || getenv("SAVAGEWIND_HOST_INPUT") || getenv("SAVAGEWIND_BIND_TEST"));
+        if (on) LOG("[input] scripted run: keyboard, mouse and controllers ignored\n");
+    }
+    return on;
+}
+
 // Scripted test runs ignore the user's own input (a key or stick touched while a test drives the player spoils it):
 // SAVAGEWIND_NO_USER_INPUT=1, on by default whenever SAVAGEWIND_INPUT is set (or SAVAGEWIND_HOST_INPUT /
 // SAVAGEWIND_BIND_TEST; SAVAGEWIND_NO_USER_INPUT=0 lets it through again).
@@ -430,13 +444,8 @@ bool input_user_blocked(const SDL_Event *e) {
         return true;  // before menu shortcuts, name entry and binding capture get the event
     default: break;
     }
-    static int on = -1;
-    if (on < 0) {
-        const char *v = getenv("SAVAGEWIND_NO_USER_INPUT");
-        on = v ? atoi(v) != 0 : (getenv("SAVAGEWIND_INPUT") || getenv("SAVAGEWIND_HOST_INPUT") || getenv("SAVAGEWIND_BIND_TEST"));
-        if (on) LOG("[input] scripted run: keyboard, mouse and controllers ignored\n");
-    }
-    if (!on) return false;
+    if (pad_not_ours(e)) return true;
+    if (!no_user_input()) return false;
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: case SDL_EVENT_TEXT_INPUT: case SDL_EVENT_TEXT_EDITING:
     case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -497,6 +506,13 @@ static struct {
 static int npads;
 static uint64_t use_clock;       // (a counter: which was used last)
 static bool virtual_live;        // the Steam pair's virtual pad has reported input
+static int unmatched;            // presses on the real half since the virtual one last reported anything
+static uint64_t unmatched_ms;    // ... and the last one's time
+static uint64_t busy_ms;         // when the controller in use was last used
+#define TAKEOVER_IDLE_MS 500     // another controller takes over after this long: a real pad and a remapper's copy of
+                                 // it report every press together, and swapping on each would reset motion each time
+#define VIRTUAL_REPLY_MS 500     // a press on the real half that its virtual pad hasn't echoed by then ...
+#define VIRTUAL_SILENT 3         // ... this many in a row, and it no longer counts as alive
 static PadRoutes routes = {-1, -1, -1, PAD_PAIR_NONE, -1, -1};
 
 static pthread_mutex_t status_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -521,8 +537,8 @@ static int preferred_slot(void) {
     return -1;
 }
 
-// Who does what now. A controller losing a job stops it here (held buttons go with the next recompute_pad, vibration
-// and sensors with these calls), while it can still be asked to.
+// Who does what now. A controller losing a job stops it here (held buttons go with the recompute_pad below, vibration
+// and sensors with their calls), while it can still be asked to.
 static void routes_apply(void) {
     PadEntry e[PAD_MAX];
     for (int i = 0; i < npads; i++) e[i] = open_pads[i].e;
@@ -539,7 +555,7 @@ static void routes_apply(void) {
         vibration_update(hp, win_focused && !host_test);
     }
     if (sn != sensor_pad) {
-        if (sensor_pad) motion_pad_closed();
+        if (sensor_pad) motion_pad_closed();  // (turns its sensors off, while it can still be asked)
         sensor_pad = sn;
         if (sn) motion_pad_opened(sn);
     }
@@ -587,7 +603,7 @@ static void pad_remove(SDL_JoystickID id) {
     int i = pad_slot(id);
     if (i < 0) return;
     SDL_Gamepad *g = open_pads[i].g;
-    if (routes.virt == i) virtual_live = false;
+    if (open_pads[i].e.steam_handle) virtual_live = false, unmatched = 0;
     memmove(&open_pads[i], &open_pads[i + 1], (size_t)(npads - i - 1) * sizeof open_pads[0]);
     npads--;
     routes_apply();
@@ -610,17 +626,48 @@ static void pad_used(const SDL_Event *e) {
     SDL_JoystickID id = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.which : e->gaxis.which;
     int i = pad_slot(id);
     if (i < 0) return;
+    uint64_t now = SDL_GetTicks();
+    bool half = routes.pair == PAD_PAIR_OK && (i == routes.virt || i == routes.physical);
+    bool ours = i == routes.input || i == routes.sensors || (half && (routes.input == routes.virt || routes.input == routes.physical));
+    if (!ours && busy_ms && now - busy_ms < TAKEOVER_IDLE_MS) return;
+    busy_ms = now;
     open_pads[i].e.last_use = ++use_clock;
-    if (routes.virt == i) {
+    if (i == routes.virt) {
         open_pads[routes.physical].e.last_use = use_clock;  // (they are one controller)
+        unmatched = 0;
         if (!virtual_live) {
             virtual_live = true;
             LOG("[input] Steam's virtual pad works: buttons and sticks come from it\n");
         }
-    }
+    } else if (i == routes.physical && virtual_live && !unmatched++) unmatched_ms = now;
     SDL_Gamepad *before = pad;
     routes_apply();
     if (pad != before) LOG("[input] now using %s\n", pad ? SDL_GetGamepadName(pad) : "no controller");
+}
+
+// Main window loop: the virtual pad went quiet while the real half is being pressed (Steam changed something): back to
+// the real one, or the player would have no input at all.
+static void virtual_check(void) {
+    if (!virtual_live || unmatched < VIRTUAL_SILENT || SDL_GetTicks() - unmatched_ms < VIRTUAL_REPLY_MS) return;
+    virtual_live = false, unmatched = 0;
+    LOG("[input] Steam's virtual pad went quiet: buttons and sticks come from the controller itself\n");
+    routes_apply();
+}
+
+// Before anything else sees a controller's event (the menus, the mouse pointer, a rebind): what isn't for them. The half of
+// the Steam pair that isn't feeding the game, whose press counts only as evidence, or both menus would see each press twice;
+// a hand on the touch sensors; and under Steam the Steam button, which is Steam's own.
+static bool pad_not_ours(const SDL_Event *e) {
+    if (e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN && e->type != SDL_EVENT_GAMEPAD_BUTTON_UP && e->type != SDL_EVENT_GAMEPAD_AXIS_MOTION) return false;
+    bool axis = e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION;
+    int i = pad_slot(axis ? e->gaxis.which : e->gbutton.which);
+    if (i < 0) return false;
+    const PadEntry *p = &open_pads[i].e;
+    if (!axis && pad_is_touch(p->vendor, p->product, e->gbutton.button, SDL_GAMEPAD_BUTTON_MISC3)) return true;
+    if (!axis && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE && pad_is_triton(p->vendor, p->product) && steam_launch()) return true;
+    if (routes.pair != PAD_PAIR_OK || (i != routes.virt && i != routes.physical) || i == routes.input) return false;
+    if (pad_activity(e)) pad_used(e);
+    return true;
 }
 
 void input_settings_changed(void) { routes_dirty = true; }
@@ -629,6 +676,7 @@ void input_status(InputStatus *out) {
     pthread_mutex_lock(&status_lock);
     *out = status;
     pthread_mutex_unlock(&status_lock);
+    out->steam_launch = steam_launch();
 }
 
 void input_live(uint32_t *buttons, int16_t axes[6]) {
@@ -646,7 +694,8 @@ void input_steam_env(void) {
     int v = SDL_GetVersion();
     if (SDL_VERSIONNUM_MAJOR(v) == 3 && SDL_VERSIONNUM_MINOR(v) < 4) return;  // (no driver for it before 3.4)
     char kept[4096];
-    if (steam_ignore_filter(ignore, kept, sizeof kept) && SDL_SetHintWithPriority(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, kept, SDL_HINT_OVERRIDE))
+    if (strlen(ignore) >= sizeof kept) LOG("[input] Steam's ignore list is too long: the real controller stays hidden\n");
+    else if (steam_ignore_filter(ignore, kept, sizeof kept) && SDL_SetHintWithPriority(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, kept, SDL_HINT_OVERRIDE))
         LOG("[input] started through Steam: the real Steam Controller stays visible beside Steam's virtual pad\n");
 #endif
 }
@@ -719,7 +768,12 @@ void input_handle_event(const SDL_Event *e) {
         break;
     case SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED: {  // (Steam's file came after the device)
         int i = pad_slot(e->gdevice.which);
-        if (i >= 0) open_pads[i].e.steam_handle = SDL_GetGamepadSteamHandle(open_pads[i].g), routes_apply();
+        if (i >= 0) {  // (its ids are Steam's too: until the file names it, the evdev device's)
+            PadEntry *p = &open_pads[i].e;
+            p->steam_handle = SDL_GetGamepadSteamHandle(open_pads[i].g);
+            p->vendor = SDL_GetGamepadVendor(open_pads[i].g), p->product = SDL_GetGamepadProduct(open_pads[i].g);
+            routes_apply();
+        }
         break;
     }
     case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:

@@ -63,6 +63,7 @@
 #define RETRY_NS 1000000000ull       // turning it off and on again, at most this often ...
 #define RETRY_SLOW_NS 5000000000ull  // ... after RETRY_FEW tries in a row, this often
 #define RETRY_FEW 5
+#define RETRY_MAX 30                 // ... and after this many it's left alone (a reading, or focus coming back, starts over)
 #define WARM_READINGS 16             // readings before a controller whose clock never steps normally counts
 #define RECAL_NS 1500000000ull       // Controls > Recalibrate: hold the controller still this long
 #define RECAL_KP 5.0                 // ... gravity's pull meanwhile
@@ -235,7 +236,8 @@ static void select_motion(int source) {
 
 bool motion_has_sensors(void) {
     pthread_mutex_lock(&g_lock);
-    bool sensors = g.sensors;
+    // (usable: a stream that stopped for good, or motion turned off, leaves a shrine apparatus to the sticks)
+    bool sensors = g.sensors && !g_settings.motion_off && !(watch.stalled && watch.retries >= RETRY_FEW);
     pthread_mutex_unlock(&g_lock);
     return sensors;
 }
@@ -274,6 +276,10 @@ void motion_pad_opened(SDL_Gamepad *pad) {
 }
 
 void motion_pad_closed(void) {
+    if (watch.pad) {
+        SDL_SetGamepadSensorEnabled(watch.pad, SDL_SENSOR_GYRO, false);
+        SDL_SetGamepadSensorEnabled(watch.pad, SDL_SENSOR_ACCEL, false);
+    }
     pthread_mutex_lock(&g_lock);
     memset(&watch, 0, sizeof watch);
 #ifdef __linux__
@@ -494,6 +500,7 @@ void motion_poll(void) {
     if (dsu) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
     else if (enabled && backend.dsu.fd >= 0) dsu_close(&backend.dsu);
     if (backend.source == 2 && (!backend.dsu.fresh || !dsu)) select_motion(0);
+    if (backend.source == 1 && g_settings.motion_source == MOTION_SOURCE_DSU) select_motion(0);
     pthread_mutex_unlock(&g_lock);
 #endif
 }
@@ -508,7 +515,7 @@ void motion_watch(bool focused) {
     if (focused != watch.focused) {
         watch.focused = focused;
         watch.last_ns = now;
-        if (focused) warm_reset(), g.gyro_ts = 0, hs.host_ns = 0;
+        if (focused) warm_reset(), g.gyro_ts = 0, hs.host_ns = 0, watch.retries = 0;
     }
     if (focused && now - watch.last_ns >= STALL_NS) {
         if (!watch.stalled) {
@@ -520,7 +527,7 @@ void motion_watch(bool focused) {
             }
         }
         uint64_t wait = watch.retries < RETRY_FEW ? RETRY_NS : RETRY_SLOW_NS;
-        if (!watch.retry_ns || now - watch.retry_ns >= wait) {
+        if (watch.retries < RETRY_MAX && (!watch.retry_ns || now - watch.retry_ns >= wait)) {
             watch.retry_ns = now;
             watch.retries++;
             toggle = true;

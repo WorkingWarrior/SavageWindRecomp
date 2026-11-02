@@ -40,7 +40,7 @@ int main(void) {
     r = pad_routes(rev, 2, -1, STEAM_INPUT_AUTO, false);
     assert(r.pair == PAD_PAIR_OK && r.physical == 1 && r.input == 1 && r.sensors == 1 && r.haptics == 1);
 
-    // ... alive: buttons from it, the rest stays. One source for each, double input impossible by construction
+    // ... alive: buttons from it, the rest stays. One source for each (input_user_blocked keeps the other half from the menus)
     r = pad_routes(pair, 2, -1, STEAM_INPUT_AUTO, true);
     assert(r.input == 1 && r.sensors == 0 && r.haptics == 0);
 

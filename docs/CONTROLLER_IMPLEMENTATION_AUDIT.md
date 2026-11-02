@@ -54,7 +54,7 @@ Steam. Probe run under the real shortcut:
 | Probe, BOTW shortcut, window focused | selected template | no | none |
 | Probe, both shortcuts, window focused | as above | yes | none |
 
-So opening the physical device is not what silences it. `docs/totk-experiment.md` and an older note record the virtual pad
+So opening the physical device is not what silences it. `docs/totk-experiment.md` and an earlier local note record the virtual pad
 working in earlier sessions, with the D-pad missing. Why it is silent now is unknown. [A] The Steam-side controller
 settings changed today may be involved: the person turned desktop mode off. This must not be assumed to stay true on other
 machines, so the design has to work whether or not the pad is live.
@@ -62,7 +62,7 @@ machines, so the design has to work whether or not the pad is live.
 ## X and the on-screen keyboard
 
 - Terminal launch: [O] with Steam's desktop mode turned off, X no longer opens the keyboard. No keyboard action in Steam's
-  logs around the presses [V]. It was the desktop layout, as `build/steam-controller-prompt.md` suspected.
+  logs around the presses [V]. It was the desktop layout, as an earlier local note suspected.
 - Steam launch: [O] X opens nothing, in both games.
 - [V] The game side has no part in it. `SDL_ENABLE_STEAM_SCREEN_KEYBOARD` is read only by SDL's X11 driver when text input
   starts, and the run was on Wayland.

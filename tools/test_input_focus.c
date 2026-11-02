@@ -104,6 +104,7 @@ static void controls(SDL_Joystick *joy, bool held) {
 int main(void) {
     // Force SDL to deliver background events: the runtime must enforce its own focus policy.
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");  // (a controller on the test machine stays out of it)
     assert(SDL_Init(SDL_INIT_GAMEPAD));
     SDL_VirtualJoystickDesc desc = {0};
     SDL_INIT_INTERFACE(&desc);

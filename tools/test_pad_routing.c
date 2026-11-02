@@ -15,6 +15,8 @@ int16_t g_bind_key[BIND_KEY_COUNT], g_bind_pad[BIND_KEY_COUNT];
 uint64_t g_watch_lo, g_watch_hi;
 static SDL_Gamepad *sensor_on, *vibrating_on;
 static int opens, closes;
+static SDL_Event menu_seen[64];  // what reaches the menus: input_user_blocked is the gate, as in the window loop
+static int menu_events;
 
 bool menu_input_captured(void) { return false; }
 bool menu_cursor_free(void) { return false; }
@@ -76,7 +78,10 @@ static void pump(void) {
     SDL_UpdateJoysticks();
     SDL_Event e;
     while (SDL_PollEvent(&e))
-        if (!input_user_blocked(&e)) input_handle_event(&e);
+        if (!input_user_blocked(&e)) {
+            if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && menu_events < 64) menu_seen[menu_events++] = e;
+            input_handle_event(&e);
+        }
 }
 
 static void make_steam(SDL_JoystickID id, uint64_t handle) {
@@ -88,6 +93,14 @@ static void make_steam(SDL_JoystickID id, uint64_t handle) {
 
 static void press(SDL_Joystick *j, int button, bool down) {
     assert(SDL_SetJoystickVirtualButton(j, button, down));
+    pump();
+}
+
+// (SDL holds a quick Guide release back 250 ms)
+static void guide(SDL_Joystick *j) {
+    press(j, SDL_GAMEPAD_BUTTON_GUIDE, true);
+    press(j, SDL_GAMEPAD_BUTTON_GUIDE, false);
+    SDL_Delay(300);
     pump();
 }
 
@@ -126,11 +139,24 @@ int main(void) {
     // A hand on the grips (touch sensors) and Steam's own buttons: no activity, no prompts flip
     use_device(DEVICE_KEYBOARD, "test");
     for (int b = SDL_GAMEPAD_BUTTON_MISC3; b <= SDL_GAMEPAD_BUTTON_MISC6; b++) { press(jr, b, true); press(jr, b, false); }
-    press(jr, SDL_GAMEPAD_BUTTON_GUIDE, true); press(jr, SDL_GAMEPAD_BUTTON_GUIDE, false);
+    guide(jr);
     press(jr, SDL_GAMEPAD_BUTTON_MISC1, true); press(jr, SDL_GAMEPAD_BUTTON_MISC1, false);
     assert(last_device == DEVICE_KEYBOARD);
     press(jr, SDL_GAMEPAD_BUTTON_SOUTH, true); press(jr, SDL_GAMEPAD_BUTTON_SOUTH, false);
     assert(last_device == DEVICE_PAD);
+
+    // The touch sensors don't get past the gate: no menu, pointer or rebind sees them
+    menu_events = 0;
+    press(jr, SDL_GAMEPAD_BUTTON_MISC5, true); press(jr, SDL_GAMEPAD_BUTTON_MISC5, false);
+    assert(!menu_events);
+    // Started through Steam, the Steam button is Steam's: our menu doesn't open with it. Outside Steam it does, as ever
+    guide(jr);
+    assert(menu_events == 1);
+    menu_events = 0;
+    setenv("SteamAppId", "1", 1);
+    guide(jr);
+    assert(!menu_events);
+    unsetenv("SteamAppId");
 
     // The virtual pad reports input: buttons move to it, with a button held on the real one let go, motion and vibration stay
     press(jr, SDL_GAMEPAD_BUTTON_EAST, true);
@@ -144,6 +170,25 @@ int main(void) {
     press(jv, SDL_GAMEPAD_BUTTON_EAST, true);
     assert(pad_buttons == a);
     press(jv, SDL_GAMEPAD_BUTTON_EAST, false);
+
+    // One press, both halves report it: the menus see it once, from the half that feeds the game
+    menu_events = 0;
+    assert(SDL_SetJoystickVirtualButton(jr, SDL_GAMEPAD_BUTTON_SOUTH, true));
+    assert(SDL_SetJoystickVirtualButton(jv, SDL_GAMEPAD_BUTTON_SOUTH, true));
+    pump();
+    assert(menu_events == 1 && menu_seen[0].gbutton.which == virt);
+    press(jr, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    press(jv, SDL_GAMEPAD_BUTTON_SOUTH, false);
+
+    // The virtual pad goes quiet while the real one is pressed: back to the real one after a few presses, and the time
+    for (int i = 0; i < VIRTUAL_SILENT; i++) { press(jr, SDL_GAMEPAD_BUTTON_NORTH, true); press(jr, SDL_GAMEPAD_BUTTON_NORTH, false); }
+    virtual_check();
+    assert(virtual_live);  // (a moment ago: its reply may be on the way)
+    unmatched_ms -= VIRTUAL_REPLY_MS + 1;
+    virtual_check();
+    assert(!virtual_live && pad == gamepad(real));
+    press(jv, SDL_GAMEPAD_BUTTON_SOUTH, true); press(jv, SDL_GAMEPAD_BUTTON_SOUTH, false);  // (and it can come back)
+    assert(virtual_live && pad == gamepad(virt));
 
     // Settings: physical, at once
     g_settings.steam_input = STEAM_INPUT_PHYSICAL;
@@ -168,6 +213,10 @@ int main(void) {
     assert(pad == gamepad(real));
     press(jr, SDL_GAMEPAD_BUTTON_EAST, true);
     int opened = opens;
+    press(jx, SDL_GAMEPAD_BUTTON_NORTH, true);  // (used a moment ago: a remapper's copy reporting along, no swap)
+    press(jx, SDL_GAMEPAD_BUTTON_NORTH, false);
+    assert(pad == gamepad(real) && opens == opened);
+    busy_ms = 0;
     press(jx, SDL_GAMEPAD_BUTTON_SOUTH, true);
     assert(pad == gamepad(xbox) && sensor_pad == gamepad(xbox) && haptic_pad == gamepad(xbox) && opens == opened + 1);
     assert(pad_buttons == 0);
@@ -177,18 +226,38 @@ int main(void) {
     // A choice in settings holds whatever else is touched
     snprintf(g_settings.pad_preferred, sizeof g_settings.pad_preferred, "%s", open_pads[pad_slot(xbox)].guid);
     routes_apply();
+    busy_ms = 0;
     press(jr, SDL_GAMEPAD_BUTTON_SOUTH, true); press(jr, SDL_GAMEPAD_BUTTON_SOUTH, false);
     assert(pad == gamepad(xbox));
     g_settings.pad_preferred[0] = 0;
     routes_apply();
 
     // The active one removed in mid-play, button held: released at once, the other takes over, its sensors on
+    busy_ms = 0;
     press(jx, SDL_GAMEPAD_BUTTON_EAST, true);
     assert(pad_buttons == a && pad == gamepad(xbox));
     SDL_CloseJoystick(jx);
     assert(SDL_DetachVirtualJoystick(xbox));
     pump();
     assert(pad == gamepad(real) && sensor_pad == gamepad(real) && haptic_pad == gamepad(real) && pad_buttons == 0);
+
+    // The real half going first must not leave the next pair with a virtual pad taken for alive
+    SDL_JoystickID v3 = attach(0x28de, 0x1302, "Steam Controller");
+    pump();
+    make_steam(v3, 8);
+    SDL_Joystick *j3 = SDL_OpenJoystick(v3);
+    press(j3, SDL_GAMEPAD_BUTTON_SOUTH, true); press(j3, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    assert(virtual_live);
+    SDL_CloseJoystick(jr);
+    assert(SDL_DetachVirtualJoystick(real));
+    pump();
+    SDL_CloseJoystick(j3);
+    assert(SDL_DetachVirtualJoystick(v3));
+    pump();
+    assert(!virtual_live && !npads);
+    real = attach(0x28de, 0x1304, "Steam Controller");
+    pump();
+    jr = SDL_OpenJoystick(real);
 
     // The last one goes and comes back (a Puck's controller does that by itself): nothing held, a new SDL id, working
     SDL_CloseJoystick(jr);
@@ -209,6 +278,7 @@ int main(void) {
     make_steam(v2, 9);
     SDL_Joystick *j2 = SDL_OpenJoystick(second);
     assert(routes.pair == PAD_PAIR_AMBIGUOUS && pad == gamepad(real));
+    busy_ms = 0;
     press(j2, SDL_GAMEPAD_BUTTON_EAST, true);
     assert(pad == gamepad(second) && sensor_pad == gamepad(second) && pad_buttons == a);
     press(j2, SDL_GAMEPAD_BUTTON_EAST, false);

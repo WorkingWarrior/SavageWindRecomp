@@ -157,7 +157,7 @@ jobs:
                 -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3" -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
           cmake --build /tmp/sdl3-build
           cmake --install /tmp/sdl3-build
-      - run: LD_LIBRARY_PATH="$PWD/build/sdl3/lib" make -j"$(nproc)" B=build/ci DEPS="$PWD/build/sdl3" test-input
+      - run: LIBRARY_PATH="$PWD/build/sdl3/lib" LD_LIBRARY_PATH="$PWD/build/sdl3/lib" make -j"$(nproc)" B=build/ci DEPS="$PWD/build/sdl3" test-input
 
   # Every GLSL translation of random Maxwell programs compiles (shaderc) and validates (SPIRV-Tools).
   translate:
