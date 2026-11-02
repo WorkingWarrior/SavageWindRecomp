@@ -433,7 +433,7 @@ test-pc-controls: $(B)/test_pc_controls $(B)/test_pc_settings $(B)/test_options_
 
 .PHONY: test-pc-controls
 
-$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/services/hid_set.c
+$(B)/test_vibration: tools/test_vibration.c runtime/hle/vibration.c runtime/vibration.h runtime/settings.h runtime/services/hid_set.c
 	@mkdir -p $(B)
 	$(CC) -O1 -DSDL_STATIC_LIB $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_vibration.c -lpthread -lm
 

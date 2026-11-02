@@ -83,6 +83,9 @@ typedef struct {
     int motion_source;   // MOTION_SOURCE_*
     char pad_preferred[33];  // Controller page: the controller in use, by SDL GUID ("": the one used last)
     int steam_input;     // STEAM_INPUT_* (runtime/pad_policy.h): buttons and sticks under Steam
+    bool vibration_off;  // Controls > Vibration off (SAVAGEWIND_VIBRATION, when set, beats it)
+    float vibration_intensity;  // amplitudes times this, 1 = 100%
+    int vibration_quality;      // VIBRATION_*
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)
@@ -113,6 +116,9 @@ float draw_distance_factor(void);  // the setting's factor on the game's distanc
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
+// Automatic: the controller's own frequencies where that route exists. Standard: its motors. Native: frequencies only on
+// routes felt on real hardware (the Steam Controller), motors elsewhere.
+enum { VIBRATION_AUTO, VIBRATION_STANDARD, VIBRATION_NATIVE, VIBRATION_COUNT };
 enum { MOTION_SOURCE_AUTO, MOTION_SOURCE_SDL, MOTION_SOURCE_DSU, MOTION_SOURCE_COUNT };
 enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_COUNT };
 

@@ -4,11 +4,13 @@
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 #include "../hle.h"
+#include "../settings.h"
 #include "../vibration.h"
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -137,6 +139,9 @@ static void shape_motors(const VibrationValue v[2], uint64_t now, uint16_t *low,
 // (both) moves it, sides 1 and 2 give about 1% of that, and one tone plays at a time, so left and right and the two bands
 // mix down to the strongest band. Frequencies are halved by default to put the SDK's usual 160 and 320 Hz on the
 // strong part of the curve. A tone ends by itself after its duration (0 would be endless); 0x82 ends one at once.
+// Bounds on what reaches it, whatever the tuning variables ask: gain at most +6 dB, 30 to 1000 Hz, a lease of 60 ms, a write
+// every 8 ms at most. It runs beside SDL's own handle without trouble (tried on the device, tone and SDL_RumbleGamepad
+// together), but one route owns the output at a time: vibration_update sends one or the other.
 #define STEAM_LEASE_MS 60
 static SDL_hid_device *steam;
 
@@ -224,15 +229,21 @@ static bool switch_update(SDL_Gamepad *pad, const VibrationValue v[2], uint64_t 
 enum { HD_NONE, HD_STEAM, HD_SWITCH };
 
 static int hd_open(SDL_Gamepad *pad) {
-    if (steam) { SDL_hid_close(steam); steam = NULL; }
+    if (steam) {
+        static const uint8_t stop[4] = {0x82, 3, 0, 0};
+        steam_write(stop, sizeof stop);
+        SDL_hid_close(steam);
+        steam = NULL;
+    }
     const char *off = getenv("SAVAGEWIND_VIBRATION_HD");
-    if (!pad || (off && !strcmp(off, "0"))) return HD_NONE;
+    if (!pad || (off && !strcmp(off, "0")) || g_settings.vibration_quality == VIBRATION_STANDARD) return HD_NONE;
     uint16_t vendor = SDL_GetGamepadVendor(pad), product = SDL_GetGamepadProduct(pad);
     const char *path = SDL_GetGamepadPath(pad);
     if (vendor == 0x28de && (product == 0x1304 || product == 0x1305) && path && (steam = SDL_hid_open_path(path))) {
         LOG("[input] HD rumble: Steam Controller tones\n");
         return HD_STEAM;
     }
+    if (g_settings.vibration_quality == VIBRATION_NATIVE) return HD_NONE;  // (Native: only what has been felt on the device)
     switch (SDL_GetGamepadType(pad)) {
     case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
     case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT: case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
@@ -242,35 +253,52 @@ static int hd_open(SDL_Gamepad *pad) {
     }
 }
 
+static _Atomic int route_now;  // VIBRATION_ROUTE_*
+static _Atomic uint64_t test_until;
+int vibration_route(void) { return route_now; }
+void vibration_test(void) { test_until = SDL_GetTicks() + VIBRATION_TEST_MS; }
+
 void vibration_update(SDL_Gamepad *pad, bool focused) {
     static SDL_Gamepad *last_pad;
+    static int last_quality;
     static uint16_t last_low, last_high;
     static uint64_t last_ms;
     static bool failed;
     static int hd;
     if (!pad || !focused) vibration_clear();
-    bool changed = pad != last_pad;
+    bool changed = pad != last_pad || g_settings.vibration_quality != last_quality;
     if (changed) {
         last_pad = pad;
+        last_quality = g_settings.vibration_quality;
         hd = hd_open(pad);
         last_low = last_high = 0;
         last_ms = 0;
         failed = false;
     }
+    route_now = !pad ? VIBRATION_ROUTE_NONE : hd == HD_STEAM ? VIBRATION_ROUTE_TONE : hd == HD_SWITCH ? VIBRATION_ROUTE_NINTENDO
+                                                                                      : VIBRATION_ROUTE_MOTORS;
     if (!pad) return;
     pthread_mutex_lock(&lock);
     VibrationValue snap[2] = {values[0], values[1]};
-    // Both vibration and shaping are opt-out: only an explicit =0 disables them.
+    // Both vibration and shaping are opt-out: only an explicit =0 disables them. The variable, when set, beats the setting.
     const char *setting = getenv("SAVAGEWIND_VIBRATION");
-    bool on = focused && permitted && (!setting || strcmp(setting, "0") != 0);
+    bool on = focused && permitted && (setting ? strcmp(setting, "0") != 0 : !g_settings.vibration_off);
     pthread_mutex_unlock(&lock);
     uint64_t now = SDL_GetTicks();
+    if (now < test_until && focused) {  // (Controls > Test vibration, also over a game that has none going)
+        snap[0] = snap[1] = (VibrationValue){.6f, 160, .6f, 320};
+        on = true;
+    }
+    float gain = g_settings.vibration_intensity;
+    if (!(gain >= 0)) gain = 1;
+    for (int d = 0; d < 2; d++) snap[d].low_amplitude = amplitude(snap[d].low_amplitude * gain), snap[d].high_amplitude = amplitude(snap[d].high_amplitude * gain);
     if (hd) {
         static const VibrationValue quiet[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
         const VibrationValue *v = on ? snap : quiet;
         if (hd == HD_STEAM ? steam_update(v, now) : switch_update(pad, v, now)) return;
         LOG("[input] HD rumble failed (%s): motors instead\n", SDL_GetError());
         hd = HD_NONE;
+        route_now = VIBRATION_ROUTE_MOTORS;
     }
     uint16_t low = 0, high = 0;
     if (on) {

@@ -31,6 +31,7 @@ Settings g_settings = {
     .mouse_sens = MOUSE_SENS_DEFAULT,
     .mouse_sens_y = 1.0f,
     .motion_sens = 1.0f,
+    .vibration_intensity = 1.0f,
     .pc_gyro = true,
     .gyro_scene = true,
     .stick_deadzone = {STICK_DEADZONE_DEFAULT, STICK_DEADZONE_DEFAULT},
@@ -157,6 +158,9 @@ void settings_load(void) {
         else if (!strcmp(key, "controller_preferred")) snprintf(g_settings.pad_preferred, sizeof g_settings.pad_preferred, "%s", !strcmp(val, "auto") ? "" : val);
         else if (!strcmp(key, "motion_enabled")) g_settings.motion_off = atoi(val) == 0;
         else if (!strcmp(key, "motion_source")) g_settings.motion_source = !strcmp(val, "controller") ? MOTION_SOURCE_SDL : !strcmp(val, "dsu") ? MOTION_SOURCE_DSU : MOTION_SOURCE_AUTO;
+        else if (!strcmp(key, "vibration_enabled")) g_settings.vibration_off = atoi(val) == 0;
+        else if (!strcmp(key, "vibration_intensity")) g_settings.vibration_intensity = (float)atof(val) / 100;  // (percent)
+        else if (!strcmp(key, "vibration_quality")) g_settings.vibration_quality = !strcmp(val, "standard") ? VIBRATION_STANDARD : !strcmp(val, "native") ? VIBRATION_NATIVE : VIBRATION_AUTO;
         else if (!strcmp(key, "steam_input")) g_settings.steam_input = !strcmp(val, "physical") ? 1 : !strcmp(val, "steam") ? 2 : 0;
         else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
         else if (!strcmp(key, "motion_sensitivity")) g_settings.motion_sens = (float)atof(val);
@@ -245,6 +249,7 @@ void settings_load(void) {
     if (!(g_settings.mouse_sens >= 0.1f && g_settings.mouse_sens <= 10.0f)) g_settings.mouse_sens = MOUSE_SENS_DEFAULT;
     if (!(g_settings.mouse_sens_y >= 0.5f && g_settings.mouse_sens_y <= 2.0f)) g_settings.mouse_sens_y = 1.0f;
     if (!(g_settings.motion_sens >= 0.1f && g_settings.motion_sens <= 10.0f)) g_settings.motion_sens = 1.0f;
+    if (!(g_settings.vibration_intensity >= 0 && g_settings.vibration_intensity <= 2)) g_settings.vibration_intensity = 1.0f;
     if (g_settings.fov < 50 || g_settings.fov > 200) g_settings.fov = 100;
 #define CLAMP(v, lo, hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
     g_settings.color_exposure = CLAMP(g_settings.color_exposure, -20, 20);
@@ -305,6 +310,9 @@ void settings_save(void) {
     fprintf(f, "mouse_vertical_sensitivity = %.2f\n", g_settings.mouse_sens_y);
     fprintf(f, "mouse_invert_y = %d\n", g_settings.mouse_invert_y);
     fprintf(f, "pc_gyro = %d\n", g_settings.pc_gyro);
+    fprintf(f, "vibration_enabled = %d\n", !g_settings.vibration_off);
+    fprintf(f, "vibration_intensity = %.0f\n", g_settings.vibration_intensity * 100);
+    fprintf(f, "vibration_quality = %s\n", g_settings.vibration_quality == VIBRATION_STANDARD ? "standard" : g_settings.vibration_quality == VIBRATION_NATIVE ? "native" : "auto");
     fprintf(f, "motion_enabled = %d\n", !g_settings.motion_off);
     fprintf(f, "motion_source = %s\n", g_settings.motion_source == MOTION_SOURCE_SDL ? "controller" : g_settings.motion_source == MOTION_SOURCE_DSU ? "dsu" : "auto");
     fprintf(f, "controller_preferred = %s\n", g_settings.pad_preferred[0] ? g_settings.pad_preferred : "auto");

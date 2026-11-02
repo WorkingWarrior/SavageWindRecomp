@@ -4,6 +4,7 @@
 #include "../runtime/hle/vibration.c"
 #include "../runtime/services/hid_set.c"
 
+Settings g_settings = {.vibration_intensity = 1};
 static uint64_t now;
 static unsigned calls;
 static uint16_t motor_low, motor_high;
@@ -179,5 +180,79 @@ int main(int argc, char **argv) {
     assert(calls == 1);  // SDL refuses (a Joy-Con pair, a clone): the motors
     send_result = 1;
     puts("vibration: Steam Controller tones and Nintendo rumble packets passed");
+
+    // One route at a time, bounds that hold whatever the tuning asks, settings. The Steam Controller again:
+    pad_vendor = 0x28de; pad_product = 0x1304; pad_type = SDL_GAMEPAD_TYPE_STANDARD;
+    SDL_Gamepad *a = (SDL_Gamepad *)(uintptr_t)4, *b = (SDL_Gamepad *)(uintptr_t)5;
+    calls = 0; now = 5000; sent_size = 0;
+    vibration_clear();
+    vibration_update(a, true);
+    assert(vibration_route() == VIBRATION_ROUTE_TONE);
+    value = (VibrationValue){1, 160, 1, 320};
+    vibration_send(left, &value); now = 5100; vibration_update(a, true);
+    assert(sent_size == 10 && calls == 0);  // (never the motors beside the tone)
+    assert(sent[0] == 0x83 && sent[1] == 3 && (int8_t)sent[2] <= 6 && sent[5] == 60 && sent[6] == 0);
+    unsigned writes = 0;  // rapid updates: at most one write per 8 ms
+    for (int i = 0; i < 80; i++) {
+        value.high_amplitude = i & 1 ? 1 : .5f;
+        now++; sent_size = 0;
+        vibration_send(left, &value); vibration_update(a, true);
+        writes += sent_size != 0;
+    }
+    assert(writes <= 11);
+    value = (VibrationValue){1, 5000, 1, 5000};
+    now += 20; vibration_send(left, &value); vibration_update(a, true);
+    assert(sent[3] + (sent[4] << 8) <= 1000);
+    // Handover: the tone stops on the old device before it's let go of, the new one starts clean
+    now += 20; sent_size = 0;
+    vibration_update(b, true);
+    assert(sent_size == 10 || sent_size == 4);
+    pad_vendor = 0x045e; pad_product = 0x28e;
+    SDL_Gamepad *c = (SDL_Gamepad *)(uintptr_t)6;
+    sent_size = 0; now += 20; vibration_update(c, true);
+    assert(sent_size == 4 && sent[0] == 0x82);
+    assert(vibration_route() == VIBRATION_ROUTE_MOTORS);
+    vibration_update(NULL, false);
+    assert(vibration_route() == VIBRATION_ROUTE_NONE);
+    // Settings: off stops it, intensity scales it, Standard leaves the tone, Native keeps only what was felt
+    pad_vendor = 0; pad_product = 0;
+    value = (VibrationValue){.5f, 160, 0, 320};
+    vibration_update(c, true); vibration_send(left, &value);
+    now += 100; vibration_update(c, true);
+    uint16_t full = motor_low;
+    g_settings.vibration_intensity = .5f;
+    now += 100; vibration_update(c, true);
+    assert(motor_low < full && motor_low);
+    g_settings.vibration_intensity = 1;
+    unsetenv("SAVAGEWIND_VIBRATION");  // (when set it beats the setting)
+    g_settings.vibration_off = true;
+    now += 100; vibration_update(c, true);
+    assert(!motor_low);
+    vibration_test();  // (the test pulse: heard whatever the game is doing, not past its time)
+    now += 1; vibration_update(c, true);
+    assert(motor_low);
+    now += VIBRATION_TEST_MS; vibration_update(c, true);
+    assert(!motor_low);
+    g_settings.vibration_off = false;
+    pad_vendor = 0x28de; pad_product = 0x1304;
+    g_settings.vibration_quality = VIBRATION_STANDARD;
+    now += 100; vibration_update(a, true);
+    assert(vibration_route() == VIBRATION_ROUTE_MOTORS);
+    g_settings.vibration_quality = VIBRATION_NATIVE;
+    now += 100; vibration_update(a, true);
+    assert(vibration_route() == VIBRATION_ROUTE_TONE);
+    pad_vendor = 0x057e; pad_type = SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO; pad_product = 0x2009;
+    now += 100; vibration_update(pro, true);
+    assert(vibration_route() == VIBRATION_ROUTE_MOTORS);
+    g_settings.vibration_quality = VIBRATION_AUTO;
+    now += 100; vibration_update(pro, true);
+    assert(vibration_route() == VIBRATION_ROUTE_NINTENDO);
+    // 207 to 209 change nothing: a session's end is 210
+    vibration_send(left, &value);
+    for (uint32_t cmd = 207; cmd <= 209; cmd++) command(cmd, NULL, 0);
+    assert(vibration_get(left).low_amplitude == .5f);
+    command(210, NULL, 0);
+    assert(vibration_get(left).low_amplitude == 0);
+    puts("vibration: routes, bounds, handover and settings passed");
     return 0;
 }
