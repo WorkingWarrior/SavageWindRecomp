@@ -4,11 +4,13 @@ Baseline: `73dea53` on `experiment/totk-on-moj-test`. Work branch: `feature/bett
 
 ## Current state
 
-Phase 0 complete, stopped at the checkpoint. No runtime code changed. See `docs/CONTROLLER_IMPLEMENTATION_AUDIT.md`.
+Phases 1 to 5 implemented and committed, automated tests pass, both games smoke-tested from this branch's own output
+directories. Plan approved at the checkpoint as written in the audit.
 
 ## Next step
 
-Wait for the reply at the checkpoint, then Phase 1 as planned in the audit.
+Manual checklist with the controller (`docs/CONTROLLER_TESTING.md`), both games, both launch paths. Then performance
+numbers, the independent review and the final documents.
 
 ## Build and test commands
 
@@ -80,10 +82,23 @@ From the game files, read locally:
 
 ## Decisions
 
+- Steam launch: only the Steam Controller 2026 comes off Steam's ignore list, on Linux with SDL 3.4+. Reasons in the audit.
+- Fused gyro stays. Captured on this controller and replayed through `motion.c`: reads at 30 and 60 Hz show no lag at read
+  resolution against bias-corrected raw (best lag 0 reads), rest noise 0.00025 and 0.00035 rad/s against 0.00063.
+- `StartSixAxisSensor` and `SetGyroscopeZeroDriftMode` stay no-ops: samples always exist, and TOTK never calls the latter.
+- Fly mode's default is L5 / left paddle 2, since a controller with paddles is the only place it can't collide.
+- The tone stays, limits in `vibration.c`. `207` to `209` are no-ops by test: only `201`, `206` and `210` touch the values.
+- New menu texts are in the translation tables as untranslated entries, as the last few additions there are.
+- `motion_watch` runs on the main window loop, not a render thread: game threads present.
+
 - Phase 0 changes no runtime code.
 - Probes and hardware logs stay in temporary directories, outside the repository.
 
 ## Files changed
 
-- `docs/CONTROLLER_PROGRESS.md`
-- `docs/CONTROLLER_IMPLEMENTATION_AUDIT.md`
+- `docs/CONTROLLER_PROGRESS.md`, `docs/CONTROLLER_IMPLEMENTATION_AUDIT.md`, `docs/CONTROLLER_TESTING.md`
+- `runtime/pad_policy.h`, `runtime/input_status.h` (new), `runtime/hle/input.c`, `motion.c`, `vibration.c`, `bindings.c`
+- `runtime/settings.*`, `runtime/motion.h`, `runtime/vibration.h`, `runtime/nvn/vulkan/device.c`
+- `runtime/ui/controls_ui.mm`, `game_options.mm`, `i18n/*.inc`
+- `tools/test_pad_policy.c`, `test_pad_routing.c`, `test_motion_stream.c`, `test_controller_settings.c` (new), other tests
+- `Makefile`, `.github/workflows/tests.yml`
