@@ -27,7 +27,7 @@ Files: see `docs/CONTROLLER_PROGRESS.md`.
 | Windows build | NOT TESTED: no cross compiler here. Reasoned only: new Steam code is `__linux__`, the rest uses what these files already used |
 | CI job `input` | NOT TESTED: never run on GitHub. Nothing pushed |
 | Smoke run, both games, terminal | pass: sensors on, motion from the controller, the game reads six-axis |
-| Smoke run, BOTW, Steam launch | pass: pair formed, 248 Hz, motion from the controller, the game sends non-zero vibration |
+| Played, BOTW and TOTK, Steam launch | pass: pair formed, 248 Hz, motion from the controller, inputs and gyro work, the game sends non-zero vibration |
 
 ## Performance
 
@@ -91,7 +91,7 @@ The fixes themselves have not had a second independent review.
 | # | Criterion | State |
 | --- | --- | --- |
 | 1 | Phase 0 and checkpoint | Met |
-| 2 | Motion in both games, both launches | Partly: terminal both by log, Steam BOTW by log. TOTK Steam and play NOT TESTED |
+| 2 | Motion in both games, both launches | Steam launch met in both games, confirmed at the controller. Terminal: by log at the title |
 | 3 | No double input or haptics | Met by construction and tests. On hardware NOT TESTED |
 | 4 | Sensor stall recovered | Met in the probe; in game NOT TESTED |
 | 5 | Stale first sample | Met: test, and pitch right in the game logs |
@@ -103,4 +103,4 @@ The fixes themselves have not had a second independent review.
 | 11 | Tests, CI | Tests met; CI job NOT TESTED |
 | 12 | Builds | Linux met, SDL 3.2 headers clean, Windows NOT TESTED |
 | 13 | Review | Done, findings resolved |
-| 14 | Manual checklist | NOT TESTED so far |
+| 14 | Manual checklist | Partly recorded in `docs/CONTROLLER_TESTING.md`; the rest NOT TESTED |
