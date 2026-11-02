@@ -386,11 +386,10 @@ void output_scale_screen(double sw, double sh, int iw, int ih, OutScale *o) {
     o->vw *= k; o->vh *= k;
 }
 
-// Console: the game's own size (BOTW: 896 x 896 per cascade); High 2048, Ultra 4096, Extreme 8192. Test override:
+// Console: the game's own size (BOTW: 896 x 896 per cascade; TotK: 720 to 1440, and others); High 2048, Ultra 4096, Extreme 8192. Test override:
 // SAVAGEWIND_SHADOW_AT=<frame>:<console|high|ultra|extreme|width>,... from that presented frame on (same-view A/B in one
 // run).
 unsigned shadow_map_size(unsigned long long frame) {
-    if (!game_is_botw()) return 0;
     static const unsigned size[SHADOW_COUNT] = {0, 2048, 4096, 8192};
     static int n = -1;
     static unsigned long long at[8];

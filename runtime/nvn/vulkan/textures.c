@@ -192,7 +192,7 @@ static bool rs_stale(const TexBackend *b) {
 // Which scale a texture takes (RS_*): the game's screen-sized targets are 16:9 2D images or 2D arrays (BOTW renders
 // some half-size passes into layers of 800x450x2 arrays) with the compressible flag (render targets) or the display
 // flag; shadow maps are square depth render targets, 512 or more (BOTW's sun cascades; its 192x192 depth target is no
-// shadow map), and the cascades' half-size copy is a square R16 2D array of 3 layers, one per cascade (no
+// shadow map; TotK's sun cascades are 400x400x4, its other maps 424 to 1440: 384 or more there), and the cascades' half-size copy is a square R16 2D array of 3 layers, one per cascade (no
 // render-target flag; a looser rule also took a 1024x1024x8 R16 array filled once at load, which a change of the
 // setting then made again empty: the terrain went). Everything else keeps its guest size: LUTs, cubemaps, the small
 // odd-sized steps of the bloom and exposure chains (sampled with normalized coordinates, they work at any size).
@@ -224,7 +224,7 @@ static uint8_t tex_scale_group(const NvnTexture *t) {
     if (on < 0) on = getenv("SAVAGEWIND_NO_SCALE") == NULL;
     if (!on) return RS_NONE;
     if ((t->target == 1 || t->target == 4) && t->samples <= 1 && (t->flags & 8) && renderer_format_is_depth(t->format) &&
-        t->width == t->height && t->width >= 512)
+        t->width == t->height && t->width >= (game_is_botw() ? 512u : 384u))
         return RS_SHADOW;
     if (!vk_shadow_direct() && vk_is_shadow_copy(t)) return RS_SHADOW;  // (the copy's readers use the cascades instead)
     if ((t->target != 1 && t->target != 4) || t->samples > 1 || !(t->flags & 9) || t->width < 32 || t->height < 16) return RS_NONE;

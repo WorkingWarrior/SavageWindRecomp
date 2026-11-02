@@ -113,6 +113,20 @@ Standing still on one island: conditional rendering where the counters really ar
 tested. Screenshots show no visible fault, but the runs are not pixel-comparable (the scene moves: two runs of the same build differ
 as much). Above 60 is not measured: TotK's limit is 30 or 60.
 
+## TotK's banded shadows: Video > Shadow resolution (2026-11-02)
+
+Lines and arcs on sunlit ground and rock are not in the G-buffer (albedo and normals are clean); they first appear in the sun's
+lighting pass (800x450, 8 targets). That pass reads a **400x400x4 D16 array** with depth comparison. Hardware bias is not the cause
+(shadow maps draw with none), and neither is D16's precision (the same frame with D16 as D32F keeps the lines).
+
+Shadow resolution was BOTW only, and scaling took square depth targets of 512 or more. TotK now has the option, and takes them from
+384 (`tex_scale_group`). At Ultra the lines on the test wall are gone (a copy of a save on the island, same frame, Console against
+Ultra). With the 512 threshold Ultra sharpened the other shadows and kept the lines.
+
+The orange ground of the first report lost its lines too (seen in the game). Console stays the default. High and Extreme and the cost in GPU time are not measured: GPU
+time flips between its two levels on its own (see above), so these runs cannot give it. Every square depth target of 384 or more
+goes to the chosen size, not only the sun's.
+
 ## Upstream 0.4.1-alpha.4 merged (2026-11-01)
 
 `revivedx/main` at `bf6146c` merged into this branch, both games regenerated from the merged `tools/` (BOTW 49 s, TotK 77 s;
