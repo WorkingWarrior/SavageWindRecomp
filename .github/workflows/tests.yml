@@ -30,6 +30,7 @@ jobs:
       astc: ${{ steps.filter.outputs.astc }}
       simd: ${{ steps.filter.outputs.simd }}
       translate: ${{ steps.filter.outputs.translate }}
+      input: ${{ steps.filter.outputs.input }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -54,6 +55,23 @@ jobs:
               - 'tools/lifter.py'
               - 'tools/simd_c.py'
               - 'tools/test_simd*'
+              - '.github/workflows/tests.yml'
+            input:
+              - 'runtime/hle/input.c'
+              - 'runtime/hle/motion.c'
+              - 'runtime/hle/vibration.c'
+              - 'runtime/hle/bindings.c'
+              - 'runtime/hle/swkbd.c'
+              - 'runtime/services/hid_set.c'
+              - 'runtime/dsu.*'
+              - 'runtime/pad_policy.h'
+              - 'runtime/input_*.h'
+              - 'runtime/motion.h'
+              - 'runtime/vibration.h'
+              - 'runtime/settings.*'
+              - 'tools/test_*'
+              - 'tests/**'
+              - 'Makefile'
               - '.github/workflows/tests.yml'
             translate:
               - 'runtime/nvn/maxwell/**'
@@ -111,6 +129,35 @@ jobs:
           enable-cache: true
           cache-dependency-glob: .github/workflows/tests.yml
       - run: uv run --no-project --with unicorn --with capstone python tools/test_simd.py --jobs "$(nproc)"
+
+  # Controllers, motion, vibration, bindings: synthetic streams and SDL's own virtual joysticks, no game files, no
+  # hardware. Against the SDL the Linux release ships (tools/linux/build_deps.sh).
+  input:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.input == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SDL_VERSION: 3.4.16
+      SDL_SHA256: 7322236cd12090c3eb40b9728be4d49c76f66ad17d04369584d4ecad5cf77c68
+    steps:
+      - uses: actions/checkout@v7
+      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends clang lld cmake ninja-build zlib1g-dev
+      - uses: actions/cache@v4
+        id: sdl
+        with:
+          path: build/sdl3
+          key: sdl3-${{ env.SDL_VERSION }}-${{ runner.os }}
+      - if: steps.sdl.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/sdl3.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VERSION/SDL3-$SDL_VERSION.tar.gz"
+          echo "$SDL_SHA256  /tmp/sdl3.tar.gz" | sha256sum -c --quiet
+          tar -xf /tmp/sdl3.tar.gz -C /tmp
+          cmake -S "/tmp/SDL3-$SDL_VERSION" -B /tmp/sdl3-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_LIBDIR=lib \
+                -DCMAKE_INSTALL_PREFIX="$PWD/build/sdl3" -DSDL_UNIX_CONSOLE_BUILD=ON -DSDL_TESTS=OFF -DSDL_EXAMPLES=OFF
+          cmake --build /tmp/sdl3-build
+          cmake --install /tmp/sdl3-build
+      - run: LD_LIBRARY_PATH="$PWD/build/sdl3/lib" make -j"$(nproc)" B=build/ci DEPS="$PWD/build/sdl3" test-input
 
   # Every GLSL translation of random Maxwell programs compiles (shaderc) and validates (SPIRV-Tools).
   translate:

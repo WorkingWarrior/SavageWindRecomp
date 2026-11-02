@@ -4,13 +4,18 @@
 // use swaps over). Drawn in whichever ImGui context is current.
 #include <SDL3/SDL.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "i18n.h"
 #include "imgui.h"
 
 extern "C" {
 #include "../input_bind.h"
+#include "../input_status.h"
+#include "../motion.h"
+#include "../pad_policy.h"
 #include "../settings.h"
+#include "../vibration.h"
 }
 extern "C" bool control_enabled(void);  // runtime/control.c: is the test endpoint on (SAVAGEWIND_CONTROL)?
 
@@ -39,16 +44,133 @@ static void cell(int dev, int slot, int fam, int cap_dev, int cap_slot, int ms_l
     if (waiting && !ImGui::IsItemVisible()) ImGui::SetScrollHereY(0.5f);  // (a capture started by a test hook)
 }
 
+// Which controller does what, and how each part of it is doing: everything here is live, so a player can see why motion or
+// vibration isn't there.
+static void controller_panel(int fam) {
+    InputStatus st;
+    MotionStatus ms;
+    input_status(&st);
+    motion_status(&ms);
+    bool changed = false;
+    if (ImGui::CollapsingHeader(tr("Controllers"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::RadioButton(tr("Automatic: the one used last"), !g_settings.pad_preferred[0])) {
+            g_settings.pad_preferred[0] = 0;
+            changed = true;
+        }
+        for (int i = 0; i < st.count && i < 8; i++) {
+            const PadRow &r = st.rows[i];
+            if (r.steam_virtual && st.pair == PAD_PAIR_OK) continue;  // (half of the real one, in its line)
+            char line[160];
+            snprintf(line, sizeof line, "%s##%d", r.name, i);
+            ImGui::PushID(i);
+            if (ImGui::RadioButton(line, !strcmp(g_settings.pad_preferred, r.guid))) {
+                snprintf(g_settings.pad_preferred, sizeof g_settings.pad_preferred, "%s", r.guid);
+                changed = true;
+            }
+            ImGui::PopID();
+        }
+        const char *in = NULL, *mo = NULL, *ha = NULL;
+        bool virt_in = false;
+        for (int i = 0; i < st.count && i < 8; i++) {
+            if (st.rows[i].input) in = st.rows[i].name, virt_in = st.rows[i].steam_virtual;
+            if (st.rows[i].sensors) mo = st.rows[i].name;
+            if (st.rows[i].haptics) ha = st.rows[i].name;
+        }
+        ImGui::Text("%s: %s%s", tr("Buttons and sticks"), in ? in : tr("none"), virt_in ? " (Steam)" : "");
+        ImGui::Text("%s: %s", tr("Motion"), mo ? mo : tr("none"));
+        ImGui::Text("%s: %s", tr("Vibration"), ha ? ha : tr("none"));
+        if (st.steam_launch) {
+            static const char *const modes[STEAM_INPUT_COUNT] = {"Automatic", "The controller itself", "Steam's layout"};
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+            if (ImGui::BeginCombo(tr("Buttons under Steam"), tr(modes[g_settings.steam_input]))) {
+                for (int i = 0; i < STEAM_INPUT_COUNT; i++)
+                    if (ImGui::Selectable(tr(modes[i]), g_settings.steam_input == i)) g_settings.steam_input = i, changed = true;
+                ImGui::EndCombo();
+            }
+            ImGui::TextDisabled("%s", st.pair == PAD_PAIR_OK ? (st.virtual_live ? tr("Steam's virtual pad works.") : tr("Steam's virtual pad has sent nothing yet: the controller itself is used."))
+                                    : st.pair == PAD_PAIR_AMBIGUOUS ? tr("Several controllers under Steam can't be told apart: each is used by itself.") : tr("Started through Steam."));
+            if (!st.steam_controller && !ms.sensors) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("Steam's virtual pad has no motion sensors."));
+        }
+    }
+    if (ImGui::CollapsingHeader(tr("Motion"))) {
+        bool on = !g_settings.motion_off;
+        if (ImGui::Checkbox(tr("Motion controls"), &on)) g_settings.motion_off = !on, changed = true;
+#ifdef __linux__
+        static const char *const srcs[MOTION_SOURCE_COUNT] = {"Automatic", "The controller itself", "DSU server"};
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        if (ImGui::BeginCombo(tr("Motion source"), tr(srcs[g_settings.motion_source]))) {
+            for (int i = 0; i < MOTION_SOURCE_COUNT; i++)
+                if (ImGui::Selectable(tr(srcs[i]), g_settings.motion_source == i)) g_settings.motion_source = i, changed = true;
+            ImGui::EndCombo();
+        }
+#endif
+        if (ImGui::Button(tr("Recalibrate"))) motion_recalibrate();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", ms.calibrating ? tr("Hold the controller still...") : tr("Lay it down or hold it still, then press."));
+        ImGui::Text("%s  %s", ms.source == MOTION_SOURCE_DSU ? "DSU" : ms.source == MOTION_SOURCE_SDL ? "SDL" : tr("none"),
+                    ms.stalled ? tr("stopped: turning it on again") : "");
+        ImGui::Text("%u Hz, %.0f ms", ms.rate, ms.age_ms < 0 ? 0 : ms.age_ms);
+        ImGui::Text("gyro %+.3f %+.3f %+.3f rad/s", ms.gyro[0], ms.gyro[1], ms.gyro[2]);
+        ImGui::Text("accel %+.2f %+.2f %+.2f m/s2", ms.accel[0], ms.accel[1], ms.accel[2]);
+        ImGui::Text("bias %+.2f %+.2f %+.2f deg/s", ms.bias[0], ms.bias[1], ms.bias[2]);
+        if (ms.recovered) ImGui::TextDisabled("%s: %d", tr("Sensor stops recovered"), ms.recovered);
+    }
+    if (ImGui::CollapsingHeader(tr("Vibration"))) {
+        bool on = !g_settings.vibration_off;
+        if (ImGui::Checkbox(tr("Vibration"), &on)) g_settings.vibration_off = !on, changed = true;
+        int pct = (int)(g_settings.vibration_intensity * 100 + 0.5f);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        if (ImGui::SliderInt(tr("Intensity"), &pct, 0, 200, "%d%%")) g_settings.vibration_intensity = (float)pct / 100, changed = true;
+        static const char *const q[VIBRATION_COUNT] = {"Automatic", "Standard", "Native"};
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14);
+        if (ImGui::BeginCombo(tr("Quality"), tr(q[g_settings.vibration_quality]))) {
+            for (int i = 0; i < VIBRATION_COUNT; i++)
+                if (ImGui::Selectable(tr(q[i]), g_settings.vibration_quality == i)) g_settings.vibration_quality = i, changed = true;
+            ImGui::EndCombo();
+        }
+        if (ImGui::Button(tr("Test vibration"))) vibration_test();
+        int r = vibration_route();
+        static const char *const routes[] = {"none", "Motors", "Steam Controller tone", "Nintendo HD rumble"};
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", tr(routes[r]));
+    }
+    if (ImGui::CollapsingHeader(tr("Diagnostics"))) {
+        uint32_t held;
+        int16_t ax[6];
+        input_live(&held, ax);
+        char line[400];
+        int n = 0;
+        line[0] = 0;
+        for (int i = 0; i < PADB_HOST_COUNT && n < (int)sizeof line - 40; i++)
+            if (held >> i & 1) n += snprintf(line + n, sizeof line - (size_t)n, "%s  ", bind_pad_label(i, fam));
+        ImGui::Text("%s: %s", tr("Held"), line);
+        ImGui::Text("L %6d %6d   R %6d %6d   T %6d %6d", ax[0], ax[1], ax[2], ax[3], ax[4], ax[5]);
+        if (st.error[0]) ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", st.error);
+        ImGui::TextDisabled("%s", st.steam_launch ? tr("Started through Steam.") : tr("Started outside Steam."));
+        if (st.steam_controller && !st.steam_launch) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextDisabled("%s", tr("If a button opens Steam's on-screen keyboard here, that is Steam's Desktop Layout. Change it in Steam's Controller settings."));
+            ImGui::PopTextWrapPos();
+        }
+    }
+    if (changed) {
+        input_settings_changed();
+        settings_save();
+    }
+    ImGui::Spacing();
+}
+
 extern "C" void controls_bindings_draw(float scale) {
     (void)scale;
     int fam = bind_label_family();
-    static const char *const fam_name[] = {"Nintendo", "Xbox", "PlayStation"};
+    controller_panel(fam);
+    static const char *const fam_name[] = {"Nintendo", "Xbox", "PlayStation", "Steam Controller"};
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
     const char *pad_name = ids && n > 0 ? SDL_GetGamepadNameForID(ids[0]) : NULL;
     char line[300];
-    if (n > 0) snprintf(line, sizeof line, tr("Controller: %s  (%s button names)"), pad_name ? pad_name : tr("connected"), fam_name[fam % 3]);
-    else snprintf(line, sizeof line, tr("No controller connected  (%s button names shown)"), fam_name[fam % 3]);
+    if (n > 0) snprintf(line, sizeof line, tr("Controller: %s  (%s button names)"), pad_name ? pad_name : tr("connected"), fam_name[fam & 3]);
+    else snprintf(line, sizeof line, tr("No controller connected  (%s button names shown)"), fam_name[fam & 3]);
     SDL_free(ids);
     ImGui::TextUnformatted(line);
     ImGui::PushTextWrapPos(0);

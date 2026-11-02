@@ -159,7 +159,11 @@ void settings_load(void) {
         else if (!strcmp(key, "motion_enabled")) g_settings.motion_off = atoi(val) == 0;
         else if (!strcmp(key, "motion_source")) g_settings.motion_source = !strcmp(val, "controller") ? MOTION_SOURCE_SDL : !strcmp(val, "dsu") ? MOTION_SOURCE_DSU : MOTION_SOURCE_AUTO;
         else if (!strcmp(key, "vibration_enabled")) g_settings.vibration_off = atoi(val) == 0;
-        else if (!strcmp(key, "vibration_intensity")) g_settings.vibration_intensity = (float)atof(val) / 100;  // (percent)
+        else if (!strcmp(key, "vibration_intensity")) {  // (percent)
+            char *end;
+            double v = strtod(val, &end);
+            if (end != val) g_settings.vibration_intensity = (float)v / 100;
+        }
         else if (!strcmp(key, "vibration_quality")) g_settings.vibration_quality = !strcmp(val, "standard") ? VIBRATION_STANDARD : !strcmp(val, "native") ? VIBRATION_NATIVE : VIBRATION_AUTO;
         else if (!strcmp(key, "steam_input")) g_settings.steam_input = !strcmp(val, "physical") ? 1 : !strcmp(val, "steam") ? 2 : 0;
         else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;

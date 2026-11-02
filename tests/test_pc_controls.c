@@ -28,6 +28,7 @@ void motion_tilt_held(bool held) { (void)held; }
 bool pc_gyro_keyboard_active(void) { return false; }
 void motion_keyboard(int p,int r,int y,bool reset) { (void)p;(void)r;(void)y;(void)reset; }
 void motion_poll(void) {}
+void motion_watch(bool focused) { (void)focused; }
 bool control_enabled(void) { return false; }
 bool control_fly_toggle(void) { abort(); }
 void control_fly_wheel(float notches) { (void)notches;abort(); }

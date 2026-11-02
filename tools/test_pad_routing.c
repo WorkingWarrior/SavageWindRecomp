@@ -147,10 +147,10 @@ int main(void) {
 
     // Settings: physical, at once
     g_settings.steam_input = STEAM_INPUT_PHYSICAL;
-    input_settings_changed();
+    routes_apply();
     assert(pad == gamepad(real));
     g_settings.steam_input = STEAM_INPUT_AUTO;
-    input_settings_changed();
+    routes_apply();
     assert(pad == gamepad(virt));
 
     // Steam's pad goes while a button is held on it: released, the real one takes over
@@ -176,11 +176,11 @@ int main(void) {
 
     // A choice in settings holds whatever else is touched
     snprintf(g_settings.pad_preferred, sizeof g_settings.pad_preferred, "%s", open_pads[pad_slot(xbox)].guid);
-    input_settings_changed();
+    routes_apply();
     press(jr, SDL_GAMEPAD_BUTTON_SOUTH, true); press(jr, SDL_GAMEPAD_BUTTON_SOUTH, false);
     assert(pad == gamepad(xbox));
     g_settings.pad_preferred[0] = 0;
-    input_settings_changed();
+    routes_apply();
 
     // The active one removed in mid-play, button held: released at once, the other takes over, its sensors on
     press(jx, SDL_GAMEPAD_BUTTON_EAST, true);

@@ -591,3 +591,52 @@ T("PC mouse pointer", "")
 T("Point and click in menus and map. Esc pauses/goes back; F2 frees the cursor.", "")
 T("The mouse turns the camera. Pointer off: Esc frees it; pointer on: F2 frees it.", "")
 T("Open them from the title screen, or pause the game and choose System > Options. Esc opens pause or goes back. F2 frees the mouse cursor.", "")
+T("Controllers", "")  // runtime/ui/controls_ui.mm:55
+T("Automatic: the one used last", "")  // runtime/ui/controls_ui.mm:56
+T("Buttons and sticks", "")  // runtime/ui/controls_ui.mm:79
+T("none", "")  // runtime/ui/controls_ui.mm:79
+T(" (Steam)", "")  // runtime/ui/controls_ui.mm:79
+T("Motion", "")  // runtime/ui/controls_ui.mm:80
+T("Vibration", "")  // runtime/ui/controls_ui.mm:81
+T("The controller itself", "")  // runtime/ui/controls_ui.mm:83
+T("Steam's layout", "")  // runtime/ui/controls_ui.mm:83
+T("Buttons under Steam", "")  // runtime/ui/controls_ui.mm:85
+T("Steam's virtual pad works.", "")  // runtime/ui/controls_ui.mm:90
+T("Steam's virtual pad has sent nothing yet: the controller itself is used.", "")  // runtime/ui/controls_ui.mm:90
+T("Several controllers under Steam can't be told apart: each is used by itself.", "")  // runtime/ui/controls_ui.mm:91
+T("Started through Steam.", "")  // runtime/ui/controls_ui.mm:91
+T("Steam's virtual pad has no motion sensors.", "")  // runtime/ui/controls_ui.mm:92
+T("Motion controls", "")  // runtime/ui/controls_ui.mm:97
+T("DSU server", "")  // runtime/ui/controls_ui.mm:99
+T("Motion source", "")  // runtime/ui/controls_ui.mm:101
+T("Recalibrate", "")  // runtime/ui/controls_ui.mm:107
+T("Hold the controller still...", "")  // runtime/ui/controls_ui.mm:109
+T("Lay it down or hold it still, then press.", "")  // runtime/ui/controls_ui.mm:109
+T("DSU", "")  // runtime/ui/controls_ui.mm:110
+T("SDL", "")  // runtime/ui/controls_ui.mm:110
+T("stopped: turning it on again", "")  // runtime/ui/controls_ui.mm:111
+T("%u Hz, %.0f ms", "")  // runtime/ui/controls_ui.mm:112
+T("gyro %+.3f %+.3f %+.3f rad/s", "")  // runtime/ui/controls_ui.mm:113
+T("accel %+.2f %+.2f %+.2f m/s2", "")  // runtime/ui/controls_ui.mm:114
+T("bias %+.2f %+.2f %+.2f deg/s", "")  // runtime/ui/controls_ui.mm:115
+T("Sensor stops recovered", "")  // runtime/ui/controls_ui.mm:116
+T("Intensity", "")  // runtime/ui/controls_ui.mm:123
+T("Standard", "")  // runtime/ui/controls_ui.mm:124
+T("Native", "")  // runtime/ui/controls_ui.mm:124
+T("Test vibration", "")  // runtime/ui/controls_ui.mm:131
+T("Motors", "")  // runtime/ui/controls_ui.mm:133
+T("Steam Controller tone", "")  // runtime/ui/controls_ui.mm:133
+T("Nintendo HD rumble", "")  // runtime/ui/controls_ui.mm:133
+T("Diagnostics", "")  // runtime/ui/controls_ui.mm:137
+T("Held", "")  // runtime/ui/controls_ui.mm:146
+T("Started outside Steam.", "")  // runtime/ui/controls_ui.mm:149
+T("If a button opens Steam's on-screen keyboard here, that is Steam's Desktop Layout. Change it in Steam's Controller settings.", "")  // runtime/ui/controls_ui.mm:152
+T("Steam Controller", "")  // runtime/ui/controls_ui.mm:167
+T("Off: the game sees a controller lying still.", "")  // runtime/ui/game_options.mm:610
+T("The controller's vibration.", "")  // runtime/ui/game_options.mm:614
+T("How strong the vibration is.", "")  // runtime/ui/game_options.mm:617
+T("A short pulse.", "")  // runtime/ui/game_options.mm:627
+T("Steam", "")  // runtime/hle/bindings.c:91
+T("Quick access (...)", "")  // runtime/hle/bindings.c:92
+T("Left trackpad click", "")  // runtime/hle/bindings.c:93
+T("Right trackpad click", "")  // runtime/hle/bindings.c:93

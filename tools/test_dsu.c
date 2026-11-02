@@ -121,6 +121,7 @@ static void network(void) {
 static void selection(void) {
     setenv("SAVAGEWIND_DSU","off",1);
     backend.enabled=true;
+    warm.ok=true; // (runtime/hle/motion.c's warm-up: tools/test_motion_stream.c)
     SDL_Event e={0}; e.gsensor.sensor=SDL_SENSOR_ACCEL; e.gsensor.sensor_timestamp=100;
     e.gsensor.data[1]=SDL_STANDARD_GRAVITY;
     motion_sensor_event(&e); assert(!g.sensors);
@@ -146,7 +147,7 @@ static void selection(void) {
     e.gsensor.timestamp = 0;
     DsuPacket d={.acc={0,0,-1},.gyro={1,2,3},.timestamp=100};
     dsu_sample(&d,1,NULL); assert(backend.source==1); // SDL priority
-    clock_ns+=DSU_TIMEOUT_NS; motion_poll(); assert(!g.sensors && backend.source==0);
+    clock_ns+=DSU_TIMEOUT_NS; motion_poll(); assert(g.sensors && backend.source==1); // no DSU live: it holds
     dsu_sample(&d,1,NULL); assert(backend.source==2 && g.started);
     g.bias[0]=1; dsu_sample(&d,2,NULL); near(g.bias[0],0); // device epoch resets calibration
     clock_ns++;

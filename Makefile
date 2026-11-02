@@ -495,6 +495,23 @@ $(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c $(R
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_keyboard.c \
 	    $(TEST_LD) -lSDL3 -lm
 
+$(B)/test_controller_settings: tools/test_controller_settings.c runtime/settings.c runtime/hle/bindings.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_controller_settings.c \
+	    $(TEST_LD) -lSDL3 -lm
+
+test-controller-settings: $(B)/test_controller_settings
+	@set -e; tmp=$$(mktemp); trap 'rm -f "$$tmp"' EXIT; \
+	 printf 'settings_version = 3\npc_gyro = 1\n' > "$$tmp"; \
+	 $(B)/test_controller_settings "$$tmp" old; \
+	 $(B)/test_controller_settings "$$tmp" saved; \
+	 printf 'settings_version = 3\nbind_pad_fly = misc1\n' > "$$tmp"; \
+	 $(B)/test_controller_settings "$$tmp" fly; \
+	 printf 'settings_version = 3\nvibration_intensity = banana\nvibration_quality = max\nmotion_source = moon\nsteam_input = 9\n' > "$$tmp"; \
+	 $(B)/test_controller_settings "$$tmp" nonsense
+
+.PHONY: test-controller-settings
+
 $(B)/test_motion_stream: tools/test_motion_stream.c runtime/hle/motion.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_stream.c \
@@ -529,6 +546,13 @@ test-gyro: $(B)/test_gyro_bindings $(B)/test_gyro_settings $(B)/test_motion_keyb
 	python3 tools/test_gyro_site.py
 
 .PHONY: test-gyro
+
+# Everything about controllers that needs no game files and no controller (CI: .github/workflows/tests.yml)
+test-input: test-pad test-motion-stream test-controller-settings test-input-focus test-vibration test-pc-controls \
+            test-bind-capture test-gyro test-control test-swkbd
+	B=$(B) DEPS=$(DEPS) tools/test_dsu.sh
+
+.PHONY: test-input
 
 $(B)/test_swkbd: tools/test_swkbd.c runtime/hle/swkbd.c $(RT_HDRS)
 	@mkdir -p $(B)

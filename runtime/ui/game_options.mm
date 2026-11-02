@@ -31,6 +31,8 @@
 extern "C" {
 #include "../input_bind.h"
 #include "../language.h"
+#include "../motion.h"
+#include "../vibration.h"
 #include "../game_sites.h"
 #include "../nvn/output_scale.h"
 #include "../settings.h"
@@ -85,7 +87,7 @@ static_assert(sizeof(Entry) == 0x30);
 enum { KIND_TOGGLE = 0, KIND_CHOICE = 1, KIND_BUTTON = 2 };
 
 enum Page { P_MAIN, P_GAMEPLAY, P_VIDEO, P_COLOUR, P_AUDIO, P_CONTROLS, P_KEYS, P_STICKS, P_PAD, P_LANGUAGE, P_COUNT };
-enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST };
+enum Action { A_NONE, A_PAGE, A_BIND_KEY, A_BIND_PAD, A_RESET_KEYS, A_RESET_PAD, A_RESTART, A_QUIT, A_SIZE_LIST, A_RECALIBRATE, A_VIBRATION_TEST };
 
 struct Item {
     int page;
@@ -162,6 +164,9 @@ constexpr int k_sens_y[] = MOUSE_SENS_Y_CHOICES;  // vertical mouse sensitivity,
 constexpr int SENS_Y_DEFAULT = 5;
 static_assert(k_sens_y[SENS_Y_DEFAULT] == 100);
 constexpr int k_motion_sens[] = {25, 50, 75, 100, 125, 150, 200, 250, 300, 400};  // motion sensitivity, %
+constexpr int k_vibration[] = {0, 25, 50, 75, 100, 125, 150, 200};  // vibration intensity, %
+enum { VIBRATION_DEFAULT = 4 };
+static_assert(k_vibration[VIBRATION_DEFAULT] == 100);
 constexpr int MOTION_SENS_DEFAULT = 3;
 static_assert(k_motion_sens[MOTION_SENS_DEFAULT] == 100);
 constexpr int k_fov[] = FOV_CHOICES;  // field of view, % of the game's own
@@ -602,6 +607,24 @@ void build_items(void) {
                        [](const Item &) { return nearest(k_motion_sens, N(k_motion_sens), g_settings.motion_sens * 100); },
                        [](const Item &, int x) { g_settings.motion_sens = k_motion_sens[x] / 100.0f; },
                        MOTION_SENS_DEFAULT));
+    v.push_back(toggle(P_CONTROLS, "Motion controls", "Off: the game sees a controller lying still.",
+                       [](const Item &) { return (int)!g_settings.motion_off; },
+                       [](const Item &, int x) { g_settings.motion_off = !x; }, 1));
+    v.push_back(button(P_CONTROLS, "Recalibrate", "Lay it down or hold it still, then press.", "Recalibrate", A_RECALIBRATE, 0));
+    v.push_back(toggle(P_CONTROLS, "Vibration", "The controller's vibration.",
+                       [](const Item &) { return (int)!g_settings.vibration_off; },
+                       [](const Item &, int x) { g_settings.vibration_off = !x; }, 1));
+    v.push_back(choice(P_CONTROLS, "Intensity", "How strong the vibration is.",
+                       [](const Item &) { return N(k_vibration); },
+                       [](const Item &, int x) {
+                           static std::string s;
+                           s = pct(k_vibration[x]);
+                           return s.c_str();
+                       },
+                       [](const Item &) { return nearest(k_vibration, N(k_vibration), g_settings.vibration_intensity * 100); },
+                       [](const Item &, int x) { g_settings.vibration_intensity = k_vibration[x] / 100.0f; },
+                       VIBRATION_DEFAULT));
+    v.push_back(button(P_CONTROLS, "Test vibration", "A short pulse.", "Test vibration", A_VIBRATION_TEST, 0));
     v.push_back(choice(P_CONTROLS, "Invert motion", "Turning the controller moves the other way: aiming and tilting.",
                        [](const Item &) { return N(k_invert); },
                        [](const Item &, int x) { return tr(k_invert[x]); },
@@ -957,6 +980,12 @@ extern "C" int rt_opt_decide(uint64_t row) {
         bind_reset(it->action == A_RESET_KEYS ? BIND_DEV_KEY : BIND_DEV_PAD);
         settings_save();
         mark_all_rows(rd64(row));
+        return 2;
+    case A_RECALIBRATE:
+        motion_recalibrate();
+        return 2;
+    case A_VIBRATION_TEST:
+        vibration_test();
         return 2;
     case A_RESTART:
         if (language_pending()) {

@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "input_bind.h"
 
@@ -96,6 +97,39 @@ int main(void) {
     bind_capture_begin(BIND_DEV_KEY,BIND_GYRO_CENTER);
     e.key.scancode=SDL_SCANCODE_H;assert(bind_capture_event(&e));
     assert(g_bind_key[BIND_GYRO_CENTER]==SDL_SCANCODE_H&&g_bind_key[BIND_RS_UP]==camera_up);
+    // A Steam Controller: its back buttons and "..." bind, a hand on its touch sensors doesn't, and it has its own names
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+    assert(SDL_Init(SDL_INIT_GAMEPAD));
+    SDL_VirtualJoystickDesc d = {0};
+    SDL_INIT_INTERFACE(&d);
+    d.type = SDL_JOYSTICK_TYPE_GAMEPAD, d.vendor_id = 0x28de, d.product_id = 0x1304;
+    d.naxes = SDL_GAMEPAD_AXIS_COUNT, d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+    d.axis_mask = (1u << SDL_GAMEPAD_AXIS_COUNT) - 1, d.button_mask = (1u << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+    d.name = "Steam Controller";
+    SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
+    assert(id);
+    now = 100000;
+    for (int b = SDL_GAMEPAD_BUTTON_MISC3; b <= SDL_GAMEPAD_BUTTON_MISC6; b++) {
+        bind_capture_begin(BIND_DEV_PAD, BIND_B);
+        e = (SDL_Event){0}; e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; e.gbutton.which = id; e.gbutton.button = (Uint8)b;
+        assert(bind_capture_event(&e));
+        waiting();
+        bind_capture_cancel();
+    }
+    assert(g_bind_pad[BIND_B] < SDL_GAMEPAD_BUTTON_MISC3);
+    static const int extra[] = {SDL_GAMEPAD_BUTTON_MISC1, SDL_GAMEPAD_BUTTON_MISC2, SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1, SDL_GAMEPAD_BUTTON_LEFT_PADDLE1,
+                                SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, SDL_GAMEPAD_BUTTON_TOUCHPAD};
+    for (unsigned i = 0; i < SDL_arraysize(extra); i++) {
+        bind_capture_begin(BIND_DEV_PAD, BIND_B);
+        e = (SDL_Event){0}; e.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN; e.gbutton.which = id; e.gbutton.button = (Uint8)extra[i];
+        assert(bind_capture_event(&e));
+        assert(g_bind_pad[BIND_B] == extra[i]);
+    }
+    assert(bind_label_family() == 3);
+    assert(!strcmp(bind_pad_label(SDL_GAMEPAD_BUTTON_LEFT_PADDLE1, 3), "L4") && !strcmp(bind_pad_label(SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2, 3), "R5"));
+    assert(g_bind_pad[BIND_FLY] != SDL_GAMEPAD_BUTTON_MISC1);
+    SDL_DetachVirtualJoystick(id);
+    SDL_Quit();
     puts("binding capture: confirm releases, assignments, cancellation and timeout passed");
     return 0;
 }

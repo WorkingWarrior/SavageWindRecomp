@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 #include <ctype.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,7 @@
 #include "../framepace.h"
 #include "../pc_cursor.h"
 #include "../pad_policy.h"
+#include "../input_status.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -52,6 +54,10 @@ static SDL_Gamepad *sensor_pad;  // motion (runtime/hle/motion.c)
 static SDL_Gamepad *haptic_pad;  // vibration (runtime/hle/vibration.c)
 static _Atomic int64_t sampling;
 static _Atomic bool win_focused = true;  // main thread writes; guest input polls read
+static _Atomic bool routes_dirty;       // a setting changed: routes_apply on the main thread
+static void routes_apply(void);
+static _Atomic uint32_t live_buttons;    // (the Controls tab's live view)
+static _Atomic int live_axes[6];
 
 // Host keys / buttons held by a test script (SAVAGEWIND_HOST_INPUT, input_frame): they go through the bindings
 static uint8_t test_keys[SDL_SCANCODE_COUNT];
@@ -149,6 +155,8 @@ static void recompute_pad(void) {
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 16000) host |= 1u << PADB_LTRIGGER;
         if (SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16000) host |= 1u << PADB_RTRIGGER;
     }
+    live_buttons = host;
+    for (int i = 0; i < 6; i++) live_axes[i] = pad && !host_test ? SDL_GetGamepadAxis(pad, (SDL_GamepadAxis)i) : 0;
     uint64_t b = 0;
     for (int i = 0; i < BIND_PAD_COUNT; i++)
         if (g_bind_pad[i] >= 0 && g_bind_pad[i] < PADB_HOST_COUNT && (host >> g_bind_pad[i] & 1)) b |= 1ull << i;
@@ -360,6 +368,7 @@ void input_focus_update(SDL_Window *w) {
 void input_mouse_update(SDL_Window *w) {
     motion_poll();
     input_focus_update(w);
+    if (atomic_exchange(&routes_dirty, false)) routes_apply();
     motion_watch(win_focused && !host_test);
     static bool gyro_keys;  // (the gyro keys start or stop working without a key event: entering an apparatus)
     if (gyro_keys_live() != gyro_keys) {
@@ -490,6 +499,16 @@ static uint64_t use_clock;       // (a counter: which was used last)
 static bool virtual_live;        // the Steam pair's virtual pad has reported input
 static PadRoutes routes = {-1, -1, -1, PAD_PAIR_NONE, -1, -1};
 
+static pthread_mutex_t status_lock = PTHREAD_MUTEX_INITIALIZER;
+static InputStatus status;
+static bool steam_launch(void) { return getenv("SteamClientLaunch") || getenv("SteamAppId"); }
+
+static void status_error(const char *what, const char *why) {
+    pthread_mutex_lock(&status_lock);
+    snprintf(status.error, sizeof status.error, "%s: %s", what, why);
+    pthread_mutex_unlock(&status_lock);
+}
+
 static int pad_slot(SDL_JoystickID id) {
     for (int i = 0; i < npads; i++)
         if (open_pads[i].id == id) return i;
@@ -532,12 +551,29 @@ static void routes_apply(void) {
         if (in && !host_test) use_device(DEVICE_PAD, "connected");
     }
     recompute_pad();
+    pthread_mutex_lock(&status_lock);
+    status.count = npads, status.pair = r.pair, status.steam_launch = steam_launch(), status.virtual_live = virtual_live;
+    status.steam_controller = false;
+    for (int i = 0; i < npads; i++) {
+        PadRow *row = &status.rows[i];
+        snprintf(row->name, sizeof row->name, "%s", SDL_GetGamepadName(open_pads[i].g) ? SDL_GetGamepadName(open_pads[i].g) : "?");
+        memcpy(row->guid, open_pads[i].guid, sizeof row->guid);
+        row->steam_virtual = open_pads[i].e.steam_handle != 0;
+        row->has_sensors = SDL_GamepadHasSensor(open_pads[i].g, SDL_SENSOR_GYRO);
+        row->input = i == r.input, row->sensors = i == r.sensors, row->haptics = i == r.haptics;
+        if (pad_is_triton(open_pads[i].e.vendor, open_pads[i].e.product)) status.steam_controller = true;
+    }
+    pthread_mutex_unlock(&status_lock);
 }
 
 static void pad_add(SDL_JoystickID id) {
     if (npads >= PAD_MAX || pad_slot(id) >= 0) return;
     SDL_Gamepad *g = SDL_OpenGamepad(id);
-    if (!g) { LOG("[input] couldn't open a controller: %s\n", SDL_GetError()); return; }
+    if (!g) {
+        LOG("[input] couldn't open a controller: %s\n", SDL_GetError());
+        status_error("Controller", SDL_GetError());
+        return;
+    }
     int i = npads++;
     memset(&open_pads[i], 0, sizeof open_pads[i]);
     open_pads[i].g = g, open_pads[i].id = id;
@@ -587,7 +623,18 @@ static void pad_used(const SDL_Event *e) {
     if (pad != before) LOG("[input] now using %s\n", pad ? SDL_GetGamepadName(pad) : "no controller");
 }
 
-void input_settings_changed(void) { routes_apply(); }
+void input_settings_changed(void) { routes_dirty = true; }
+
+void input_status(InputStatus *out) {
+    pthread_mutex_lock(&status_lock);
+    *out = status;
+    pthread_mutex_unlock(&status_lock);
+}
+
+void input_live(uint32_t *buttons, int16_t axes[6]) {
+    *buttons = live_buttons;
+    for (int i = 0; i < 6; i++) axes[i] = (int16_t)live_axes[i];
+}
 
 // Before SDL_Init (the window's start): Steam hides the real controllers from a game it starts, and its virtual pad has no
 // sensors. Only for the Steam Controller 2026, which can run beside Steam (it stops Steam from nothing: seen with QAM, the
