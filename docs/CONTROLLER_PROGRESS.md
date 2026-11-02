@@ -4,13 +4,12 @@ Baseline: `73dea53` on `experiment/totk-on-moj-test`. Work branch: `feature/bett
 
 ## Current state
 
-Phases 1 to 5 implemented and committed, automated tests pass, both games smoke-tested from this branch's own output
-directories. Plan approved at the checkpoint as written in the audit.
+All phases done. Open items are the checklist rows still marked NOT TESTED in `docs/CONTROLLER_TESTING.md`, Windows, and the CI
+job, which has never run. See `docs/CONTROLLER_IMPLEMENTATION_ACCEPTANCE.md`.
 
 ## Next step
 
-Manual checklist with the controller (`docs/CONTROLLER_TESTING.md`), both games, both launch paths. Then performance
-numbers, the independent review and the final documents.
+Run the remaining checklist rows when convenient. Nothing else is planned.
 
 ## Build and test commands
 

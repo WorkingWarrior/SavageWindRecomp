@@ -19,7 +19,8 @@ Steam Controller 2026 on its Puck, the only controller at hand. Build: this bran
 controllers: NOT TESTED.
 
 Row 1 under Steam: sticks, D-pad, shoulders, triggers and gyro reported working in both games. Vibration under Steam: the game
-sent non-zero values in both (TOTK: 12660 changes in one session, from its own node graph), felt in play not yet reported.
+sent non-zero values in both (TOTK: 12660 changes in one session, from its own node graph), and it was felt in TOTK.
+These runs used the build before `0e3a691`; that commit was smoke-tested only.
 
 | # | Action | Expected | BOTW terminal | BOTW Steam | TOTK terminal | TOTK Steam |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -31,7 +32,7 @@ sent non-zero values in both (TOTK: 12660 changes in one session, from its own n
 | 6 | Press "...", close it, aim again | Motion back within a second, no jump | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 | 7 | Press Steam, close it, aim again | Motion back within a second, no jump | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 | 8 | A motion puzzle or apparatus | Tilts as held | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
-| 9 | Rumble in play (hit, bomb) | Felt, stops | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
+| 9 | Rumble in play (hit, bomb) | Felt, stops | NOT TESTED | NOT TESTED | NOT TESTED | PASS, felt |
 | 10 | Test vibration, Controls tab | A pulse; route shown | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 | 11 | Recalibrate | Hint, then normal | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 | 12 | Turn the controller off in play, on again | Nothing stuck, works again, motion back | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |

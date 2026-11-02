@@ -45,6 +45,8 @@ writes and sensor toggles run on the main window loop, not on a render thread. S
 
 `recompute_pad` gained six axis reads and an atomic store for the live view: not measured separately.
 
+Disk added: `build/ctl-botw` and `build/ctl-totk` about 1.6 GB of their own, `build/ctl-tests` 8 MB.
+
 ## Limitations
 
 - Why Steam's virtual pad was silent on the test machine: unknown. The game reads the controller directly then, so a Steam
@@ -84,7 +86,19 @@ Independent reviewer, fresh agent, read only, on the state before `f18391c`.
 | Nit | Two weak tests | Fixed |
 | Nit | Dangling doc references | Fixed |
 
-The fixes themselves have not had a second independent review.
+A second fresh reviewer read those fixes.
+
+| # | Finding | Resolution |
+| --- | --- | --- |
+| 1 | An open menu made a working virtual pad look silent | Fixed at the gate, tested |
+| 2 | One stick tilt counted as several presses; timer from the first | Fixed: buttons only, last press's time, tested |
+| 3 | A press the menus saw could never end for them after the input changed half | Fixed: its release passes, tested |
+| 4 | Scripted runs reached a real controller through the gate | Fixed |
+| 5 | Forced to a silent virtual pad, the menus couldn't be reached from the controller | Fixed, tested |
+| 6 | `motion_has_sensors` false while a live DSU supplied motion | Fixed, tested |
+| 7 | Stick tilt from a stall outlived the stream's return | Fixed, tested |
+
+Those last fixes have had tests and a smoke run, no third review.
 
 ## Completion criteria
 
@@ -97,10 +111,10 @@ The fixes themselves have not had a second independent review.
 | 5 | Stale first sample | Met: test, and pitch right in the game logs |
 | 6 | Switching, removal, reconnection | Met in tests; on hardware NOT TESTED |
 | 7 | Touch sensors not activity | Met in tests |
-| 8 | Vibration routing | Met; in play NOT TESTED |
+| 8 | Vibration routing | Met; felt in TOTK under Steam, the rest NOT TESTED |
 | 9 | Inputs, fly mode, X | Met; X documented, Steam-side fix confirmed on the machine |
 | 10 | Settings and diagnostics | Met in code; on screen NOT TESTED |
 | 11 | Tests, CI | Tests met; CI job NOT TESTED |
 | 12 | Builds | Linux met, SDL 3.2 headers clean, Windows NOT TESTED |
-| 13 | Review | Done, findings resolved |
+| 13 | Review | Done twice, findings resolved |
 | 14 | Manual checklist | Partly recorded in `docs/CONTROLLER_TESTING.md`; the rest NOT TESTED |
