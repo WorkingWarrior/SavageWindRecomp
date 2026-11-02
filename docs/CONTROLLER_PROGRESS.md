@@ -13,9 +13,10 @@ Done:
 - SDL 3.4.16 and 3.4.18 source read.
 - BOTW and TOTK `nn::hid` imports compared.
 
+- Hardware session, terminal launch: yaw sign, extra buttons, sensor stall and its recovery, tone writes.
+
 Open:
-- Hardware session, terminal launch: X / on-screen keyboard, yaw sign, L4 / L5 / R4 / left pad click, sensor stall,
-  `0x83` tone.
+- Your report: X / on-screen keyboard, and what the `0x83` tone stages felt like.
 - Steam launch: process environment of both shortcuts.
 - `docs/CONTROLLER_IMPLEMENTATION_AUDIT.md`.
 
@@ -67,6 +68,21 @@ From SDL source:
   `SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD`. `SteamVirtualGamepadInfo` names a file with per-slot `name`, `VID`,
   `PID`, `type` and `handle`. The slot comes from the digits after `pad ` in the evdev name. What Steam really sets for
   these shortcuts is not yet measured.
+
+On the hardware, terminal launch, Steam running, controller on the Puck:
+- Yaw: a turn to the right, clockwise from above, reads negative on SDL's Y. With the earlier pitch and roll captures
+  that makes SDL's frame right-handed, as `motion.c` assumes.
+- `paddle1` R4, `paddle2` L4, `paddle3` R5, `paddle4` L5, `touchpad` left pad click, `misc1` QAM. `misc3` / `misc4`
+  stick touch, `misc5` / `misc6` grip touch.
+- QAM and the Steam button each stop the IMU stream within 400 ms of the press. Each press does it, also the one that
+  closes the menu. It stayed stopped to the end of each window (up to 27 s); buttons and axes kept working. Steam logs
+  a config activation for its own apps (443510, 413080) in the same second. That this causes it is an inference.
+- Sensors off and on through SDL brought the stream back about 18 ms later, 3 of 3 times with no retry. The toggle
+  call took about 4 ms. The first sample after it has a sensor clock jump equal to the gap (3.32 s), then 4 ms steps.
+- First sample after enabling: 335 s behind the next one in one capture. Its clock is the frozen IMU time.
+- The controller dropped off the Puck once by itself (Steam: `Disconnect (Spontaneous)`) and came back 3 s later with
+  a new SDL instance id. So removal and re-adding happen in normal use.
+- `0x83` tone writes and `0x82` stops all returned their full size, with and without SDL rumble running.
 
 From the game files, read locally:
 - TOTK's `main` does not import `SetGyroscopeZeroDriftMode`; BOTW's does. Both import `StartSixAxisSensor`,
