@@ -2096,6 +2096,8 @@ void ui_window_init(void) {
     atexit(quick_exit_handler);
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     settings_load();
+    extern void input_steam_env(void);
+    input_steam_env();
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) FATAL("SDL_Init: %s\n", SDL_GetError());
     // Video > Window size (runtime/window_size.c: pixels; SDL's window size is pixels / the display's pixel density)
     winsize_refresh(NULL);

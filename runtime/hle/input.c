@@ -23,6 +23,7 @@
 #include "../vibration.h"
 #include "../framepace.h"
 #include "../pc_cursor.h"
+#include "../pad_policy.h"
 
 enum {
     BTN_A = 0, BTN_B, BTN_X, BTN_Y, BTN_LSTICK, BTN_RSTICK, BTN_L, BTN_R, BTN_ZL, BTN_ZR, BTN_PLUS, BTN_MINUS,
@@ -46,7 +47,9 @@ static _Atomic int32_t menu_lx, menu_ly;
 static _Atomic bool menu_confirm;
 static uint8_t keys_down[SDL_SCANCODE_COUNT];
 static uint8_t mouse_down[8];  // SDL_BUTTON_LEFT .. X2 (keyboard bindings BIND_MOUSE + button)
-static SDL_Gamepad *pad;
+static SDL_Gamepad *pad;         // buttons and sticks come from this one
+static SDL_Gamepad *sensor_pad;  // motion (runtime/hle/motion.c)
+static SDL_Gamepad *haptic_pad;  // vibration (runtime/hle/vibration.c)
 static _Atomic int64_t sampling;
 static _Atomic bool win_focused = true;  // main thread writes; guest input polls read
 
@@ -362,7 +365,7 @@ void input_mouse_update(SDL_Window *w) {
         gyro_keys = !gyro_keys;
         recompute_keyboard();
     }
-    vibration_update(pad, win_focused && !host_test);
+    vibration_update(haptic_pad, win_focused && !host_test);
     static bool cur;
     pc_cursor_window(w);
     bool want = w && win_focused && g_settings.mouse_camera && !pc_cursor_active() && !menu_input_captured() && !menu_cursor_free() &&
@@ -473,6 +476,133 @@ int input_pad_family(void) {
     return env >= 0 ? env : pad_family;
 }
 
+// ---- the open controllers. All of them stay open, so using one can be noticed; runtime/pad_policy.h says which does what.
+// Only the player's first controller: these are single-player games, one Npad.
+static struct {
+    SDL_Gamepad *g;
+    SDL_JoystickID id;
+    PadEntry e;
+    char guid[33];
+} open_pads[PAD_MAX];
+static int npads;
+static uint64_t use_clock;       // (a counter: which was used last)
+static bool virtual_live;        // the Steam pair's virtual pad has reported input
+static PadRoutes routes = {-1, -1, -1, PAD_PAIR_NONE, -1, -1};
+
+static int pad_slot(SDL_JoystickID id) {
+    for (int i = 0; i < npads; i++)
+        if (open_pads[i].id == id) return i;
+    return -1;
+}
+
+static int preferred_slot(void) {
+    for (int i = 0; g_settings.pad_preferred[0] && i < npads; i++)
+        if (!strcmp(open_pads[i].guid, g_settings.pad_preferred)) return i;
+    return -1;
+}
+
+// Who does what now. A controller losing a job stops it here (held buttons go with the next recompute_pad, vibration
+// and sensors with these calls), while it can still be asked to.
+static void routes_apply(void) {
+    PadEntry e[PAD_MAX];
+    for (int i = 0; i < npads; i++) e[i] = open_pads[i].e;
+    PadRoutes r = pad_routes(e, npads, preferred_slot(), g_settings.steam_input, virtual_live);
+    SDL_Gamepad *in = r.input >= 0 ? open_pads[r.input].g : NULL, *sn = r.sensors >= 0 ? open_pads[r.sensors].g : NULL;
+    SDL_Gamepad *hp = r.haptics >= 0 ? open_pads[r.haptics].g : NULL;
+    if (r.pair != routes.pair)
+        LOG("[input] Steam's virtual pad and the real controller: %s\n", r.pair == PAD_PAIR_OK ? "one controller"
+            : r.pair == PAD_PAIR_AMBIGUOUS ? "can't be matched, real controllers used alone" : "not both here");
+    routes = r;
+    if (hp != haptic_pad) {
+        vibration_update(haptic_pad, false);
+        haptic_pad = hp;
+        vibration_update(hp, win_focused && !host_test);
+    }
+    if (sn != sensor_pad) {
+        if (sensor_pad) motion_pad_closed();
+        sensor_pad = sn;
+        if (sn) motion_pad_opened(sn);
+    }
+    if (in != pad) {
+        pad = in;
+        LOG("[input] gamepad: %s%s\n", in ? SDL_GetGamepadName(in) : "none",
+            in && SDL_GetGamepadSteamHandle(in) ? " (Steam's virtual pad)" : "");
+        note_family();
+        if (in && !host_test) use_device(DEVICE_PAD, "connected");
+    }
+    recompute_pad();
+}
+
+static void pad_add(SDL_JoystickID id) {
+    if (npads >= PAD_MAX || pad_slot(id) >= 0) return;
+    SDL_Gamepad *g = SDL_OpenGamepad(id);
+    if (!g) { LOG("[input] couldn't open a controller: %s\n", SDL_GetError()); return; }
+    int i = npads++;
+    memset(&open_pads[i], 0, sizeof open_pads[i]);
+    open_pads[i].g = g, open_pads[i].id = id;
+    open_pads[i].e.vendor = SDL_GetGamepadVendor(g), open_pads[i].e.product = SDL_GetGamepadProduct(g);
+    open_pads[i].e.steam_handle = SDL_GetGamepadSteamHandle(g);
+    SDL_GUIDToString(SDL_GetJoystickGUIDForID(id), open_pads[i].guid, sizeof open_pads[i].guid);
+    routes_apply();
+}
+
+static void pad_remove(SDL_JoystickID id) {
+    int i = pad_slot(id);
+    if (i < 0) return;
+    SDL_Gamepad *g = open_pads[i].g;
+    if (routes.virt == i) virtual_live = false;
+    memmove(&open_pads[i], &open_pads[i + 1], (size_t)(npads - i - 1) * sizeof open_pads[0]);
+    npads--;
+    routes_apply();
+    SDL_CloseGamepad(g);
+}
+
+// This event is the player using a controller: not a hand resting on its touch sensors, and not the buttons Steam keeps
+static bool pad_activity(const SDL_Event *e) {
+    int i = pad_slot(e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.which : e->gaxis.which);
+    if (i < 0) return false;
+    if (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION) return abs(e->gaxis.value) > 16000;
+    if (e->type != SDL_EVENT_GAMEPAD_BUTTON_DOWN) return false;
+    const PadEntry *p = &open_pads[i].e;
+    return !pad_is_touch(p->vendor, p->product, e->gbutton.button, SDL_GAMEPAD_BUTTON_MISC3) &&
+           !pad_is_system(p->vendor, p->product, e->gbutton.button, SDL_GAMEPAD_BUTTON_GUIDE, SDL_GAMEPAD_BUTTON_MISC1);
+}
+
+// The last-used controller takes over; Steam's virtual pad reporting input proves it alive.
+static void pad_used(const SDL_Event *e) {
+    SDL_JoystickID id = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? e->gbutton.which : e->gaxis.which;
+    int i = pad_slot(id);
+    if (i < 0) return;
+    open_pads[i].e.last_use = ++use_clock;
+    if (routes.virt == i) {
+        open_pads[routes.physical].e.last_use = use_clock;  // (they are one controller)
+        if (!virtual_live) {
+            virtual_live = true;
+            LOG("[input] Steam's virtual pad works: buttons and sticks come from it\n");
+        }
+    }
+    SDL_Gamepad *before = pad;
+    routes_apply();
+    if (pad != before) LOG("[input] now using %s\n", pad ? SDL_GetGamepadName(pad) : "no controller");
+}
+
+void input_settings_changed(void) { routes_apply(); }
+
+// Before SDL_Init (the window's start): Steam hides the real controllers from a game it starts, and its virtual pad has no
+// sensors. Only for the Steam Controller 2026, which can run beside Steam (it stops Steam from nothing: seen with QAM, the
+// Steam button and its menus working). Other controllers stay as Steam wants them. SAVAGEWIND_STEAM_PHYSICAL=0 turns it off.
+void input_steam_env(void) {
+#ifdef __linux__
+    const char *ignore = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES"), *off = getenv("SAVAGEWIND_STEAM_PHYSICAL");
+    if (!ignore || !getenv("SteamVirtualGamepadInfo") || (off && !strcmp(off, "0"))) return;
+    int v = SDL_GetVersion();
+    if (SDL_VERSIONNUM_MAJOR(v) == 3 && SDL_VERSIONNUM_MINOR(v) < 4) return;  // (no driver for it before 3.4)
+    char kept[4096];
+    if (steam_ignore_filter(ignore, kept, sizeof kept) && SDL_SetHintWithPriority(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, kept, SDL_HINT_OVERRIDE))
+        LOG("[input] started through Steam: the real Steam Controller stays visible beside Steam's virtual pad\n");
+#endif
+}
+
 void input_handle_event(const SDL_Event *e) {
     if (pc_cursor_event(e)) return;
     static bool scanned;  // pads present at startup: their ADDED event may have gone to the start screen's loop
@@ -480,8 +610,7 @@ void input_handle_event(const SDL_Event *e) {
         scanned = true;
         int n = 0;
         SDL_JoystickID *ids = SDL_GetGamepads(&n);
-        if (n > 0 && !pad) { pad = SDL_OpenGamepad(ids[0]); LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad)); note_family(); }
-        if (pad) { motion_pad_opened(pad); if (!host_test) use_device(DEVICE_PAD, "connected"); }
+        for (int i = 0; i < n; i++) pad_add(ids[i]);
         SDL_free(ids);
     }
     switch (e->type) {
@@ -535,35 +664,29 @@ void input_handle_event(const SDL_Event *e) {
         window_focus(e->type == SDL_EVENT_WINDOW_FOCUS_GAINED);
         break;
     case SDL_EVENT_GAMEPAD_ADDED:
-        if (!pad) {
-            pad = SDL_OpenGamepad(e->gdevice.which);
-            LOG("[input] gamepad: %s\n", SDL_GetGamepadName(pad));
-            note_family();
-            if (pad) { motion_pad_opened(pad); if (!host_test) use_device(DEVICE_PAD, "connected"); }
-        }
+        pad_add(e->gdevice.which);
         break;
     case SDL_EVENT_GAMEPAD_REMOVED:
-        if (pad && SDL_GetGamepadID(pad) == e->gdevice.which) {
-            vibration_update(pad, false);
-            SDL_CloseGamepad(pad);
-            pad = NULL;
-            note_family();
-            motion_pad_closed();
-        }
-        recompute_pad();
+        pad_remove(e->gdevice.which);
         break;
+    case SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED: {  // (Steam's file came after the device)
+        int i = pad_slot(e->gdevice.which);
+        if (i >= 0) open_pads[i].e.steam_handle = SDL_GetGamepadSteamHandle(open_pads[i].g), routes_apply();
+        break;
+    }
     case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
-        if (win_focused && pad && !host_test && SDL_GetGamepadID(pad) == e->gsensor.which) motion_sensor_event(e);
+        if (win_focused && sensor_pad && !host_test && SDL_GetGamepadID(sensor_pad) == e->gsensor.which) motion_sensor_event(e);
         break;
     case SDL_EVENT_GAMEPAD_AXIS_MOTION: case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP:
-        if (win_focused && pad && !host_test && (e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ||
-                                  (e->type == SDL_EVENT_GAMEPAD_AXIS_MOTION && abs(e->gaxis.value) > 16000)))
-            use_device(DEVICE_PAD, e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "button" : "stick");
+        if (win_focused && !host_test && pad_activity(e)) {
+            pad_used(e);
+            if (pad) use_device(DEVICE_PAD, e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN ? "button" : "stick");
+        }
         recompute_pad();
         break;
     }
     // Sensor / axis events may arrive faster than the window loop's 16 ms idle timeout.
-    vibration_update(pad, win_focused && !host_test);
+    vibration_update(haptic_pad, win_focused && !host_test);
 }
 
 // Scripted input for testing: SAVAGEWIND_INPUT="frame:BUTTON:frames,..." (BUTTON = A,B,X,Y,L,R,ZL,ZR,PLUS,

@@ -154,6 +154,8 @@ void settings_load(void) {
         else if (!strcmp(key, "mouse_vertical_sensitivity")) g_settings.mouse_sens_y = (float)atof(val);
         else if (!strcmp(key, "mouse_invert_y")) g_settings.mouse_invert_y = atoi(val) != 0;
         else if (!strcmp(key, "pc_gyro")) g_settings.pc_gyro = atoi(val) != 0;
+        else if (!strcmp(key, "controller_preferred")) snprintf(g_settings.pad_preferred, sizeof g_settings.pad_preferred, "%s", !strcmp(val, "auto") ? "" : val);
+        else if (!strcmp(key, "steam_input")) g_settings.steam_input = !strcmp(val, "physical") ? 1 : !strcmp(val, "steam") ? 2 : 0;
         else if (!strcmp(key, "gyro_scene")) g_settings.gyro_scene = atoi(val) != 0;
         else if (!strcmp(key, "motion_sensitivity")) g_settings.motion_sens = (float)atof(val);
         else if (!strcmp(key, "motion_invert")) {  // (off, up_down, left_right, both)
@@ -301,6 +303,9 @@ void settings_save(void) {
     fprintf(f, "mouse_vertical_sensitivity = %.2f\n", g_settings.mouse_sens_y);
     fprintf(f, "mouse_invert_y = %d\n", g_settings.mouse_invert_y);
     fprintf(f, "pc_gyro = %d\n", g_settings.pc_gyro);
+    fprintf(f, "controller_preferred = %s\n", g_settings.pad_preferred[0] ? g_settings.pad_preferred : "auto");
+    static const char *const steam_input[3] = {"auto", "physical", "steam"};
+    fprintf(f, "steam_input = %s\n", steam_input[g_settings.steam_input >= 0 && g_settings.steam_input < 3 ? g_settings.steam_input : 0]);
     fprintf(f, "gyro_scene = %d\n", g_settings.gyro_scene);
     fprintf(f, "motion_sensitivity = %.2f\n", g_settings.motion_sens);
     static const char *const inv[4] = {"off", "up_down", "left_right", "both"};

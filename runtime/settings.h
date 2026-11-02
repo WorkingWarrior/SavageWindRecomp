@@ -79,6 +79,8 @@ typedef struct {
     bool gyro_scene;     // left-drag rotation during a shrine apparatus interaction
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
+    char pad_preferred[33];  // Controller page: the controller in use, by SDL GUID ("": the one used last)
+    int steam_input;     // STEAM_INPUT_* (runtime/pad_policy.h): buttons and sticks under Steam
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
     bool async_shaders;  // draw on while new shaders compile (no stutter; what needs them is skipped meanwhile)
     bool precompile_shaders;  // setting the game files up also precompiles every shader (runtime/nvn/precompile.h)

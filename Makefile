@@ -458,6 +458,24 @@ test-input-focus: $(B)/test_input_focus
 
 .PHONY: test-input-focus
 
+# Who does what with several controllers, Steam's virtual pad among them: the decisions alone, then through input.c with
+# SDL's virtual joysticks (no game files, no controller)
+$(B)/test_pad_policy: tools/test_pad_policy.c runtime/pad_policy.h
+	@mkdir -p $(B)
+	$(CC) -O1 $(OSFLAGS) -Iruntime -o $@ tools/test_pad_policy.c
+
+$(B)/test_pad_routing: tools/test_pad_routing.c tools/test_pointer_disabled.h runtime/hle/input.c runtime/pad_policy.h $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_pad_routing.c \
+	    $(if $(filter macos,$(PLATFORM)),-Wl$(comma)-dead_strip,-Wl$(comma)--gc-sections) \
+	    $(if $(filter macos,$(PLATFORM)),-L$(SDL)/lib,$(if $(DEPS),-L$(DEPS)/lib)) -lSDL3 -lm
+
+test-pad: $(B)/test_pad_policy $(B)/test_pad_routing
+	$(B)/test_pad_policy
+	$(B)/test_pad_routing
+
+.PHONY: test-pad
+
 # The virtual gyro at a shrine apparatus (docs/VIRTUAL_GYRO.md): the gyro keys through input.c and the bindings, the
 # two Controls switches saved and loaded, the turns (motion.c), the apparatus heartbeat, the drag (no game files)
 TEST_LD := $(if $(filter macos,$(PLATFORM)),-Wl$(comma)-dead_strip,-Wl$(comma)--gc-sections) \
