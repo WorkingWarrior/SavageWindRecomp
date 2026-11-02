@@ -53,6 +53,7 @@ void motion_keyboard(int p, int r, int y, bool c) { (void)p; (void)r; (void)y; (
 void motion_mouse_yaw(float s) { (void)s; unexpected_helper(); }
 void motion_dualstick(float lx, float ly, float rx, float ry, double dt, bool reset) { (void)lx; (void)ly; (void)rx; (void)ry; (void)dt; (void)reset; unexpected_helper(); }
 void motion_poll(void) {}
+void motion_watch(bool focused) { (void)focused; }
 bool framepace_title_ui(void) { return false; }
 bool framepace_menu_ui(void) { return false; }
 

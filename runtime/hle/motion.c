@@ -25,6 +25,14 @@
 // out of its face, Z toward the player; its accelerometer reads the push against gravity in m/s^2, its gyroscope
 // radians per second.
 //
+// A controller's stream can stop while it stays connected: Steam turns a Steam Controller's IMU off whenever it activates
+// a configuration (the Steam and "..." buttons, in and out of its menus), and nothing turns it back on. motion_watch
+// notices (no reading for 300 ms), turns the sensors off and on, and the stream is back about 18 ms later. Meanwhile the
+// orientation holds and the game sees a still controller.
+// Readings come in late after any start: with its IMU off the controller keeps reporting the last one, so the first
+// reading after turning it on can be minutes old, and the next jumps by all that time. Readings count from the first
+// normal step of the sensor clock (warm_up), or after a few of them for a controller whose clock never steps normally.
+//
 // SAVAGEWIND_MOTION_LOG=1 logs the orientation the game gets about once a second, with the sensor stream's health
 // (readings per second, readings whose sensor time was unusable, the longest gap) and how often the game read it.
 // Always logged (a few dozen lines at most): what the motion comes from whenever it changes, gaps in the sensor
@@ -51,6 +59,13 @@
 #define KP 0.6                // gravity's pull on the tilt, per radian of error per second
 #define TILT_PER_PIXEL (0.2 * PI / 180)
 #define PITCH_MAX (85 * PI / 180)
+#define STALL_NS 300000000ull        // no reading for this long: the stream stopped
+#define RETRY_NS 1000000000ull       // turning it off and on again, at most this often ...
+#define RETRY_SLOW_NS 5000000000ull  // ... after RETRY_FEW tries in a row, this often
+#define RETRY_FEW 5
+#define WARM_READINGS 16             // readings before a controller whose clock never steps normally counts
+#define RECAL_NS 1500000000ull       // Controls > Recalibrate: hold the controller still this long
+#define RECAL_KP 5.0                 // ... gravity's pull meanwhile
 
 typedef struct {
     int64_t delta_time;       // ns since the previous sample
@@ -134,6 +149,7 @@ static struct {
     double mean[3], var[3]; // its gyroscope's recent mean and variance (rad/s, (rad/s)^2; ~0.2 s)
     double acc_mean, acc_var;  // its accelerometer's recent strength, mean and variance (G, G^2; ~0.2 s)
     double gyro_sd;         // (the log: the gyroscope's spread just now, rad/s)
+    uint64_t recal_until;   // Controls > Recalibrate: until then (plat_now_ns) every reading is taken for rest
     double acc[3];          // last accelerometer reading (G, gravity's direction, Switch axes)
     double lin[3];          // ... beyond gravity
     uint64_t gyro_ts;       // last gyroscope reading's sensor time (ns)
@@ -158,6 +174,30 @@ static struct {
     int bad_run;                 // gyroscope readings in a row whose sensor time was unusable
     int notes;                   // (the log: one-off lines so far, capped)
 } hs;
+
+// The stream's watch (under g_lock; `pad` the main thread's)
+static struct {
+    SDL_Gamepad *pad;        // sensors turned on
+    uint64_t last_ns;        // last reading, or when watching started (plat_now_ns)
+    uint64_t retry_ns;       // last off and on
+    uint64_t rate_ns;        // the rate's one-second window, its readings, and the last full second's count
+    uint32_t rate_n, rate;
+    int retries;             // off and on in a row without a reading
+    int recovered;           // (diagnostics: stalls got over)
+    bool stalled, focused;
+    float gyro[3], accel[3]; // (diagnostics: last readings as SDL gives them, rad/s, m/s^2)
+} watch;
+static struct { uint64_t ts; int seen; bool ok; } warm;
+
+// A reading counts once the sensor clock has made a normal step (see the top of this file). Under g_lock.
+static bool warm_up(uint64_t ts) {
+    if (warm.ok) return true;
+    bool step = warm.seen && ts > warm.ts && ts - warm.ts < 100000000ull;
+    warm.ts = ts;
+    warm.ok = step || ++warm.seen >= WARM_READINGS;
+    return warm.ok;
+}
+static void warm_reset(void) { memset(&warm, 0, sizeof warm); }
 
 #ifdef __linux__
 static struct {
@@ -221,6 +261,9 @@ void motion_pad_opened(SDL_Gamepad *pad) {
     memset(g.lin, 0, sizeof g.lin);
     float rate = on ? SDL_GetGamepadSensorDataRate(pad, SDL_SENSOR_GYRO) : 0;
     hs.period = rate > 1 ? 1.0 / rate : 0, hs.host_ns = 0, hs.bad_run = 0;
+    warm_reset();
+    memset(&watch, 0, sizeof watch);
+    if (on) watch.pad = pad, watch.last_ns = plat_now_ns(), watch.focused = true;
     pthread_mutex_unlock(&g_lock);
     if (on)
         LOG("[motion] %s: gyroscope and accelerometer on (%.0f / %.0f Hz)\n", SDL_GetGamepadName(pad),
@@ -232,6 +275,7 @@ void motion_pad_opened(SDL_Gamepad *pad) {
 
 void motion_pad_closed(void) {
     pthread_mutex_lock(&g_lock);
+    memset(&watch, 0, sizeof watch);
 #ifdef __linux__
     backend.enabled = false;
     backend.acc_time = backend.gyro_time = 0;
@@ -265,8 +309,11 @@ static void fuse_gyro(const double raw[3], double dt) {
     bool only_gravity = sqrt(g.acc_var) < 0.01 && fabs(an - 1) < 0.15;
     double off = sqrt((g.mean[0] - g.bias[0]) * (g.mean[0] - g.bias[0]) + (g.mean[1] - g.bias[1]) * (g.mean[1] - g.bias[1]) +
                       (g.mean[2] - g.bias[2]) * (g.mean[2] - g.bias[2]));
+    bool recal = g.recal_until && plat_now_ns() < g.recal_until;
+    if (g.recal_until && !recal) g.recal_until = 0;
     double tau = 0;
-    if (only_gravity) {
+    if (recal) tau = 0.1;
+    else if (only_gravity) {
         if (sd < 0.006) tau = 0.25;                   // lying still: the sensor's noise only
         else if (sd < 0.02 && off < 0.05) tau = 4.0;  // held still, near the bias (~3 degrees/s)
     }
@@ -280,9 +327,10 @@ static void fuse_gyro(const double raw[3], double dt) {
     if (an > 0.75 && an < 1.25) {  // (shaken or swung hard: the accelerometer isn't gravity, no pull)
         double v[3] = {-m[2][0], -m[2][1], -m[2][2]};  // gravity in the controller's axes, as the orientation has it
         double a[3] = {g.acc[0] / an, g.acc[1] / an, g.acc[2] / an};
-        w[0] += KP * (a[1] * v[2] - a[2] * v[1]);
-        w[1] += KP * (a[2] * v[0] - a[0] * v[2]);
-        w[2] += KP * (a[0] * v[1] - a[1] * v[0]);
+        double kp = recal ? RECAL_KP : KP;
+        w[0] += kp * (a[1] * v[2] - a[2] * v[1]);
+        w[1] += kp * (a[2] * v[0] - a[0] * v[2]);
+        w[2] += kp * (a[0] * v[1] - a[1] * v[0]);
     }
     double n = sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]), h = n * dt / 2;
     double s = n > 1e-12 ? sin(h) / n : dt / 2;
@@ -322,9 +370,23 @@ void motion_sensor_event(const SDL_Event *e) {
     if (!isfinite(d[0]) || !isfinite(d[1]) || !isfinite(d[2])) return;
     uint64_t ts = e->gsensor.sensor_timestamp ? e->gsensor.sensor_timestamp : e->gsensor.timestamp;
     pthread_mutex_lock(&g_lock);
-#ifdef __linux__
-    if (!backend.enabled) { pthread_mutex_unlock(&g_lock); return; }
     uint64_t now = plat_now_ns();
+    memcpy(e->gsensor.sensor == SDL_SENSOR_GYRO ? watch.gyro : watch.accel, d, sizeof watch.gyro);
+    if (e->gsensor.sensor == SDL_SENSOR_GYRO) {
+        watch.last_ns = now;
+        watch.rate_n++;
+        if (now - watch.rate_ns >= 1000000000ull) watch.rate = watch.rate_n, watch.rate_n = 0, watch.rate_ns = now;
+        if (watch.stalled) {
+            watch.stalled = false, watch.retries = 0, watch.recovered++;
+            if (hs.notes < 64) {
+                hs.notes++;
+                LOG("[motion] the controller's sensors are back\n");
+            }
+        }
+        if (!warm_up(ts)) { pthread_mutex_unlock(&g_lock); return; }
+    } else if (!warm.ok) { pthread_mutex_unlock(&g_lock); return; }
+#ifdef __linux__
+    if (!backend.enabled || g_settings.motion_source == MOTION_SOURCE_DSU) { pthread_mutex_unlock(&g_lock); return; }
     // Use event time for freshness: the native path below also supports a stalled device clock.
     uint64_t fresh_ts = e->gsensor.timestamp ? e->gsensor.timestamp : ts;
     if (e->gsensor.sensor == SDL_SENSOR_ACCEL) {
@@ -426,15 +488,83 @@ void motion_poll(void) {
     uint64_t now = plat_now_ns();
     pthread_mutex_lock(&g_lock);
     bool native = native_fresh(now);
-    if (backend.source == 1 && !native) {
-        LOG("[motion] SDL motion timeout; trying fallback\n");
-        select_motion(0);
-    }
-    if (enabled && (force || !native)) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
+    // (a stream that stopped may come back in a moment, motion_watch: the orientation holds until it does, or a DSU
+    // service is really there: dsu_sample)
+    bool dsu = enabled && g_settings.motion_source != MOTION_SOURCE_SDL && (force || !native);
+    if (dsu) dsu_poll(&backend.dsu, now, dsu_sample, NULL);
     else if (enabled && backend.dsu.fd >= 0) dsu_close(&backend.dsu);
-    if (backend.source == 2 && !backend.dsu.fresh) select_motion(0);
+    if (backend.source == 2 && (!backend.dsu.fresh || !dsu)) select_motion(0);
     pthread_mutex_unlock(&g_lock);
 #endif
+}
+
+// Main window loop. Sensor events don't reach here while the window is unfocused (runtime/hle/input.c), so the watch
+// rests; a reading after that is one with a long gap behind it, like the first after a stall: nothing to integrate.
+void motion_watch(bool focused) {
+    if (!watch.pad) return;
+    uint64_t now = plat_now_ns();
+    bool toggle = false;
+    pthread_mutex_lock(&g_lock);
+    if (focused != watch.focused) {
+        watch.focused = focused;
+        watch.last_ns = now;
+        if (focused) warm_reset(), g.gyro_ts = 0, hs.host_ns = 0;
+    }
+    if (focused && now - watch.last_ns >= STALL_NS) {
+        if (!watch.stalled) {
+            watch.stalled = true;
+            watch.retry_ns = 0;
+            if (hs.notes < 64) {
+                hs.notes++;
+                LOG("[motion] the controller's sensors stopped: turning them on again\n");
+            }
+        }
+        uint64_t wait = watch.retries < RETRY_FEW ? RETRY_NS : RETRY_SLOW_NS;
+        if (!watch.retry_ns || now - watch.retry_ns >= wait) {
+            watch.retry_ns = now;
+            watch.retries++;
+            toggle = true;
+            warm_reset(), g.gyro_ts = 0, hs.host_ns = 0;
+        }
+    }
+    SDL_Gamepad *pad = watch.pad;
+    pthread_mutex_unlock(&g_lock);
+    if (!toggle) return;
+    // (off first: SDL ignores a sensor turned on that it believes is on)
+    SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, false);
+    SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, false);
+    SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, true);
+    SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true);
+}
+
+void motion_recalibrate(void) {
+    pthread_mutex_lock(&g_lock);
+    g.recal_until = plat_now_ns() + RECAL_NS;
+    pthread_mutex_unlock(&g_lock);
+    LOG("[motion] recalibrating: hold the controller still\n");
+}
+
+void motion_status(MotionStatus *out) {
+    pthread_mutex_lock(&g_lock);
+    uint64_t now = plat_now_ns();
+    memset(out, 0, sizeof *out);
+    out->sensors = watch.pad != NULL;
+    out->stalled = watch.stalled;
+    out->calibrating = g.recal_until && now < g.recal_until;
+    out->recovered = watch.recovered;
+    out->rate = watch.pad && now - watch.last_ns < 1000000000ull ? watch.rate : 0;
+    out->age_ms = watch.last_ns ? (float)((now - watch.last_ns) / 1e6) : -1;
+#ifdef __linux__
+    out->source = backend.source == 2 ? MOTION_SOURCE_DSU : backend.source == 1 ? MOTION_SOURCE_SDL : MOTION_SOURCE_AUTO;
+    out->dsu_live = backend.dsu.fresh;
+#else
+    out->source = g.sensors ? MOTION_SOURCE_SDL : MOTION_SOURCE_AUTO;
+#endif
+    for (int i = 0; i < 3; i++) {
+        out->gyro[i] = watch.gyro[i], out->accel[i] = watch.accel[i];
+        out->bias[i] = (float)(g.bias[i] * 180 / PI);
+    }
+    pthread_mutex_unlock(&g_lock);
 }
 
 void motion_tilt_held(bool held) {
@@ -604,7 +734,7 @@ static int source(double dt, Mat m) {
     if (s.sc_pitch < -PITCH_MAX) s.sc_pitch = -PITCH_MAX;
     bool virt = g.keyboard.active || g.tilt_held || g.tilt_pitch || g.tilt_roll || g.tilt_yaw || g.sc_pitch || g.sc_roll ||
                 s.sc_yaw || s.sc_pitch;
-    if (g.sensors && g.started && !virt) {
+    if (g.sensors && g.started && !virt && !g_settings.motion_off) {
         quat_mat(g.q, m);
 #ifdef __linux__
         return (int)backend.epoch + 1;

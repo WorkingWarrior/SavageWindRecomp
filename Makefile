@@ -495,6 +495,16 @@ $(B)/test_motion_keyboard: tools/test_motion_keyboard.c runtime/hle/motion.c $(R
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_keyboard.c \
 	    $(TEST_LD) -lSDL3 -lm
 
+$(B)/test_motion_stream: tools/test_motion_stream.c runtime/hle/motion.c $(RT_HDRS)
+	@mkdir -p $(B)
+	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_motion_stream.c \
+	    $(TEST_LD) -lSDL3 -lm
+
+test-motion-stream: $(B)/test_motion_stream
+	$(B)/test_motion_stream
+
+.PHONY: test-motion-stream
+
 $(B)/test_gyro_activation: tools/test_gyro_activation.c runtime/pc_gyro_scene.c $(RT_HDRS)
 	@mkdir -p $(B)
 	$(CC) -O1 -ffunction-sections -fdata-sections $(OSFLAGS) $(DEPINC) -Iruntime -o $@ tools/test_gyro_activation.c \

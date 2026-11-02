@@ -79,6 +79,8 @@ typedef struct {
     bool gyro_scene;     // left-drag rotation during a shrine apparatus interaction
     float motion_sens;   // motion controls: how far turning the controller turns the aim, 1 = 100%
     int motion_invert;   // MOTION_INVERT_* bits: turning the controller up / down, left / right goes the other way
+    bool motion_off;     // Controls > Motion controls off: the game sees a still controller
+    int motion_source;   // MOTION_SOURCE_*
     char pad_preferred[33];  // Controller page: the controller in use, by SDL GUID ("": the one used last)
     int steam_input;     // STEAM_INPUT_* (runtime/pad_policy.h): buttons and sticks under Steam
     int button_icons;    // ICONS_*: the game's button prompts show this device's buttons (Automatic: the one in use)
@@ -111,6 +113,7 @@ float draw_distance_factor(void);  // the setting's factor on the game's distanc
 #define MOUSE_SENS_DEFAULT 3.0f  // (300% of the first default, 1; user, 2026-10-19)
 #define MOUSE_SENS_Y_CHOICES {50, 60, 70, 80, 90, 100, 110, 125, 150, 175, 200}  // (percent of the horizontal)
 enum { MOTION_INVERT_UD = 1, MOTION_INVERT_LR = 2 };
+enum { MOTION_SOURCE_AUTO, MOTION_SOURCE_SDL, MOTION_SOURCE_DSU, MOTION_SOURCE_COUNT };
 enum { ICONS_AUTO, ICONS_KEYBOARD, ICONS_XBOX, ICONS_PLAYSTATION, ICONS_NINTENDO, ICONS_COUNT };
 
 extern Settings g_settings;

@@ -37,6 +37,7 @@ void control_input_apply(uint64_t *b,int32_t *lx,int32_t *ly,int32_t *rx,int32_t
 bool motion_has_sensors(void){return false;}
 void motion_dualstick(float lx,float ly,float rx,float ry,double dt,bool r){(void)lx;(void)ly;(void)rx;(void)ry;(void)dt;(void)r;abort();}
 void motion_poll(void){}
+void motion_watch(bool focused) { (void)focused; }
 uint64_t renderer_present_count(void){return 0;}
 static void clear(void){memset(keys_down,0,sizeof keys_down);memset(mouse_down,0,sizeof mouse_down);}
 int main(void){

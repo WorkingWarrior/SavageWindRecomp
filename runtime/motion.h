@@ -14,6 +14,8 @@ typedef union SDL_Event SDL_Event;
 void motion_pad_opened(SDL_Gamepad *pad);  // turns its gyroscope and accelerometer on, when it has them
 void motion_pad_closed(void);
 void motion_poll(void);  // main window loop: nonblocking motion fallback / freshness
+void motion_watch(bool focused);  // main window loop: a stream that stopped is turned on again
+void motion_recalibrate(void);    // Controls: the gyroscope's rest and the tilt, from the next 1.5 s of holding still
 void motion_sensor_event(const SDL_Event *e);  // SDL_EVENT_GAMEPAD_SENSOR_UPDATE
 void motion_tilt_held(bool held);              // the tilt key, pressed or let go
 void motion_mouse(float dx, float dy);         // mouse motion while the tilt key is held (pixels)
@@ -31,6 +33,17 @@ void motion_virtual_end(void);
 void motion_script(float pitch_deg, float roll_deg, float pitch_speed, float yaw_speed);
 
 bool motion_has_sensors(void);  // usable motion source (Linux: fresh SDL sensor pair or DSU)
+
+// For the Controller page. source: what feeds the fusion now (MOTION_SOURCE_AUTO: nothing).
+typedef struct {
+    bool sensors, stalled, calibrating, dsu_live;
+    int source, recovered;
+    unsigned rate;              // gyroscope readings in the last full second
+    float age_ms;               // since the last one
+    float gyro[3], accel[3];    // as SDL gives them: rad/s, m/s^2
+    float bias[3];              // deg/s
+} MotionStatus;
+void motion_status(MotionStatus *out);
 
 #ifdef __cplusplus
 }

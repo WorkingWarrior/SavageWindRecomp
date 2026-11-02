@@ -360,6 +360,7 @@ void input_focus_update(SDL_Window *w) {
 void input_mouse_update(SDL_Window *w) {
     motion_poll();
     input_focus_update(w);
+    motion_watch(win_focused && !host_test);
     static bool gyro_keys;  // (the gyro keys start or stop working without a key event: entering an apparatus)
     if (gyro_keys_live() != gyro_keys) {
         gyro_keys = !gyro_keys;
