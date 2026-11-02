@@ -4,25 +4,11 @@ Baseline: `73dea53` on `experiment/totk-on-moj-test`. Work branch: `feature/bett
 
 ## Current state
 
-Phase 0, in progress. Stopping at the Phase 0 checkpoint before any Phase 1 work.
-
-Done:
-- Branch created.
-- Runtime and game library built for both games at the baseline.
-- Existing input tests run: all pass.
-- SDL 3.4.16 and 3.4.18 source read.
-- BOTW and TOTK `nn::hid` imports compared.
-
-- Hardware session, terminal launch: yaw sign, extra buttons, sensor stall and its recovery, tone writes.
-
-Open:
-- Your report: X / on-screen keyboard, and what the `0x83` tone stages felt like.
-- Steam launch: process environment of both shortcuts.
-- `docs/CONTROLLER_IMPLEMENTATION_AUDIT.md`.
+Phase 0 complete, stopped at the checkpoint. No runtime code changed. See `docs/CONTROLLER_IMPLEMENTATION_AUDIT.md`.
 
 ## Next step
 
-Read the hardware session logs and the Steam environment snapshots, write the audit, commit, stop at the checkpoint.
+Wait for the reply at the checkpoint, then Phase 1 as planned in the audit.
 
 ## Build and test commands
 
@@ -67,7 +53,7 @@ From SDL source:
 - Steam hides devices through `SDL_GAMECONTROLLER_IGNORE_DEVICES` and allows its pad through
   `SDL_GAMECONTROLLER_ALLOW_STEAM_VIRTUAL_GAMEPAD`. `SteamVirtualGamepadInfo` names a file with per-slot `name`, `VID`,
   `PID`, `type` and `handle`. The slot comes from the digits after `pad ` in the evdev name. What Steam really sets for
-  these shortcuts is not yet measured.
+  these shortcuts is in the audit.
 
 On the hardware, terminal launch, Steam running, controller on the Puck:
 - Yaw: a turn to the right, clockwise from above, reads negative on SDL's Y. With the earlier pitch and roll captures
@@ -100,3 +86,4 @@ From the game files, read locally:
 ## Files changed
 
 - `docs/CONTROLLER_PROGRESS.md`
+- `docs/CONTROLLER_IMPLEMENTATION_AUDIT.md`
