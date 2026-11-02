@@ -238,6 +238,9 @@ bool motion_has_sensors(void) {
     pthread_mutex_lock(&g_lock);
     // (usable: a stream that stopped for good, or motion turned off, leaves a shrine apparatus to the sticks)
     bool sensors = g.sensors && !g_settings.motion_off && !(watch.stalled && watch.retries >= RETRY_FEW);
+#ifdef __linux__
+    if (g.sensors && !g_settings.motion_off && backend.source == 2) sensors = true;  // (a live DSU isn't that stream)
+#endif
     pthread_mutex_unlock(&g_lock);
     return sensors;
 }
@@ -384,6 +387,7 @@ void motion_sensor_event(const SDL_Event *e) {
         if (now - watch.rate_ns >= 1000000000ull) watch.rate = watch.rate_n, watch.rate_n = 0, watch.rate_ns = now;
         if (watch.stalled) {
             watch.stalled = false, watch.retries = 0, watch.recovered++;
+            if (!g.tilt_held) g.tilt_pitch = g.tilt_roll = g.tilt_yaw = 0;  // (what the sticks did meanwhile: the gyro is back)
             if (hs.notes < 64) {
                 hs.notes++;
                 LOG("[motion] the controller's sensors are back\n");

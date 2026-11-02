@@ -119,6 +119,7 @@ static void stall_and_recovery(void) {
     assert(st.stalled && st.sensors);
     double held = game_yaw();
     assert(g.sensors && g.started);  // (nothing else took over: no DSU is live)
+    g.tilt_roll = 0.5;  // (the sticks at a shrine meanwhile: gone when the gyro is back)
     // Rate limit: not again within a second
     for (int i = 0; i < 90; i++) { clock_ns += 10000000; motion_watch(true); }
     assert(fake_on == 2);
@@ -143,7 +144,7 @@ static void stall_and_recovery(void) {
     // Back: its first report carries the whole gap on the sensor clock. No snap, no integration of the gap
     clock_ns += 18000000, sensor_ns += 3320000000ull;
     report(sensor_ns, 2.0, 0, 9.80665f, 0);
-    assert(!watch.stalled);
+    assert(!watch.stalled && !g.tilt_roll);
     stream(1, 4000000, 0);
     double after = game_yaw();
     assert(fabs(wrap((after - held) * PI / 180)) * 180 / PI < 1);
@@ -195,6 +196,9 @@ static void source_switch(void) {
     p.timestamp = 1000;
     dsu_sample(&p, 1, NULL);
     assert(backend.source == 2);
+    watch.stalled = true, watch.retries = RETRY_FEW;
+    assert(motion_has_sensors());  // (a live DSU: the stalled stream doesn't matter)
+    watch.stalled = false, watch.retries = 0;
     for (int i = 0; i < 50; i++) { clock_ns += 4000000; p.timestamp += 4000; dsu_sample(&p, 1, NULL); update(clock_ns); }
     double y1 = game_yaw();
     assert(fabs(wrap((y1 - y0) * PI / 180)) * 180 / PI < 1);

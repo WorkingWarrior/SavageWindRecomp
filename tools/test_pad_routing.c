@@ -190,6 +190,49 @@ int main(void) {
     press(jv, SDL_GAMEPAD_BUTTON_SOUTH, true); press(jv, SDL_GAMEPAD_BUTTON_SOUTH, false);  // (and it can come back)
     assert(virtual_live && pad == gamepad(virt));
 
+    // A menu takes the virtual pad's events before input_handle_event sees them: it still counts as alive
+    for (int i = 0; i < VIRTUAL_SILENT + 2; i++) {
+        unmatched++, unmatched_ms = SDL_GetTicks() - VIRTUAL_REPLY_MS - 1;
+        SDL_Event ev = {0};
+        ev.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN, ev.gbutton.which = virt, ev.gbutton.button = SDL_GAMEPAD_BUTTON_SOUTH, ev.gbutton.down = true;
+        assert(!input_user_blocked(&ev));  // (and the menu keeps it: input_handle_event never runs)
+        assert(!unmatched);
+    }
+    // One tilt is not three presses
+    assert(SDL_SetJoystickVirtualAxis(jr, SDL_GAMEPAD_AXIS_LEFTX, 30000));
+    pump();
+    assert(SDL_SetJoystickVirtualAxis(jr, SDL_GAMEPAD_AXIS_LEFTX, 32000));
+    pump();
+    assert(SDL_SetJoystickVirtualAxis(jr, SDL_GAMEPAD_AXIS_LEFTX, 0));
+    pump();
+    assert(!unmatched);
+
+    // A press that went to the menus from the input half, which then changes: they still see it end
+    g_settings.steam_input = STEAM_INPUT_PHYSICAL;
+    routes_apply();
+    assert(pad == gamepad(real));
+    press(jr, SDL_GAMEPAD_BUTTON_BACK, true);
+    g_settings.steam_input = STEAM_INPUT_AUTO;
+    routes_apply();
+    assert(pad == gamepad(virt));
+    SDL_Event up = {0};
+    up.type = SDL_EVENT_GAMEPAD_BUTTON_UP, up.gbutton.which = real, up.gbutton.button = SDL_GAMEPAD_BUTTON_BACK;
+    assert(!input_user_blocked(&up));
+    assert(input_user_blocked(&up));  // (once)
+    press(jr, SDL_GAMEPAD_BUTTON_BACK, false);
+
+    // Forced to a silent virtual pad: the game listens to it, but the menus stay reachable from the controller
+    virtual_live = false;
+    g_settings.steam_input = STEAM_INPUT_STEAM;
+    routes_apply();
+    assert(pad == gamepad(virt));
+    menu_events = 0;
+    press(jr, SDL_GAMEPAD_BUTTON_SOUTH, true); press(jr, SDL_GAMEPAD_BUTTON_SOUTH, false);
+    assert(menu_events == 1 && pad_buttons == 0);
+    virtual_live = true;
+    g_settings.steam_input = STEAM_INPUT_AUTO;
+    routes_apply();
+
     // Settings: physical, at once
     g_settings.steam_input = STEAM_INPUT_PHYSICAL;
     routes_apply();

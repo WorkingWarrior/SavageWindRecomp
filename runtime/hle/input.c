@@ -444,8 +444,7 @@ bool input_user_blocked(const SDL_Event *e) {
         return true;  // before menu shortcuts, name entry and binding capture get the event
     default: break;
     }
-    if (pad_not_ours(e)) return true;
-    if (!no_user_input()) return false;
+    if (!no_user_input()) return pad_not_ours(e);
     switch (e->type) {
     case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP: case SDL_EVENT_TEXT_INPUT: case SDL_EVENT_TEXT_EDITING:
     case SDL_EVENT_MOUSE_MOTION: case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -508,6 +507,8 @@ static uint64_t use_clock;       // (a counter: which was used last)
 static bool virtual_live;        // the Steam pair's virtual pad has reported input
 static int unmatched;            // presses on the real half since the virtual one last reported anything
 static uint64_t unmatched_ms;    // ... and the last one's time
+static uint64_t gate_down;       // buttons, then axes past half, whose press went through to the menus from the input
+                                 // half: their release goes through from whichever half reports it
 static uint64_t busy_ms;         // when the controller in use was last used
 #define TAKEOVER_IDLE_MS 500     // another controller takes over after this long: a real pad and a remapper's copy of
                                  // it report every press together, and swapping on each would reset motion each time
@@ -639,7 +640,9 @@ static void pad_used(const SDL_Event *e) {
             virtual_live = true;
             LOG("[input] Steam's virtual pad works: buttons and sticks come from it\n");
         }
-    } else if (i == routes.physical && virtual_live && !unmatched++) unmatched_ms = now;
+    } else if (i == routes.physical && virtual_live && e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+        unmatched++, unmatched_ms = now;  // (buttons only: a layout may send a stick anywhere, and a tilt is many events)
+    }
     SDL_Gamepad *before = pad;
     routes_apply();
     if (pad != before) LOG("[input] now using %s\n", pad ? SDL_GetGamepadName(pad) : "no controller");
@@ -665,9 +668,20 @@ static bool pad_not_ours(const SDL_Event *e) {
     const PadEntry *p = &open_pads[i].e;
     if (!axis && pad_is_touch(p->vendor, p->product, e->gbutton.button, SDL_GAMEPAD_BUTTON_MISC3)) return true;
     if (!axis && e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE && pad_is_triton(p->vendor, p->product) && steam_launch()) return true;
-    if (routes.pair != PAD_PAIR_OK || (i != routes.virt && i != routes.physical) || i == routes.input) return false;
+    if (routes.pair != PAD_PAIR_OK || (i != routes.virt && i != routes.physical)) return false;
+    uint64_t bit = 1ull << (axis ? SDL_GAMEPAD_BUTTON_COUNT + e->gaxis.axis : e->gbutton.button);
+    bool rest = axis ? abs(e->gaxis.value) < 8000 : !e->gbutton.down;
+    if (i == routes.input) {
+        if (i == routes.virt && pad_activity(e)) unmatched = 0;  // (before a menu takes the event: it's alive)
+        gate_down = rest ? gate_down & ~bit : gate_down | bit;
+        return false;
+    }
+    if (rest && (gate_down & bit)) {  // (the input moved to the other half while this was held: the menus must see it end)
+        gate_down &= ~bit;
+        return false;
+    }
     if (pad_activity(e)) pad_used(e);
-    return true;
+    return i != routes.physical || virtual_live;  // (forced to a virtual pad that says nothing: keep the menus reachable)
 }
 
 void input_settings_changed(void) { routes_dirty = true; }
