@@ -4539,6 +4539,7 @@ static bool guest_direct(uint64_t addr, uint64_t size, VkBuffer *buf, VkDeviceSi
 static struct { uint64_t lo, hi; } gw[GW_MAX];  // sorted, disjoint, not touching
 static int ngw;
 static uint64_t gw_lo = ~0ull, gw_hi;  // (bounds of the set: most reads are nowhere near it)
+static uint64_t gw_blind_seq;  // the last submission with a store outside the set (a hold, see gw_note)
 
 static int gw_find(uint64_t addr) {  // the first range ending after addr
     int a = 0, b = ngw;
@@ -4593,7 +4594,24 @@ static void gw_note(int stage) {  // a shader of this stage that stores to globa
         ok = gw_add(r.addr, r.addr + r.size);
         n++;
     }
-    if (!ok || !n) { chunk_hold = true; hc_all_stale = true; stat_gw_holds++; }
+    if (!ok || !n) { chunk_hold = true; hc_all_stale = true; gw_blind_seq = vk_pending_seq(); stat_gw_holds++; }
+}
+
+// SetRenderEnableConditional reads two counters: can the GPU still change them? Only a SAMPLES_PASSED report waiting for
+// its submission, a storing shader's storage buffers, or a store that gw_note couldn't place. TotK evaluates ~55 of
+// these a frame on counters the CPU wrote (Great Sky Island: not one value of 100000 changed over the wait). Waiting
+// for the GPU each time kept the translation and the GPU from overlapping: 13 ms of a 24 ms frame went there.
+// SAVAGEWIND_VK_COND_FULL=1: a full wait every time.
+static bool cond_gpu_pending(uint64_t addr) {
+    static int full = -1;
+    if (full < 0) full = getenv("SAVAGEWIND_VK_COND_FULL") != NULL;
+    if (full || gw_blind_seq > vk_completed_seq() || gw_overlaps(addr, addr + 24)) return true;
+    bool pending = false;
+    pthread_mutex_lock(&readback_lock);
+    for (int i = 0; i < oq_nreports && !pending; i++)
+        pending = oq_reports[i].addr == addr || oq_reports[i].addr == addr + 16;
+    pthread_mutex_unlock(&readback_lock);
+    return pending;
 }
 
 // A constant buffer bound in place (in the set, in the heap, aligned for a uniform buffer descriptor), or false.
@@ -5133,6 +5151,7 @@ void vk_exec_reset(void) {
     oq_counting = false;
     oq_nrun = oq_nreports = 0;  // (pending reports pointed at the old boot's memory)
     ngw = 0;
+    gw_blind_seq = 0;
     nuub = 0;
     guest_copy_flush();
     gw_lo = ~0ull;
@@ -9075,9 +9094,9 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_SET_RENDER_ENABLE: {
             if (r->x[0] < 2) { render_off = !r->x[0]; break; }
             if (!r->x[1]) FATAL("[vk] null conditional-render counters\n");
-            // Unlike a bare host load, complete preceding GPU writes and apply
-            // deferred ReportCounter readbacks before evaluating the predicate.
-            renderer_flush();
+            // Unlike a bare host load, complete preceding GPU writes to the counters and
+            // apply deferred ReportCounter readbacks before evaluating the predicate.
+            if (cond_gpu_pending(r->x[1])) renderer_flush();
             readbacks_apply();
             const uint64_t *counter = (const uint64_t *)(uintptr_t)r->x[1];
             uint64_t a = counter[0], b = counter[2];

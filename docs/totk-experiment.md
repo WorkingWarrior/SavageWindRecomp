@@ -19,7 +19,7 @@ questions and frame rates are history, and where they disagree with this section
 **Not verified**
 - Saving and loading, the title menu (a clean save goes straight to the intro; the reference shows the menu only once a save
   exists).
-- Anything past the opening cave: the Sky Islands, the descent to Hyrule, the Depths, scene changes and long loads.
+- Anything past standing on the Great Sky Island: the descent to Hyrule, the Depths, scene changes and long loads.
 - Ultrahand, Fuse, Ascend, Recall; performance in the open world; sessions of an hour or more.
 - Physical input was tried only by hand and briefly; audio correctness beyond "it plays".
 
@@ -52,6 +52,66 @@ questions and frame rates are history, and where they disagree with this section
 **Recommendation.** Continue on Savage: every blocker so far was a missing feature or a specific bug, not the architecture.
 Next comes a real test past the cave (save and load, scene changes, the open world), because the next faults are most likely
 there. The reference remains the safer way to play until that passes.
+
+## Registers in locals and -O2: tried, dropped (2026-11-02)
+
+The largest difference from weeping-of-the-empire's generated code: x0-x30, sp and NZCV in C locals, stored only before calls and
+returns. Written for our `Cpu` as `gen.py --local-regs` and measured with `-O2`; below the threshold set beforehand (15 %), so
+removed. The patch is in `build/bench/local-regs.patch`, not in the tree.
+
+**Measured** (headless gamescope 1280x720, RX 9070, Ryzen 7 5700X3D, nothing else running, the four builds taking turns, 3 runs
+each, median of the 2 s intervals)
+| Build | BOTW, Hyrule Castle, rain, noon, no limit | TotK, Great Sky Island, 60 fps limit |
+|---|---|---|
+| memory, -O1 (today) | 175.4, 177.6, 175.0 | 42.0, 42.4, 54.2 |
+| locals, -O1 | 179.9, 173.1, 179.8 | 42.2, 43.0, 60.0 |
+| memory, -O2 | 177.6, 180.9, 179.3 | 60.0, 60.0, 42.7 |
+| locals, -O2 | 179.1, 179.3, 178.6 | 37.6, 42.9, 60.0 |
+
+**Why nothing moves.** BOTW there is limited by the render execution thread, at 0.96 of a core; a perf run of the whole session
+puts it at `draw_` 17.5 %, `stage_set` 12 %, `exec_list` 7 %, `fnv_sample` 5 %, `texture_info` 4 %, `guest_copy` 4 %, and the
+guest threads under it. TotK is not limited by any thread: its 42 fps stretches spend about 1.08 s of each 2 s in `vkWaitSemaphores`
+(`vk_wait_seq`), and a run sits at 42 or 60 for a long time whatever the build. The 42 / 60 split is the run, not the build (the
+cause is in the next section).
+
+**A trap for anyone trying this again:** the memory form makes plain guest loads reload by accident, because every register store
+may alias them. With locals clang moves the load out of a spinlock and BOTW hangs before its first frame (`f_7000ef62dc`). The
+patch puts a compiler barrier at each loop head.
+
+**How these scenes are reached** (`build/bench/`, not in the tree): BOTW loads a copy of `../SavageWindRecomp-test/save/save_0` with
+`SAVAGEWIND_TEST_WARP=castle`. TotK has no save past the Great Sky Island: `totkconv.py` writes a newer version's values into the
+1.0.0 layout (progress.sav: a key table sorted into type blocks split by key 0, keys are murmur3 of the name, Link at
+`PlayerStatus.SavePos`), from an emulator save on the island. That loads, and **TotK plays on the island past the cave for the first
+time on this runtime** (standing, 105 s, 12 runs of the matrix: no crash). Writing `SavePos` alone does not work: from the cave save
+Link stays in the cave, and from the island save to Kakariko (1811, 260, 982) the game stays on the white loading screen for 100 s.
+
+## TotK's GPU waits: conditional rendering (2026-11-02)
+
+The Great Sky Island's 42 fps was not the GPU being too slow: the GPU was busy half the time. `CMD_SET_RENDER_ENABLE` (Fix 06) called
+`renderer_flush` before each `SetRenderEnableConditional`, ~55 times a frame, so the translation and the GPU never overlapped and
+their times added up. Now it waits only if the GPU can still change the counters: a pending SAMPLES_PASSED report on them, a storing
+shader's storage buffers over them, or a store outside the known set (`cond_gpu_pending`; `SAVAGEWIND_VK_COND_FULL=1`: as before).
+
+Evidence: over 100000 evaluations logged before and after the wait, no value and no result changed, none had a pending report, and
+the wait took 1720 ms of every 4 s. Raising `SUBS` from 32 to 128 changed nothing (tried first, because ~56 submissions go through
+the 32 slots each frame; the slots are not the limit).
+
+Same binary, the switch on and off, 150 s standing, 1280x720, frames after 40 s, 60 fps limit, 3 runs each:
+
+| | fps, median | lowest 2 s | GPU waits per 2 s | submissions per 2 s |
+|---|---|---|---|---|
+| full wait | 57.6 / 55.9 / 58.0 | 39.4 / 38.2 / 39.7 | 585-1030 ms | ~6700 |
+| `cond_gpu_pending` | 60.0 / 60.0 / 60.0 | 55.0 / 55.9 / 55.3 | 0-95 ms | ~670 |
+
+(`SAVAGEWIND_VK_PROF=2` was on in these runs. Without it the full wait gave the 42 / 60 of the table above.)
+
+What moves the frame rate between levels is still there: two passes come and go with the same draw count, 640x360 (22 draws, 7.9 ms)
+and 16x16 (1 draw, 4.3 ms), so GPU time per frame is ~3.6 or ~11 ms. Which effect they are is not known. They no longer drop the
+frame rate here, at the GPU's own low clocks (~1400 MHz, 35 W).
+
+Standing still on one island: conditional rendering where the counters really are GPU results, moving, and the surface are not
+tested. Screenshots show no visible fault, but the runs are not pixel-comparable (the scene moves: two runs of the same build differ
+as much). Above 60 is not measured: TotK's limit is 30 or 60.
 
 ## Upstream 0.4.1-alpha.4 merged (2026-11-01)
 
