@@ -182,6 +182,9 @@ void renderer_set_shadow_size(uint32_t n) {  // (never past what the GPU can mak
 }
 uint64_t renderer_present_count(void);
 static float rs_want(const TexBackend *b, int axis) {  // the scale a texture of b's group is wanted at now
+    // TotK lights the scene at half its size (the 1600x900 scene's 800x450 targets): above Console those are made at the
+    // scene's own, or a sharp shadow still reaches the screen with 2-pixel steps
+    if (b->rs_group == RS_SCENE && b->guest_w == 800 && g_shadow_size && !game_is_botw()) return g_rs[RS_SCENE][axis] * 2.0f;
     if (b->rs_group != RS_SHADOW) return g_rs[b->rs_group][axis];
     return b->guest_w && g_shadow_size > b->guest_w ? (float)g_shadow_size / (float)b->guest_w : 1.0f;  // (square)
 }

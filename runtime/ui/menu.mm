@@ -959,7 +959,8 @@ static void tab_display(void) {
                "and video memory (Ultra: about 100 MB, Extreme: about 400 MB).");
     else opt_choice("Shadow resolution", &g_settings.shadow_res, shadow_totk, SHADOW_COUNT, SHADOW_CONSOLE,
                "The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and "
-               "Extreme (8192) give sharper shadow edges for more GPU time and video memory.");
+               "Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for "
+               "more GPU time and video memory.");
 #ifndef __APPLE__
     tab_colour();
 #endif

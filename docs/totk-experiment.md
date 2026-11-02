@@ -127,6 +127,13 @@ The orange ground of the first report lost its lines too (seen in the game). Con
 time flips between its two levels on its own (see above), so these runs cannot give it. Every square depth target of 384 or more
 goes to the chosen size, not only the sun's.
 
+Sharp maps still reached the screen with 2-pixel steps: the sun's pass and its neighbours draw into the scene's 800x450 targets. Above
+Console those are now made at the scene's size (`rs_want`), so the steps are gone; the rscale table keeps the shaders' coordinates
+right. Ultra, 90 s standing in two places and switched live Console -> Ultra -> Console: 60 fps, no fault, no visible breakage. A
+played session on the same build held 60 fps with GPU waits near 0 at 1280x720, 1920x1080 and 3440x1440: the scene stays 1600x900
+at every window size (`[scale] scene x1.000`; only the final image grows), so neither these targets nor their cost grow with the
+window. The cost itself is not measured (see above).
+
 ## Upstream 0.4.1-alpha.4 merged (2026-11-01)
 
 `revivedx/main` at `bf6146c` merged into this branch, both games regenerated from the merged `tools/` (BOTW 49 s, TotK 77 s;
