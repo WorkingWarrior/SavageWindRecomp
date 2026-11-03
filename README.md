@@ -292,6 +292,8 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
   this project is built on (MIT).
 - [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) - its shader decoder was the reference for instruction field
   layouts.
+- [Weeping of the Empire](https://github.com/daniel-madrid-07/weeping-of-the-empire) (MIT) - smaller transient
+  chunks when host memory runs short, and the quick exit when the window closes, adapted from its v0.1.8.2.
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator.
 - The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org)).
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) and the

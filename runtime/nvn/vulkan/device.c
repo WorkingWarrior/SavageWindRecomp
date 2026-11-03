@@ -1493,8 +1493,12 @@ static Frame cur_frame;
 
 // Acquire the next window image and begin rendering into it (cleared to `clear`). Returns false when there is
 // nothing to draw into (minimised window).
+static _Atomic int g_vk_closing;  // (exit_begin: the window is hidden; no presents, no swapchain recreation)
 bool vk_frame_begin(const float clear[4]) {
     cur_frame.ok = false;
+    // (closing: a hidden window can answer OUT_OF_DATE, and a recreation would race the exit thread's vkDeviceWaitIdle;
+    // nothing is drawn, as when minimised)
+    if (atomic_load(&g_vk_closing)) return false;
     int w, h;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     // minimised (Windows keeps the window's size then, but its surface is 0 x 0: every acquire was out of date)
@@ -2066,24 +2070,38 @@ presented:
 void vk_exec_init(void);
 void vk_shaders_init(void);
 
+// The step the exit is in (ui_run's deadline names it) and when it began: "[exit] <step>: N ms" lines
+static const char *volatile g_exit_step = "starting";
+static _Atomic uint64_t g_exit_step_ns;
+static uint64_t exit_step(const char *done, const char *next, uint64_t t) {
+    const uint64_t now = SDL_GetTicksNS();
+    if (done) LOG("[exit] %s: %.0f ms\n", done, (now - t) / 1e6);
+    fflush(stdout);
+    atomic_store(&g_exit_step_ns, now);  // (the time first, the name after it with release: ui_run reading a step's
+    __atomic_store_n(&g_exit_step, next, __ATOMIC_RELEASE);  // name also reads its start, never the step before's)
+    return now;
+}
+
 // exit() from any thread: let the GPU finish, keep the pipeline cache, then end the process without the DLL
 // teardown (driver / validation-layer threads can stall it for minutes while the game's threads still run).
 static void quick_exit_handler(void) {
-    static int trace = -1;
-    if (trace < 0) trace = getenv("SAVAGEWIND_VK_TRACE") != NULL;
-    if (trace) LOG("[vk] exit: waiting for the GPU\n");
+    // (once: the close's exit thread and a later exit() on another thread do not both run it; the second waits for the
+    // first to end the process)
+    static _Atomic int once;
+    if (atomic_exchange(&once, 1)) for (;;) SDL_Delay(1000);
+    uint64_t t = exit_step(NULL, "GPU idle wait", SDL_GetTicksNS());
     if (g_vk.dev) {
         vk_present_idle();
         rec_drain();
         vkDeviceWaitIdle(g_vk.dev);
-        if (trace) LOG("[vk] exit: saving the pipeline cache\n");
-        vk_pipeline_cache_save();
+        t = exit_step("GPU idle", "cache save", t);
+        vk_pipeline_cache_save();  // (tmp file + one-step replace: an exit cut short leaves the previous cache)
         extern void vk_pso_flush(void);
         vk_pso_flush();
         extern void vk_keylog_flush(void);
         vk_keylog_flush();
+        t = exit_step("cache save", "terminate", t);
     }
-    if (trace) LOG("[vk] exit: terminating\n");
     fflush(stdout);
     fflush(stderr);
 #if defined(_WIN32) || defined(__linux__)
@@ -2182,26 +2200,79 @@ static void window_event_log(const SDL_Event *e) {
     if (n++ < 400) LOG("[window] %s (frame %llu)\n", what, (unsigned long long)total_frames);
 }
 
+// Closing the window (after weeping-of-the-empire v0.1.8.2, MIT): the exit used to run on this thread, so the window
+// stayed on screen and the sound played while the GPU drained and the pipeline cache was saved. Now the close hides
+// the window and mutes the sound at once, the exit (exit(0): the atexit handlers, quick_exit_handler last) runs on a
+// thread of its own while this one keeps pumping the window's messages, and a step that runs past its limit ends the
+// process where it is: SAVAGEWIND_EXIT_DEADLINE_MS (default 2000; 0 = none) for the GPU drain,
+// SAVAGEWIND_EXIT_SAVE_MS (default 20000) for the caches (cutting a large pipeline cache would lose the pipelines just
+// built; it is a tmp file replaced in one step, so a save cut short leaves the previous file).
+static void *exit_thread(void *arg) {
+    (void)arg;
+    exit(0);
+}
+static uint64_t exit_ms_env(const char *name, double dflt) {
+    const char *e = getenv(name);
+    const double v = e && *e ? atof(e) : dflt;
+    return v > 0 ? (uint64_t)(v * 1e6) : 0;
+}
+static uint64_t exit_step_limit_ns(const char *step) {  // (0: no limit)
+    static uint64_t drain = UINT64_MAX, save;
+    if (drain == UINT64_MAX) {
+        save = exit_ms_env("SAVAGEWIND_EXIT_SAVE_MS", 20000);
+        drain = exit_ms_env("SAVAGEWIND_EXIT_DEADLINE_MS", 2000);
+    }
+    return !strcmp(step, "cache save") ? save : drain;
+}
+static uint64_t exit_begin(void) {  // (window thread) the close's first moments; returns its time
+    const uint64_t t0 = SDL_GetTicksNS();
+    LOG("window closed\n");
+    atomic_store(&g_vk_closing, 1);
+    if (window) SDL_HideWindow(window);
+    extern void audio_mute(void);  // services/audio.c
+    audio_mute();
+    exit_step("window hidden, sound muted", "exit thread start", t0);
+    pthread_t th;
+    if (pthread_create(&th, NULL, exit_thread, NULL)) exit(0);  // (no thread: here, as before)
+    pthread_detach(th);
+    return t0;
+}
+
 int ui_run(void) {
     ui_window_init();
     input_focus_update(window);
     atomic_store(&ui_ready, true);
+    uint64_t closing = 0;  // (the close's time: no more input or window requests, the deadline counts from it)
     for (;;) {
-        if (rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
+        if (!closing && rt_reboot_requested()) return rt_reboot_requested();  // (runtime/main.c tears the game down)
         SDL_Event e;
         // at most a frame's time of events, then the window requests: a controller's motion sensors (gyro) send about
         // a thousand updates a second, so the queue may never run empty, and Fullscreen, Window size and Monitor
         // waited for that until the next restart
         uint64_t t0 = SDL_GetTicks();
         while (SDL_GetTicks() - t0 < 16 && SDL_WaitEventTimeout(&e, 16)) {
-            if (e.type == SDL_EVENT_QUIT) {
-                LOG("window closed\n");
-                exit(0);
-            }
+            if (e.type == SDL_EVENT_QUIT && !closing) closing = exit_begin();
+            if (closing) continue;
             window_event_log(&e);
             if (input_user_blocked(&e)) continue;
             if (menu_handle_event(&e)) continue;
             input_handle_event(&e);
+        }
+        if (closing) {
+            const char *step = __atomic_load_n(&g_exit_step, __ATOMIC_ACQUIRE);
+            const uint64_t lim = exit_step_limit_ns(step), since = atomic_load(&g_exit_step_ns), now = SDL_GetTicksNS();
+            if (lim && since && now - since > lim) {
+                LOG("[exit] still in '%s' after %.0f ms (%.0f ms after the close; SAVAGEWIND_EXIT_DEADLINE_MS / _SAVE_MS): "
+                    "ending the process now\n", step, (now - since) / 1e6, (now - closing) / 1e6);
+                fflush(stdout);
+                fflush(stderr);
+#if defined(_WIN32) || defined(__linux__)
+                plat_terminate();
+#else
+                _exit(0);
+#endif
+            }
+            continue;
         }
         menu_apply_window_requests(window);
         extern void input_mouse_update(SDL_Window *w);  // runtime/hle/input.c: hold the cursor while the game has it

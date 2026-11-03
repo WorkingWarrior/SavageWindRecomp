@@ -15,6 +15,7 @@
 #include "shaders.h"
 #include "vk.h"
 #include "vram.h"
+#include "hostroom.h"  // (ring_grow's chunk sizes when host-visible memory runs short)
 #include "fsr3.h"
 #include "mvec.h"
 #include "../output_scale.h"
@@ -131,6 +132,11 @@ static bool in_pass;
 static bool pass_void;  // the pass in progress has nothing to draw into: not begun, its draws and clears skipped (begin_pass)
 static uint32_t chunk_draws;  // draws and dispatches recorded since the last submission
 static bool chunk_hold;       // a shader that stores to guest memory was recorded since the last submission
+// The transient ring under host-memory pressure (ring_tight: ring_grow saw a chunk refused): ring_open = the bytes the
+// open submission took from it. ring_grow can only reuse a chunk the GPU finished, so from then on begin_pass submits at
+// the next pass boundary once the open submission holds half the ring (ring_open_high).
+static bool ring_tight;
+static uint64_t ring_open, ring_early_n;
 
 static pthread_mutex_t gpu_mutex;
 static pthread_once_t gpu_mutex_once = PTHREAD_ONCE_INIT;
@@ -445,6 +451,7 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal, VkCommandBuffer extra
     cum_submits++;
     chunk_draws = 0;
     chunk_hold = false;
+    ring_open = 0;
     ring_retire();
     vk_collect_dead();
 }
@@ -623,6 +630,12 @@ static Chunk *chunks;
 static int nchunks, active = -1;
 
 static int new_chunk(uint64_t size) {
+    // SAVAGEWIND_VK_RING_REFUSE=1 (a check): every chunk past the first two refused, as on a full host heap, so
+    // ring_grow's waits / reuses and begin_pass's early submissions run on any PC; =<MB> above 1 instead: every chunk
+    // larger than that refused, so its smaller sizes are made (a full heap with room left for small ones)
+    static int refuse = -1;
+    if (refuse < 0) { const char *e = getenv("SAVAGEWIND_VK_RING_REFUSE"); refuse = e ? atoi(e) : 0; }
+    if (refuse == 1 ? nchunks >= 2 : refuse > 1 && size > ((uint64_t)refuse << 20)) return -1;
     chunks = realloc(chunks, (nchunks + 1) * sizeof *chunks);
     Chunk *c = &chunks[nchunks];
     memset(c, 0, sizeof *c);
@@ -633,7 +646,7 @@ static int new_chunk(uint64_t size) {
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO,
                                   .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
     VmaAllocationInfo info;
-    VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info));
+    if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &c->buf, &c->mem, &info) != VK_SUCCESS) return -1;  // (ring_grow: what next)
     c->ptr = info.pMappedData;
     c->size = size;
     return nchunks++;
@@ -641,8 +654,65 @@ static int new_chunk(uint64_t size) {
 
 static void ring_retire(void) {}  // chunks are recycled lazily in vk_transient
 
+// begin_pass (ring_tight only): the open submission holds half the ring's bytes or more
+static bool ring_open_high(void) {
+    uint64_t held = 0;
+    for (int i = 0; i < nchunks; i++) held += chunks[i].size;
+    return ring_open >= held / 2;
+}
+
+// No free chunk, and a new one refused: no host-visible type has room (weeping-of-the-empire v0.1.8.2, a GTX 1660 6 GB
+// with 8 GB of RAM: the imported guest heap filled the host-visible heap, the 256 MB BAR heap was full, and a fast
+// travel's 64 MB chunk was FATAL at every load; hostroom.h). Smaller chunks first (hostroom_chunk_sizes); then, once
+// the GPU finished everything submitted, a finished chunk large enough; then the finished chunks too small for it
+// freed, their memory back to the heap, and the sizes tried again. FATAL only when none of that found the memory.
+// Reusing or freeing a chunk drops the list's shared guest copies (guest_copy_flush): one may live in it, and freeing
+// moves the chunk indices they keep.
+static void guest_copy_flush(void);
+static int ring_grow(uint64_t size) {
+    static int logged;
+    uint64_t sz[8];
+    const int n = hostroom_chunk_sizes(size, CHUNK_SIZE, sz, 8);
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < n; i++) {
+            const int k = new_chunk(sz[i]);
+            if (k < 0) {
+                if (!ring_tight) LOG("[vk] transient ring: a %llu MB chunk refused: from now on a submission holding half the ring "
+                                     "goes to the GPU at the next pass boundary\n", (unsigned long long)(sz[i] >> 20));
+                ring_tight = true;
+                continue;
+            }
+            if ((i || pass) && logged++ < 8)
+                LOG("[vk] transient ring: no host-visible memory for a %llu MB chunk: %llu MB made%s\n",
+                    (unsigned long long)(sz[0] >> 20), (unsigned long long)(sz[i] >> 20), pass ? " after freeing finished chunks" : "");
+            return k;
+        }
+        if (pass) break;
+        vk_wait_seq(submit_seq);  // (everything submitted finished: its chunks are free again)
+        const uint64_t done = vk_completed_seq();
+        guest_copy_flush();
+        for (int i = 0; i < nchunks; i++)
+            if (i != active && chunks[i].seq <= done && chunks[i].size >= size) {
+                if (logged++ < 8)
+                    LOG("[vk] transient ring: no host-visible memory for a %llu MB chunk: waited for the GPU, a finished one reused\n",
+                        (unsigned long long)(sz[0] >> 20));
+                return i;
+            }
+        for (int i = nchunks - 1; i >= 0; i--)
+            if (i != active && chunks[i].seq <= done) {
+                vmaDestroyBuffer(g_vk.vma, chunks[i].buf, chunks[i].mem);
+                memmove(&chunks[i], &chunks[i + 1], (size_t)(nchunks - i - 1) * sizeof *chunks);
+                nchunks--;
+                if (active > i) active--;
+            }
+    }
+    FATAL("[vk] transient ring: no host-visible memory for %llu KB, even after the GPU finished (%d chunks held): every "
+          "host-visible heap is full\n", (unsigned long long)(size >> 10), nchunks);
+}
+
 VkSpan vk_transient(uint64_t size, uint64_t align) {
     if (align < 16) align = 16;
+    ring_open += size;
     uint64_t pending = vk_pending_seq();
     if (active >= 0) {
         Chunk *c = &chunks[active];
@@ -658,7 +728,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     int pick = -1;
     for (int i = 0; i < nchunks; i++)
         if (i != active && chunks[i].seq <= done && chunks[i].size >= size) { pick = i; break; }
-    if (pick < 0) pick = new_chunk(size > CHUNK_SIZE ? size : CHUNK_SIZE);
+    if (pick < 0) pick = ring_grow(size);
     active = pick;
     chunks[pick].used = size;
     chunks[pick].seq = pending;
@@ -1680,6 +1750,10 @@ static void begin_pass(void) {
     if (no_hold < 0) no_hold = getenv("SAVAGEWIND_VK_NO_HOLD") != NULL;
     if (submit_draws > 0 && chunk_draws >= (uint32_t)submit_draws && (!chunk_hold || no_hold))
         vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    else if (ring_tight && ring_open_high() && (!chunk_hold || no_hold)) {  // (host memory short: the ring's chunks back sooner)
+        if (!ring_early_n++) LOG("[vk] transient ring: first early submission (the open one held half the ring)\n");
+        vk_submit_extra(VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    }
     st.rt_dirty = false;
     for (int i = 0; i < st.rt.ncolor && i < 8; i++)  // (before the pass's command buffer is taken: a flush ends it)
         if (st.rt.color[i] && (st.rt.color[i]->flags & 0x40) && linear_target_behind(st.rt.color[i])) {

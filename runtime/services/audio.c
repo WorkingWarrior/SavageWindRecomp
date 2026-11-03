@@ -618,11 +618,13 @@ static void render_frame(Renderer *r, float *stereo) {
     }
 }
 
-// Output gain: menu volume times SAVAGEWIND_AUDIO_GAIN (applied live).
+// Output gain: menu volume times SAVAGEWIND_AUDIO_GAIN (applied live); 0 once the window is closed (audio_mute).
+static _Atomic int muted;
+void audio_mute(void) { atomic_store(&muted, 1); }  // (device.c exit_begin: the game goes on while it exits)
 static void apply_gain(SDL_AudioStream *st) {
     static double env = -1;
     if (env < 0) env = getenv("SAVAGEWIND_AUDIO_GAIN") ? atof(getenv("SAVAGEWIND_AUDIO_GAIN")) : 1.0;
-    float g = (float)(env * g_settings.volume);
+    float g = atomic_load(&muted) ? 0.f : (float)(env * g_settings.volume);
     if (st && SDL_GetAudioStreamGain(st) != g) SDL_SetAudioStreamGain(st, g);
 }
 

@@ -446,6 +446,15 @@ test-vibration: $(B)/test_vibration
 
 .PHONY: test-vibration
 
+$(B)/test_hostroom: tools/test_hostroom.c runtime/nvn/vulkan/hostroom.h
+	@mkdir -p $(B)
+	$(CC) -O1 -o $@ tools/test_hostroom.c
+
+test-hostroom: $(B)/test_hostroom
+	$(B)/test_hostroom
+
+.PHONY: test-hostroom
+
 # The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
 $(B)/test_input_focus: tools/test_input_focus.c tools/test_pointer_disabled.h runtime/hle/input.c $(RT_HDRS)
 	@mkdir -p $(B)
