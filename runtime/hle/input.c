@@ -1040,6 +1040,10 @@ uint64_t input_buttons_now(void) {
     return b;
 }
 
+// The buttons the game read last (the sticks' directions in bits 16-23 too): what Atmosphere's cheats test
+static _Atomic uint64_t game_buttons;
+uint64_t input_game_buttons(void) { return game_buttons; }
+
 static int32_t clamp_axis(int32_t v) { return v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
 
 // NpadFullKeyState / NpadHandheldState / NpadJoy*State share this layout (0x28 bytes):
@@ -1105,6 +1109,7 @@ static void fill_state(Cpu *c) {
     if (rx > 16000) b |= 1ull << 22;
     if (ry < -16000) b |= 1ull << 23;
     *(uint64_t *)(s + 8) = b;
+    game_buttons = b;
     static uint64_t last_b;
     if (b != last_b && getenv("SAVAGEWIND_INPUT")) LOG("[input] id %#x buttons %#llx (sampling %lld, lr %llx)\n", id, (unsigned long long)b, (long long)sampling, (unsigned long long)c->x[30]);
     last_b = b;
