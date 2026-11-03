@@ -35,7 +35,8 @@ size_t ms_scan(const void *p, size_t n, const MsMatch *m, bool skip_zero, uint32
 bool ms_resident(uint64_t addr, size_t npages, uint8_t *resident);
 
 // Run fn(p, n, ctx) over memory that may become inaccessible while it runs, without crashing: on Windows under SEH
-// (__try), elsewhere by copying through the OS first (fn then sees a copy). Returns false if the access faulted;
-// *ret gets fn's result otherwise.
+// (__try), elsewhere by copying through the OS first (fn then sees a copy; guest memory the OS can't copy, like the
+// renderer's GPU memory under the heap on Linux, is copied in place through the kernel's map: kernel_guest_copy).
+// Returns false if the access faulted; *ret gets fn's result otherwise.
 typedef size_t (*MsFn)(const void *p, size_t n, void *ctx);
 bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret);

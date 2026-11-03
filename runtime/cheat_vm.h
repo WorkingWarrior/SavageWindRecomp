@@ -71,6 +71,7 @@ typedef struct {
     bool (*rd)(uint64_t addr, void *buf, size_t n);
     bool (*wr)(uint64_t addr, const void *buf, size_t n);
     void (*log)(void *ctx, unsigned id, uint64_t v);  // FFF: debug log (NULL: none)
+    void (*pause)(void *ctx, bool on);                // FF0 / FF1: pause / resume the game (NULL: they do nothing)
     void *ctx;
 } CheatEnv;
 
@@ -335,8 +336,9 @@ static inline int cheat_vm_run(CheatVm *vm, const uint32_t *p, uint32_t n, const
                         e->rd(addr, &v, t);
                     } else v = r[a6];
                     if (e->log) e->log(e->ctx, CVM_NB(f, 4), v & cvm_mask(t));
+                } else if (f >> 20 == 0xFF0 || f >> 20 == 0xFF1) {
+                    if (e->pause) e->pause(e->ctx, f >> 20 == 0xFF0);
                 }
-                // (FF0 / FF1, pause and resume the game: not here, the codes run beside it)
             }
         }
         at = next;

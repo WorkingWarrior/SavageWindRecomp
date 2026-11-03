@@ -46,6 +46,7 @@ bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret) {
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#include "kernel.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -87,18 +88,18 @@ bool ms_guarded(const void *p, size_t n, MsFn fn, void *ctx, size_t *ret) {
     if (n) {
 #ifdef __APPLE__
         mach_vm_size_t got = 0;
-        if (mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)p, n,
-                                  (mach_vm_address_t)(uintptr_t)copy, &got) != KERN_SUCCESS || got != n) {
-            free(copy);
-            return false;
-        }
+        bool ok = mach_vm_read_overwrite(mach_task_self(), (mach_vm_address_t)(uintptr_t)p, n,
+                                         (mach_vm_address_t)(uintptr_t)copy, &got) == KERN_SUCCESS && got == n;
 #else
         struct iovec local = {copy, n}, remote = {(void *)p, n};
-        if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != (ssize_t)n) {
+        bool ok = process_vm_readv(getpid(), &local, 1, &remote, 1, 0) == (ssize_t)n;
+#endif
+        // (guest memory the OS can't copy - the renderer's GPU memory under the heap, Linux - in place, checked
+        // against the kernel's map)
+        if (!ok && !kernel_guest_copy((uint64_t)(uintptr_t)p, copy, n, GUEST_READ)) {
             free(copy);
             return false;
         }
-#endif
     }
     *ret = fn(copy, n, ctx);
     free(copy);

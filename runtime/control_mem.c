@@ -5,6 +5,7 @@
 #include "control.h"
 #include "rt.h"
 #include "memscan.h"
+#include "kernel.h"
 #include <errno.h>
 #include <float.h>
 #include <inttypes.h>
@@ -128,7 +129,8 @@ static bool copy_memory(uint64_t a, void *buf, size_t n, bool write) {
     struct iovec local = {buf, n}, remote = {(void *)(uintptr_t)a, n};
     ssize_t done = write ? process_vm_writev(getpid(), &local, 1, &remote, 1, 0)
                          : process_vm_readv(getpid(), &local, 1, &remote, 1, 0);
-    return done >= 0 && (size_t)done == n;
+    // (the heap's GPU memory, which the OS can't copy: in place through the kernel's map)
+    return (done >= 0 && (size_t)done == n) || kernel_guest_copy(a, buf, n, write ? GUEST_WRITE : GUEST_READ);
 #endif
 }
 static void address(ControlReply *r, const char *key, uint64_t a) {

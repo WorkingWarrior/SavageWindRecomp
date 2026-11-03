@@ -85,5 +85,8 @@ typedef struct { volatile int v; char pad[60]; } __attribute__((aligned(64))) Co
 extern CoreBestWait g_core_best_wait[4];
 void kernel_preempt(KThread *t);
 uint64_t kernel_heap_size(void);  // bytes from HEAP_BASE set by SetHeapSize
-bool kernel_guest_copy(uint64_t a, void *buf, size_t n, bool write);  // host code off guest threads: checked, in place
+enum { GUEST_READ, GUEST_WRITE, GUEST_WRITE_RO };
+bool kernel_guest_copy(uint64_t a, void *buf, size_t n, int mode);  // host code off guest threads: checked, in place
+bool kernel_guest_pause(uint64_t timeout_ns);  // no guest code runs until kernel_guest_resume (false: not all stopped)
+void kernel_guest_resume(void);
 void kernel_set_system_resource_size(uint64_t size);  // process NPDM memory-management resource budget

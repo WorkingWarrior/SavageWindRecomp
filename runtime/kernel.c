@@ -153,10 +153,11 @@ static int g_cores_on = -1;
 // One cache line per core, written only when it changes: every indirect call of every guest thread reads its core's
 // entry, and one shared line rewritten at each core hand-over missed in their caches.
 CoreBestWait g_core_best_wait[4] = {{INT_MAX}, {INT_MAX}, {INT_MAX}, {INT_MAX}};
+static _Atomic bool g_guest_paused;  // (kernel_guest_pause: no core is handed out, every holder lets its own go)
 static void core_best_update(Core *k) {  // (k->m held)
     static int off = -1;
     if (off < 0) off = getenv("SAVAGEWIND_NO_PREEMPT") != NULL;
-    int best = INT_MAX;
+    int best = g_guest_paused && !off ? INT_MIN : INT_MAX;
     for (int i = 0; i < k->nwaiting && !off; i++)
         if (k->waiting[i]->prio < best) best = k->waiting[i]->prio;
     if (__atomic_load_n(&g_core_best_wait[k - g_cores].v, __ATOMIC_RELAXED) != best)
@@ -181,7 +182,7 @@ static bool core_next(Core *k, KThread *t) {
 static void core_wait(Core *k, KThread *t) {
     if (k->nwaiting < 64) k->waiting[k->nwaiting++] = t;
     core_best_update(k);
-    while ((k->owner || !core_next(k, t)) && !g_rt_unwind) pthread_cond_wait(&k->cv, &k->m);
+    while ((k->owner || !core_next(k, t) || g_guest_paused) && !g_rt_unwind) pthread_cond_wait(&k->cv, &k->m);
     for (int i = 0; i < k->nwaiting; i++)
         if (k->waiting[i] == t) { k->waiting[i] = k->waiting[--k->nwaiting]; break; }
     core_best_update(k);
@@ -228,6 +229,38 @@ static void core_preempted(KThread *t) {
     core_wait(k, t);
 }
 
+// Host code (the cheats' FF0, runtime/cheat_vm.h) pauses the game as Atmosphere's debugger does: no guest thread runs
+// guest code until kernel_guest_resume. Each one that holds a core lets it go at its next indirect call or syscall
+// (kernel_preempt sees a waiter better than any), and no core is handed out meanwhile; this waits up to timeout_ns for
+// all four. False: they did not all come free in time, or cores are off (SAVAGEWIND_CORES=0) - paused as far as it got.
+// Threads off the cores (the audio renderer) and host work on guest threads (the GPU backend's) go on.
+bool kernel_guest_pause(uint64_t timeout_ns) {
+    g_guest_paused = true;
+    for (int i = 0; i < 4; i++) {
+        pthread_mutex_lock(&g_cores[i].m);
+        core_best_update(&g_cores[i]);
+        pthread_mutex_unlock(&g_cores[i].m);
+    }
+    if (!cores_on()) return false;
+    for (uint64_t end = plat_now_ns() + timeout_ns;;) {
+        bool free = true;
+        for (int i = 0; i < 4; i++) free &= !__atomic_load_n(&g_cores[i].owner, __ATOMIC_ACQUIRE);
+        if (free) return true;
+        if (plat_now_ns() >= end || g_rt_unwind) return false;
+        plat_sleep_until_ns(plat_now_ns() + 100000);
+    }
+}
+
+void kernel_guest_resume(void) {
+    g_guest_paused = false;
+    for (int i = 0; i < 4; i++) {
+        pthread_mutex_lock(&g_cores[i].m);
+        core_best_update(&g_cores[i]);
+        pthread_cond_broadcast(&g_cores[i].cv);
+        pthread_mutex_unlock(&g_cores[i].m);
+    }
+}
+
 // A thread that does a coprocessor's work runs beside the four cores, as on the console: the in-process audio
 // renderer (runtime/services/audio.c) is the audio DSP's. Waiting for a core token behind the game's threads, it
 // fell tens of milliseconds behind and the sound broke up.
@@ -263,6 +296,7 @@ void kernel_host_work_end(void) {
 // At a syscall: give the core to a better thread waiting for it, if there is one.
 static void core_preempt_point(KThread *t) {
     if (!t || t->core_held < 0) return;
+    if (g_guest_paused) { core_preempted(t); return; }  // (kernel_guest_pause)
     Core *k = &g_cores[t->core_held];
     if (!__atomic_load_n(&k->nwaiting, __ATOMIC_RELAXED)) return;
     pthread_mutex_lock(&k->m);
@@ -348,11 +382,13 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     return n;
 }
 
-// Host code off the guest's threads (runtime/mods.c: the cheats) reads or writes guest memory: only inside one mapped
-// region that allows it (QueryMemory's map), under g_klock so no svc unmaps it meanwhile, and not once a reboot is
-// asked for (the renderer lets the heap go before kernel_reset empties the map). In place, not through the OS: the heap
-// can be the renderer's GPU memory, which an OS copy (process_vm_readv) can't reach.
-bool kernel_guest_copy(uint64_t a, void *buf, size_t n, bool write) {
+// Host code off the guest's threads (runtime/mods.c: the cheats; the control endpoint's memory tools) reads or writes
+// guest memory: only inside one mapped region that allows it (QueryMemory's map), under g_klock so no svc unmaps it
+// meanwhile, and not once a reboot is asked for (the renderer lets the heap go before kernel_reset empties the map). In
+// place, not through the OS: the heap can be the renderer's GPU memory, which an OS copy (process_vm_readv) can't
+// reach. mode: GUEST_READ, GUEST_WRITE (writable memory), GUEST_WRITE_RO (read-only data too, as Atmosphere's cheats
+// write it: the host keeps those pages writable; never code).
+bool kernel_guest_copy(uint64_t a, void *buf, size_t n, int mode) {
     if (!n || a + n < a) return false;
     klock();
     int lo = 0, hi = nregions - 1, f = -1;
@@ -361,10 +397,11 @@ bool kernel_guest_copy(uint64_t a, void *buf, size_t n, bool write) {
         if (regions[m].addr <= a) f = m, lo = m + 1;
         else hi = m - 1;
     }
+    uint32_t perm = f >= 0 ? regions[f].perm : 0;
     bool ok = !rt_reboot_requested() && f >= 0 && a + n <= regions[f].addr + regions[f].size &&
-              (regions[f].perm & (write ? 2 : 1));
+              (mode == GUEST_READ ? perm & 1 : mode == GUEST_WRITE ? perm & 2 : (perm & 3) && !(perm & 4));
     if (ok) {
-        if (write) memcpy((void *)(uintptr_t)a, buf, n);
+        if (mode != GUEST_READ) memcpy((void *)(uintptr_t)a, buf, n);
         else memcpy(buf, (const void *)(uintptr_t)a, n);
     }
     pthread_mutex_unlock(&g_klock);

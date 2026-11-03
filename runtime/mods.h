@@ -1,10 +1,11 @@
-// The player's mods (runtime/mods.c): each folder in <data root>/mods is one mod, laid out as emulators and the Switch
-// take them (runtime/mods_scan.h); a name starting with '_' or '.' is left out. A whole emulator mods folder copied
-// in (yuzu's load/<title>, Ryujinx's mods/contents/<title>) is one mod per folder in it, named <folder>/<mod>. Their
-// order (the top mod wins a file two mods change) and switches are in <data root>/mods.ini, a line per mod, top first:
-// "+name" on, "-name" off. New mods come on, below the known ones, by name. The mods on when the game starts are the
-// run's: fs.c serves their RomFS files (below the SAVAGEWIND_ROMFS_OVERLAY folder), the loader their ExeFS patches
-// (mods_exefs_apply); the Mods tab (runtime/ui/menu.mm) edits the list for the next start. Cheats switch at once.
+// The player's mods (runtime/mods.c): each folder in <data root>/mods/<game> (botw, totk) is one mod, laid out as
+// emulators and the Switch take them (runtime/mods_scan.h); a name starting with '_' or '.' is left out. A whole
+// emulator mods folder copied in (yuzu's load/<title>, Ryujinx's mods/contents/<title>) is one mod per folder in it,
+// named <folder>/<mod>. Their order (the top mod wins a file two mods change) and switches are in mods.ini in that
+// folder, a line per mod, top first: "+name" on, "-name" off. New mods come on, below the known ones, by name. The mods
+// on when the game starts are the run's: fs.c serves their RomFS files (below the SAVAGEWIND_ROMFS_OVERLAY folder), the
+// loader their ExeFS patches (mods_exefs_apply); the Mods tab (runtime/ui/menu.mm) edits the list for the next start.
+// Cheats switch at once.
 // ExeFS patches are applied to the module images as Atmosphere does, but the game's code is recompiled ahead of time:
 // only what they change in its data (.rodata, .data) takes effect; what they change in its code (.text) is counted and
 // left out. Atmosphere cheats (cheats/<build id>.txt) run as emulators run them: every cheat in the file of each mod
@@ -47,7 +48,7 @@ typedef struct {
 // The list as it is now (the tab's edits included), top first; scanned at the first call. Copies: any thread.
 int mods_count(void);
 bool mods_get(int i, Mod *out);
-const char *mods_folder(void);  // <data root>/mods (made at the first scan)
+const char *mods_folder(void);  // <data root>/mods/<game> (made at the first scan)
 void mods_rescan(void);         // the folder again (files copied in meanwhile); order and switches stay
 // The tab's edits, saved at once
 void mods_set_on(int i, bool on);

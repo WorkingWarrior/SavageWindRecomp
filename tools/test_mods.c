@@ -42,6 +42,8 @@ static bool mem_wr(uint64_t a, const void *b, size_t n) {
     return true;
 }
 static uint32_t mem32(uint32_t off) { uint32_t v; memcpy(&v, mem + off, 4); return v; }
+static int pauses;  // (FF0: +1, FF1: +10)
+static void count_pause(void *ctx, bool on) { *(int *)ctx += on ? 1 : 10; }
 static int run_codes(CheatVm *vm, CheatEnv *e, const char *text) {
     static Cheat c[4];
     char file[2048];
@@ -247,6 +249,10 @@ int main(void) {
     // unmapped memory is skipped; a code it can't decode stops the run
     assert(run_codes(&vm, &env, "04400000 00000000 00000001") == CHEAT_DONE);
     assert(run_codes(&vm, &env, "B0000000") == CHEAT_BAD && run_codes(&vm, &env, "04000000 00000010") == CHEAT_BAD);
+    // FF0 / FF1: the caller's pause
+    pauses = 0;
+    env.pause = count_pause, env.ctx = &pauses;
+    assert(run_codes(&vm, &env, "FF000000 04000000 00000010 00000005 FF100000") == CHEAT_DONE && pauses == 11 && mem32(0x10) == 5);
     cheat_vm_free(&vm);
     puts("mods: ok");
     return 0;

@@ -40,4 +40,3 @@ docs/RAMAS.md
 /luts/
 # the player's mods and their order (runtime/mods.h): in the data root too
 /mods/
-/mods.ini

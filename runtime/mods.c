@@ -19,7 +19,6 @@
 #include "rt.h"
 
 #define MODS_MAX 256
-#define LIST_FILE "mods.ini"
 
 typedef struct { Mod m; ModFound f; } Entry;
 
@@ -28,6 +27,7 @@ static Entry *list;  // top first
 static int n;
 static bool scanned;
 static char folder[1100];
+static char list_file[1200];  // <folder>/mods.ini
 // the run's: the mods that were on and usable when fs.c first asked, and what it counted for them
 static Entry *start;
 static int nstart = -1;
@@ -39,11 +39,13 @@ static void cheats_sync_locked(void);
 static void cheats_get_locked(Mod *out);
 
 static void save_locked(void) {
-    FILE *f = fopen(LIST_FILE ".tmp", "w");
+    char tmp[1300];
+    snprintf(tmp, sizeof tmp, "%s.tmp", list_file);
+    FILE *f = fopen(tmp, "w");
     if (!f) return;
     fprintf(f, "# Savage Wind mods, top first (the top mod wins a file two mods change): +name on, -name off\n");
     for (int i = 0; i < n; i++) fprintf(f, "%c%s\n", list[i].m.on ? '+' : '-', list[i].m.name);
-    if (fclose(f) == 0) rename(LIST_FILE ".tmp", LIST_FILE);
+    if (fclose(f) == 0) rename(tmp, list_file);
 }
 
 static int by_name(const void *a, const void *b) { return strcmp(((const Entry *)a)->m.name, ((const Entry *)b)->m.name); }
@@ -51,11 +53,14 @@ static int by_name(const void *a, const void *b) { return strcmp(((const Entry *
 static void scan_locked(void) {
     snprintf(folder, sizeof folder, "%s/mods", rt_data_root());
     mkdir(folder, 0755);
+    snprintf(folder, sizeof folder, "%s/mods/%s", rt_data_root(), game_profile_name());  // (each game its own)
+    mkdir(folder, 0755);
+    snprintf(list_file, sizeof list_file, "%s/mods.ini", folder);
     // the saved order and switches
     char *saved[MODS_MAX];
     bool saved_off[MODS_MAX];
     int nsaved = 0;
-    FILE *f = fopen(LIST_FILE, "r");
+    FILE *f = fopen(list_file, "r");
     char line[512];
     while (f && fgets(line, sizeof line, f) && nsaved < MODS_MAX) {
         line[strcspn(line, "\r\n")] = 0;
@@ -320,8 +325,8 @@ void mods_exefs_apply(Module *m, const char *build_id) {
     pthread_mutex_unlock(&lock);
 }
 
-// ---- cheats: every mod's in the list, loaded once the game's build id is known (and for mods found later); each
-// file's run while its mod is on, switched at once
+// ---- cheats: every mod's in the list, loaded once the game's build id is known (and files found later by a rescan);
+// each file's run while its mod is on, switched at once
 typedef struct {
     char mod[256];
     uint32_t *op, n;  // the file's codes: master, then the rest
@@ -334,11 +339,11 @@ typedef struct {
 static CheatProg **progs;
 static int nprogs;
 static char cheat_bid[80];      // the main module's build id ("" before the loader gave it)
-static char (*looked)[256];     // the mods whose cheats folder was read
-static int nlooked;
+static char (*seen)[1400];      // the cheat files read (loaded or not): a rescan reads only new ones
+static int nseen;
 #define PROGS_MAX 256
 
-static bool cheat_rd(uint64_t a, void *b, size_t n) { return kernel_guest_copy(a, b, n, false); }
+static bool cheat_rd(uint64_t a, void *b, size_t n) { return kernel_guest_copy(a, b, n, GUEST_READ); }
 
 static bool in_code(uint64_t a, size_t n) {
     for (int i = 0; i < g_nmodules; i++) {
@@ -356,12 +361,24 @@ static bool cheat_wr(uint64_t a, const void *b, size_t n) {
         cur->code = true;
         return false;
     }
-    return kernel_guest_copy(a, (void *)b, n, true);
+    return kernel_guest_copy(a, (void *)b, n, GUEST_WRITE_RO);
 }
 
 static void cheat_log(void *ctx, unsigned id, uint64_t v) {
     static int left = 64;
     if (left > 0) left--, LOG("[mods] %s: cheat log %u: %llx\n", ((CheatProg *)ctx)->mod, id, (unsigned long long)v);
+}
+
+// FF0 / FF1: the game paused (kernel_guest_pause) and resumed; a run that leaves it paused resumes it at its end
+static bool cheat_paused;
+static void cheat_pause(void *ctx, bool on) {
+    if (on == cheat_paused) return;
+    cheat_paused = on;
+    if (!on) { kernel_guest_resume(); return; }
+    static bool logged;
+    if (!kernel_guest_pause(50000000) && !logged)
+        logged = true, LOG("[mods] %s: a cheat paused the game, which did not stop in 50 ms: its codes ran anyway\n",
+                           ((CheatProg *)ctx)->mod);
 }
 
 uint64_t input_game_buttons(void);  // runtime/hle/input.c
@@ -386,11 +403,13 @@ static void *cheat_thread(void *arg) {
         qsort(run, k, sizeof *run, by_rank);
         pthread_mutex_unlock(&lock);
         CheatEnv e = {.base = {main ? main->base : MAIN_BASE, HEAP_BASE, ALIAS_BASE, GUEST_LO, 0},
-                      .keys = input_game_buttons(), .rd = cheat_rd, .wr = cheat_wr, .log = cheat_log};
+                      .keys = input_game_buttons(), .rd = cheat_rd, .wr = cheat_wr, .log = cheat_log,
+                      .pause = cheat_pause};
         for (int i = 0; i < k; i++) {
             CheatProg *p = run[i];  // (never freed: a program stays while the program runs)
             cur = p, e.ctx = p;
             int r = cheat_vm_run(&p->vm, p->op, p->n, &e);
+            cheat_pause(p, false);
             if (r == CHEAT_DONE) continue;
             p->stopped = true;
             LOG("[mods] %s: its cheats stopped (%s)\n", p->mod, r == CHEAT_BAD ? "a code that isn't one" : "a loop that never ends");
@@ -408,6 +427,11 @@ static void cheats_load_locked(const Entry *x) {
         if (!dot || strcasecmp(dot, ".txt") || !exefs_bid_match(de->d_name, cheat_bid)) continue;
         char p[1400];
         snprintf(p, sizeof p, "%s/%s", x->f.cheats, de->d_name);
+        int s = 0;
+        while (s < nseen && strcmp(seen[s], p)) s++;
+        if (s < nseen) continue;
+        seen = realloc(seen, sizeof *seen * (nseen + 1));
+        snprintf(seen[nseen++], sizeof *seen, "%s", p);
         size_t n;
         uint8_t *data = slurp(p, &n);
         int k = data ? cheat_parse((const char *)data, n, c, 256) : -1;
@@ -432,18 +456,13 @@ static void cheats_load_locked(const Entry *x) {
     if (d) closedir(d);
 }
 
-// The list's mods' cheats loaded (the ones not read yet), each file switched as its mod is
+// The list's mods' cheat files loaded (the ones not read yet: a file copied into a known mod comes in too), each
+// file switched as its mod is
 static void cheats_sync_locked(void) {
     if (!cheat_bid[0]) return;
     for (int i = 0; i < n; i++) {
         const Entry *x = &list[i];
-        if (!x->f.cheats[0] || x->m.problem != MOD_OK) continue;
-        int j = 0;
-        while (j < nlooked && strcmp(looked[j], x->m.name)) j++;
-        if (j < nlooked) continue;
-        looked = realloc(looked, sizeof *looked * (nlooked + 1));
-        snprintf(looked[nlooked++], sizeof *looked, "%s", x->m.name);
-        cheats_load_locked(x);
+        if (x->f.cheats[0] && x->m.problem == MOD_OK) cheats_load_locked(x);
     }
     for (int p = 0; p < nprogs; p++) {
         CheatProg *g = progs[p];

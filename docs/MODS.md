@@ -5,31 +5,33 @@ modded Switch take them. No mods ship with it: use mods you trust.
 
 ## Where mods go
 
-Each mod is a folder of its own in the `mods` folder of the data folder ([data-folder.md](data-folder.md)); Settings >
-Mods > Open mods folder opens it. A folder whose name starts with `_` or `.` is left out, a quick way to park a mod.
+Each mod is a folder of its own in the game's mods folder: `mods/botw` in the data folder
+([data-folder.md](data-folder.md)) for Breath of the Wild, `mods/totk` for Tears of the Kingdom. Settings > Mods > Open
+mods folder opens it. A folder whose name starts with `_` or `.` is left out, a quick way to park a mod.
 
 Any of these layouts works (names in any case):
 
 | Layout | Example |
 |---|---|
-| Emulator mod folder | `mods/Better Rain/romfs/...` |
-| Switch SD card | `mods/Better Rain/atmosphere/contents/01007EF00011E000/romfs/...` |
-| Title folder (BCML's output) | `mods/Better Rain/01007EF00011E000/romfs/...` or `.../contents/01007EF00011E000/romfs/...` |
-| Bare RomFS tree | `mods/Better Rain/Actor/...`, `.../Pack/...` (the game's own top folders) |
-| Zip unpacked into a folder of its own name | `mods/Better Rain/Better Rain/romfs/...` |
+| Emulator mod folder | `mods/botw/Better Rain/romfs/...` |
+| Switch SD card | `mods/botw/Better Rain/atmosphere/contents/01007EF00011E000/romfs/...` |
+| Title folder (BCML's output) | `mods/botw/Better Rain/01007EF00011E000/romfs/...` or `.../contents/01007EF00011E000/romfs/...` |
+| Bare RomFS tree | `mods/botw/Better Rain/Actor/...`, `.../Pack/...` (the game's own top folders) |
+| Zip unpacked into a folder of its own name | `mods/botw/Better Rain/Better Rain/romfs/...` |
 | The DLC's files | `.../01007EF00011F001/romfs/...` (BCML) or `.../romfs/aoc/0010/...` (as on the Wii U) |
-| ExeFS patches | `mods/Some Patch/exefs/<build id>.ips` or `*.pchtxt`, or the SD card's `atmosphere/exefs_patches/<name>/` |
-| Cheats | `mods/Infinite Stamina/cheats/<build id>.txt`, or `.../atmosphere/contents/01007EF00011E000/cheats/...` |
+| ExeFS patches | `mods/botw/Some Patch/exefs/<build id>.ips` or `*.pchtxt`, or the SD card's `atmosphere/exefs_patches/<name>/` |
+| Cheats | `mods/botw/Infinite Stamina/cheats/<build id>.txt`, or `.../atmosphere/contents/01007EF00011E000/cheats/...` |
 
 A whole emulator mods folder can be copied in as it is (yuzu's `load/01007EF00011E000`, Ryujinx's
-`mods/contents/01007EF00011E000`): each mod in it is listed on its own, as `<folder>/<mod>`.
+`mods/contents/01007EF00011E000`): each mod in it is listed on its own, as `<folder>/<mod>`. The examples are Breath
+of the Wild's; Tears of the Kingdom's title is 0100F2C0115B6000.
 
 ## Order and switches
 
 Settings > Mods lists every mod, top first. The top mod wins a file two mods change. A on a mod shows its switch and
-Move up / Move down. The list is kept in `mods.ini` next to the `mods` folder; new mods come in switched on, below the
-known ones. Changes apply at the next start (cheats: at once). Each mod's description says where its files were found and, once the game
-has loaded, how many game files it replaces and adds, and how many a mod above it takes.
+Move up / Move down. The list is kept in `mods.ini` in the game's mods folder; new mods come in switched on, below the
+known ones. Changes apply at the next start (cheats: at once). Each mod's description says where its files were found
+and, once the game has loaded, how many game files it replaces and adds, and how many a mod above it takes.
 
 ## The resource size table
 
@@ -56,7 +58,7 @@ too, and a cheat mod copied in while the game runs comes in with Look for new mo
 each one a mod folder of its own (cheat packs made for those emulators come that way). As with ExeFS patches, what a
 cheat writes to the game's code does nothing (the log and the mod's description say so); cheats that change the game's
 data (health, stamina, items, its values in memory) work. A cheat with a code Savage Wind can't run stops, and its
-description says so. The codes that pause the game (FF0 / FF1) are skipped: cheats run beside the game.
+description says so. The codes that pause the game (FF0 / FF1) pause it while the codes between them run, as on the console.
 
 A cheat is made for one version of the game: its file is named for that build, and its addresses are that build's.
 Most cheats shared for Breath of the Wild 1.9.0 change its code (they write instructions, like `04000000 00CE9B60
