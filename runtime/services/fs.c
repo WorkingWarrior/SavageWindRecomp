@@ -3,6 +3,7 @@
 // RomFS overlay (development): SAVAGEWIND_ROMFS_OVERLAY=<dir>, a folder laid out like the RomFS. Its files replace
 // the game's files of the same path, and files the game doesn't have are added (into directories it has). The
 // image the game reads stays one virtual RomFS: patched copies of its tables, the host files appended past its end.
+// The player's mods (runtime/mods.h) are more such folders, below it: the first folder that has a file serves it.
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -20,9 +21,11 @@
 #include "../hle.h"
 #include "../ipc.h"
 #include "../language.h"
+#include "../mods.h"
 #include "../romfs_image.h"
 #include "archive.h"
 #include "fs_layout.h"
+#include "rstb_botw.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -39,12 +42,20 @@ typedef struct { uint64_t off, size; uint8_t *data; } Patch;
 typedef struct { uint64_t off, size; char *path; uint32_t meta; } RomFile;
 // Redirected voice files that got bigger than the game's own (voice_redirect), for rstb_patch
 typedef struct { const char *path; uint64_t grow; } GrownFile;
+// A folder whose files replace or add to an image's (the overlay folder, a mod's RomFS): its files, sorted
+#define ROOTS_MAX 64
+typedef struct { char *dir; int mod; char **files; int nfiles; int replaced, added, shadowed; } Root;
+// A game file a root replaces (rstb_patch: the ResourceSizeTable entry grows with it)
+typedef struct { int file; uint64_t host_size; char *host; } Replaced;
 // A RomFS image the game reads and what Savage Wind changes in it: the game's own (base + update, extracted/romfs)
 // and each add-on content's (extracted/aoc<index>). Both get the same changes (voices, overlay folder,
 // ResourceSizeTable, HUD letters); the functions below work on R, the image being indexed.
 typedef struct {
     RomfsImage *img;         // (runtime/romfs_image.h; NULL: not opened)
-    const char *ov_sub;      // where its files are in the overlay folder ("": the game's own)
+    Root roots[ROOTS_MAX];   // the overlay folder's (SAVAGEWIND_ROMFS_OVERLAY; aoc/0010 for add-on content), then
+    int nroots;              // the mods' on, top first
+    Replaced *replaced;
+    int nreplaced;
     Patch patches[8];
     int npatches;
     Overlay *ov;
@@ -76,6 +87,12 @@ RT_ON_RESET(fs_reset) {
         }
         for (int i = 0; i < m->npatches; i++) free(m->patches[i].data);  // (ov_meta and the extended table are among these)
         for (int i = 0; i < m->rom_nfiles; i++) free(m->rom_files[i].path);
+        for (int r = 0; r < m->nroots; r++) {
+            for (int i = 0; i < m->roots[r].nfiles; i++) free(m->roots[r].files[i]);
+            free(m->roots[r].files), free(m->roots[r].dir);
+        }
+        for (int i = 0; i < m->nreplaced; i++) free(m->replaced[i].host);
+        free(m->replaced);
         free(m->ov), free(m->rom_files), free(m->grown), free(m->rstb_blob), free(m->hud_pack), free(m->voice_banks);
         romfs_image_close(m->img);
         *m = (RomImage){0};
@@ -91,14 +108,76 @@ static const char *overlay_dir(void) {
     return e && *e ? e : NULL;
 }
 
-// Host path of the overlay's replacement for RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml"); an
-// add-on content's files are in the folder's aoc/0010/
-static bool overlay_file(const char *path, char *out, size_t cap) {
-    const char *dir = overlay_dir();
-    if (!dir) return false;
-    snprintf(out, cap, "%s/%s%s", dir, R->ov_sub ? R->ov_sub : "", path);
-    struct stat sb;
-    return stat(out, &sb) == 0 && S_ISREG(sb.st_mode);
+static int path_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+
+// The first of R's roots with RomFS file `path` (relative, e.g. "Actor/ActorInfo.product.sbyml") from `from` on, its
+// host path in out; -1: none
+static int root_find(const char *path, int from, char *out, size_t cap) {
+    for (int r = from; r < R->nroots; r++) {
+        if (!bsearch(&path, R->roots[r].files, R->roots[r].nfiles, sizeof(char *), path_cmp)) continue;
+        snprintf(out, cap, "%s/%s", R->roots[r].dir, path);
+        return r;
+    }
+    return -1;
+}
+
+// Host path of the overlay folder's or a mod's replacement for RomFS file `path`
+static bool overlay_file(const char *path, char *out, size_t cap) { return root_find(path, 0, out, cap) >= 0; }
+
+static void root_walk(Root *rt, const char *rel, int depth, int *cap) {
+    char dirp[1400];
+    snprintf(dirp, sizeof dirp, "%s%s%s", rt->dir, rel[0] ? "/" : "", rel);
+    DIR *d = depth < 24 ? opendir(dirp) : NULL;
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        if (!rel[0] && R == &images[0] && !strcmp(e->d_name, "aoc")) continue;  // (the add-on contents' files)
+        char r2[1024], h2[1400];
+        snprintf(r2, sizeof r2, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
+        snprintf(h2, sizeof h2, "%s/%s", rt->dir, r2);
+        struct stat sb;
+        if (stat(h2, &sb)) continue;
+        if (S_ISDIR(sb.st_mode)) { root_walk(rt, r2, depth + 1, cap); continue; }
+        if (!S_ISREG(sb.st_mode)) continue;
+        if (!rel[0] && rt->mod >= 0) continue;  // (the RomFS root has no files: a mod's readme or picture beside its folders)
+        if (rt->nfiles == *cap) { *cap = *cap ? *cap * 2 : 64; rt->files = realloc(rt->files, sizeof *rt->files * *cap); }
+        rt->files[rt->nfiles++] = strdup(r2);
+    }
+    closedir(d);
+}
+
+static void root_add(const char *dir, int mod) {
+    if (R->nroots == ROOTS_MAX) { LOG("[mods] more than %d mods: the ones below are left out\n", ROOTS_MAX - 1); return; }
+    Root *rt = &R->roots[R->nroots++];
+    *rt = (Root){strdup(dir), mod, NULL, 0, 0, 0, 0};
+    int cap = 0;
+    root_walk(rt, "", 0, &cap);
+    qsort(rt->files, rt->nfiles, sizeof *rt->files, path_cmp);
+}
+
+// R's roots: the overlay folder, then the mods on (image k: 0 the game's, n add-on content n)
+static void roots_build(int k) {
+    if (overlay_dir()) {
+        char d[1100];
+        snprintf(d, sizeof d, "%s%s", overlay_dir(), k ? "/aoc/0010" : "");  // (as on the Wii U)
+        root_add(d, -1);
+    }
+    const char *dirs[ROOTS_MAX];
+    int mod[ROOTS_MAX];
+    int n = mods_roots(k, dirs, mod, ROOTS_MAX);
+    for (int i = 0; i < n; i++) root_add(dirs[i], mod[i]);
+}
+
+// What each mod's files did in R, into the Mods tab's counts and the log
+static void roots_report(void) {
+    for (int r = 0; r < R->nroots; r++) {
+        const Root *rt = &R->roots[r];
+        if (rt->mod < 0) continue;
+        mods_note(rt->mod, rt->replaced, rt->added, rt->shadowed);
+        LOG("[mods] %s%s: %d game files replaced, %d added, %d left to a folder above it\n", rt->dir,
+            R == &images[0] ? "" : " (add-on content)", rt->replaced, rt->added, rt->shadowed);
+    }
 }
 
 static int rom_cmp(const void *a, const void *b) {
@@ -133,37 +212,14 @@ static uint32_t romfs_hash(uint32_t parent, const char *name, uint32_t len) {
     return hash;
 }
 
-static int path_cmp(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
+typedef struct { const char *rel; char host[1400]; uint64_t size; int root; } NewFile;
 
-typedef struct { char rel[1024]; char host[1200]; uint64_t size; } NewFile;
-
-static void walk_new(const char *root, const char *rel, char **known, int nknown, NewFile **out, int *n, int *cap) {
-    char dirp[1200];
-    snprintf(dirp, sizeof dirp, "%s/%s", root, rel);
-    DIR *d = opendir(dirp);
-    if (!d) return;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.') continue;
-        if (!rel[0] && R == &images[0] && !strcmp(e->d_name, "aoc")) continue;  // (the add-on contents' files)
-        char r2[1024], h2[1200];
-        snprintf(r2, sizeof r2, "%s%s%s", rel, rel[0] ? "/" : "", e->d_name);
-        snprintf(h2, sizeof h2, "%s/%s", root, r2);
-        struct stat sb;
-        if (stat(h2, &sb)) continue;
-        if (S_ISDIR(sb.st_mode)) { walk_new(root, r2, known, nknown, out, n, cap); continue; }
-        const char *key = r2;
-        if (bsearch(&key, known, nknown, sizeof *known, path_cmp)) continue;  // replaces an existing file
-        if (*n == *cap) { *cap = *cap ? *cap * 2 : 64; *out = realloc(*out, sizeof **out * *cap); }
-        strlcpy((*out)[*n].rel, r2, sizeof (*out)[*n].rel);
-        strlcpy((*out)[*n].host, h2, sizeof (*out)[*n].host);
-        (*out)[*n].size = (uint64_t)sb.st_size;
-        (*n)++;
-    }
-    closedir(d);
+static int new_cmp(const void *a, const void *b) {  // (by path, then root: the first of a path is the one served)
+    const NewFile *x = a, *y = b;
+    int c = strcmp(x->rel, y->rel);
+    return c ? c : x->root - y->root;
 }
 
-// directory entry offset for "a/b/c" (NULL-terminated walk from the root, offset 0), -1 if missing
 static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
     uint32_t cur = 0;
     char buf[1024];
@@ -184,17 +240,32 @@ static int64_t dir_lookup(const uint8_t *dm, uint64_t dsz, const char *path) {
 }
 
 static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz, uint64_t fsz) {
-    if (!overlay_dir()) return;
-    char root[1100];
-    snprintf(root, sizeof root, "%s/%s", overlay_dir(), R->ov_sub ? R->ov_sub : "");
+    if (!R->nroots) return;
     char **known = malloc(sizeof *known * R->rom_nfiles);
     for (int i = 0; i < R->rom_nfiles; i++) known[i] = R->rom_files[i].path;
     qsort(known, R->rom_nfiles, sizeof *known, path_cmp);
     NewFile *nf = NULL;
     int n = 0, cap = 0;
-    walk_new(root, "", known, R->rom_nfiles, &nf, &n, &cap);
+    for (int r = 0; r < R->nroots; r++)
+        for (int i = 0; i < R->roots[r].nfiles; i++) {
+            const char *rel = R->roots[r].files[i];
+            if (bsearch(&rel, known, R->rom_nfiles, sizeof *known, path_cmp)) continue;  // (replaces a game file)
+            if (n == cap) { cap = cap ? cap * 2 : 64; nf = realloc(nf, sizeof *nf * cap); }
+            NewFile *x = &nf[n++];
+            x->rel = rel, x->root = r, x->size = 0;
+            snprintf(x->host, sizeof x->host, "%s/%s", R->roots[r].dir, rel);
+            struct stat sb;
+            if (!stat(x->host, &sb)) x->size = (uint64_t)sb.st_size;
+        }
     free(known);
-    if (!n) return;
+    qsort(nf, n, sizeof *nf, new_cmp);
+    int kept = 0;
+    for (int i = 0; i < n; i++) {
+        if (kept && !strcmp(nf[kept - 1].rel, nf[i].rel)) { R->roots[nf[i].root].shadowed++; continue; }
+        nf[kept++] = nf[i];
+    }
+    n = kept;
+    if (!n) { free(nf); return; }
     R->rom_files = realloc(R->rom_files, sizeof(RomFile) * (R->rom_nfiles + n));
     uint64_t hoff = h[5], hsz = h[6];
     uint8_t *dcopy = malloc(dsz), *hcopy = malloc(hsz), *head = malloc(0x50);
@@ -228,7 +299,7 @@ static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz,
         const char *name = slash ? slash + 1 : nf[i].rel;
         if (slash) *slash = 0; else dirp[0] = 0;
         int64_t dir = dir_lookup(dcopy, dsz, dirp);
-        if (dir < 0) { LOG("[fs] overlay file %s: directory not in the game's RomFS, skipped\n", nf[i].rel); continue; }
+        if (dir < 0) { LOG("[fs] overlay file %s: directory not in the game's RomFS, skipped\n", nf[i].host); continue; }
         uint32_t nl = (uint32_t)strlen(name), d32 = (uint32_t)dir, entry = (uint32_t)o, child;
         memcpy(&child, dcopy + dir + 0xC, 4);  // dir's first file -> becomes our sibling
         uint64_t rel = data_at - R->rom_data_off, size = nf[i].size;
@@ -249,7 +320,9 @@ static void add_new_files(const uint64_t *h, const uint8_t *dmeta, uint64_t dsz,
         R->rom_files[R->rom_nfiles++] = (RomFile){data_at, size, strdup(nf[i].rel), entry};
         data_at = (data_at + size + 0xF) & ~0xFull;
         added++;
+        R->roots[nf[i].root].added++;
     }
+    free(nf);
     // the new table goes before the new data (keep the overlay list sorted by start)
     if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
     memmove(R->ov + (R->ov_n - added) + 1, R->ov + (R->ov_n - added), sizeof *R->ov * added);
@@ -852,34 +925,94 @@ static void rstb_name(const char *path, char *out, size_t cap) {
     if (dot && dot[1] == 's' && strcmp(dot, ".sarc") && !strchr(dot, '/')) memmove(dot + 1, dot + 2, strlen(dot + 2) + 1);
 }
 
+// A file's size unpacked: a Yaz0 file's from its header, else its own (head: its first 8 bytes)
+static uint64_t unpacked_size(const uint8_t *head, uint64_t size) {
+    if (size < 8 || memcmp(head, "Yaz0", 4)) return size;
+    return (uint64_t)head[4] << 24 | head[5] << 16 | head[6] << 8 | head[7];
+}
+
+// Mods' files bigger than the game's need bigger ResourceSizeTable entries (the game sizes their memory from it, and a
+// file bigger than its entry is not loaded). The tables mods bring (the overlay folder's too) are merged into the game's,
+// each entry at the larger size (rstb_botw.h); an entry no table raised grows by what the file grew unpacked. A file the
+// game's table has no entry for (most a mod adds) the game sizes from the file, as it does its own.
+static void rstb_mods(uint8_t **d, size_t *n, const char *rstb_path) {
+    int tables = 0, raised = 0, added = 0, grown = 0;
+    uint64_t grew = 0;
+    size_t on = *n;
+    uint8_t *orig = malloc(on);
+    memcpy(orig, *d, on);
+    for (int r = 0; r < R->nroots; r++) {
+        char host[1400];
+        if (root_find(rstb_path, r, host, sizeof host) != r) continue;
+        FILE *f = fopen(host, "rb");
+        uint8_t *z = NULL, *t = NULL, *m = NULL;
+        size_t zn = 0, tn = 0, mn = 0;
+        if (f && !fseek(f, 0, SEEK_END) && (zn = (size_t)ftell(f)) > 0 && !fseek(f, 0, SEEK_SET) && (z = malloc(zn)) &&
+            fread(z, 1, zn, f) == zn)
+            t = yaz0_unpack(z, zn, &tn);
+        if (f) fclose(f);
+        if (t) m = rstb_merge(*d, *n, t, tn, &mn, &raised, &added);
+        if (m) free(*d), *d = m, *n = mn, tables++;
+        else LOG("[mods] %s: not a ResourceSizeTable, left out\n", host);
+        free(z), free(t);
+    }
+    uint32_t ncrc, nname, oc, onm;
+    rstb_valid(*d, *n, &ncrc, &nname);
+    rstb_valid(orig, on, &oc, &onm);
+    for (int i = 0; i < R->nreplaced; i++) {
+        const RomFile *g = &R->rom_files[R->replaced[i].file];
+        if (!strcmp(g->path, rstb_path)) continue;
+        char name[1100];
+        rstb_name(g->path, name, sizeof name);
+        uint32_t *size = rstb_entry(*d, ncrc, nname, name), *was = rstb_entry(orig, oc, onm, name), v, w;
+        if (!size || !was) continue;
+        memcpy(&v, size, 4), memcpy(&w, was, 4);
+        if (v != w) continue;  // (a mod's table sized it)
+        uint8_t gh[8] = {0}, mh[8] = {0};
+        romfs_image_pread(R->img, gh, g->size < 8 ? g->size : 8, g->off);
+        FILE *f = fopen(R->replaced[i].host, "rb");
+        if (f) { if (fread(mh, 1, sizeof mh, f)) {} fclose(f); }
+        uint64_t gs = unpacked_size(gh, g->size), ms = unpacked_size(mh, R->replaced[i].host_size);
+        if (ms <= gs) continue;
+        uint32_t grow = (uint32_t)((ms - gs + 31) & ~31ull) + 32;
+        v += grow;
+        memcpy(size, &v, 4);
+        grown++, grew += grow;
+    }
+    free(orig);
+    if (tables || grown)
+        LOG("[mods] ResourceSizeTable: %d tables of mods merged (%d entries raised, %d added), %d entries grown with "
+            "their files (%llu KB)\n", tables, raised, added, grown, (unsigned long long)(grew >> 10));
+}
+
 static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
-    if (!game_is_botw()) return;
+    if (!game_is_botw()) {
+        if (R->nreplaced && R->nroots && R->roots[R->nroots - 1].mod >= 0)  // (TotK's table is another format)
+            LOG("[mods] the ResourceSizeTable is not adjusted for this game's mods\n");
+        return;
+    }
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";
     bool merged = R == &images[0] && romfs_has_dlc_merged();
-    if (!R->ngrown && !merged) return;
+    if (!R->ngrown && !merged && !R->nreplaced) return;
     int k = 0;
     while (k < R->rom_nfiles && strcmp(R->rom_files[k].path, rstb_path)) k++;
-    char host[1200];
     if (k == R->rom_nfiles && R != &images[0]) {  // (an add-on content's voices are streams: sized from the file)
-        LOG("[fs] voices: %d bigger files, none in a ResourceSizeTable\n", R->ngrown);
+        if (R->ngrown) LOG("[fs] voices: %d bigger files, none in a ResourceSizeTable\n", R->ngrown);
         return;
     }
-    if (k == R->rom_nfiles) { LOG("[fs] voices: no %s, %d bigger banks left as they are\n", rstb_path, R->ngrown); return; }
-    if (overlay_file(rstb_path, host, sizeof host)) {
-        LOG("[fs] voices: the overlay folder replaces the ResourceSizeTable: %d bigger banks left to it\n", R->ngrown);
-        return;
-    }
+    if (k == R->rom_nfiles) { LOG("[fs] no %s: %d bigger voice banks and the mods' files left as they are\n", rstb_path, R->ngrown); return; }
     size_t zn = R->rom_files[k].size, n = 0;
     uint8_t *z = malloc(zn), *d = NULL;
     if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) d = yaz0_unpack(z, zn, &n);
     free(z);
     uint32_t ncrc = 0, nname = 0;
-    if (d && n >= 12) memcpy(&ncrc, d + 4, 4), memcpy(&nname, d + 8, 4);
-    if (!d || memcmp(d, "RSTB", 4) || 12 + (uint64_t)ncrc * 8 + (uint64_t)nname * 132 > n) {
-        LOG("[fs] voices: ResourceSizeTable not as expected, %d bigger banks left as they are\n", R->ngrown);
+    if (!d || !rstb_valid(d, n, &ncrc, &nname)) {
+        LOG("[fs] ResourceSizeTable not as expected: %d bigger voice banks and the mods' files left as they are\n", R->ngrown);
         free(d);
         return;
     }
+    rstb_mods(&d, &n, rstb_path);
+    rstb_valid(d, n, &ncrc, &nname);
     int changed = 0, dlc_changed = 0;
     uint64_t added = 0, dlc_added = 0;
     for (int g = 0; g < R->ngrown; g++) {
@@ -1042,10 +1175,15 @@ static void rom_index(void) {
     // Overlay: replacement files are served from the overlay folder. The file-meta table is patched
     // (in a copy) to point them at data appended past the end of the image; reads there go to host files.
     for (int i = 0; i < R->rom_nfiles; i++) {
-        char host[1200];
-        if (!overlay_file(R->rom_files[i].path, host, sizeof host)) continue;
+        char host[1400], below[1400];
+        int r = root_find(R->rom_files[i].path, 0, host, sizeof host);
+        if (r < 0) continue;
         struct stat sb;
         if (stat(host, &sb)) continue;
+        R->roots[r].replaced++;
+        for (int b = r + 1; (b = root_find(R->rom_files[i].path, b, below, sizeof below)) >= 0; b++) R->roots[b].shadowed++;
+        R->replaced = realloc(R->replaced, sizeof *R->replaced * (R->nreplaced + 1));
+        R->replaced[R->nreplaced++] = (Replaced){i, (uint64_t)sb.st_size, strdup(host)};
         meta_copy(fmeta, foff, fsz);
         uint64_t rel = R->ov_end - R->rom_data_off, size = (uint64_t)sb.st_size;
         memcpy(R->ov_meta + R->rom_files[i].meta + 8, &rel, 8);
@@ -1232,9 +1370,10 @@ static Service *open_image(int k, const char *dir, const char *name) {
         }
         LOG("[fs] romfs image %s: %llu MB, laid out in %.2f s\n", dir, (unsigned long long)(romfs_image_size(m->img) >> 20),
             (plat_now_ns() - t0) / 1e9);
-        m->ov_sub = k ? "aoc/0010/" : "";  // (the add-on content's place in a mod's folder, as on the Wii U)
         R = m;
+        roots_build(k);
         rom_index();
+        roots_report();
         R = &images[0];
     }
     Storage *st = calloc(1, sizeof *st);

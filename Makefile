@@ -455,6 +455,15 @@ test-hostroom: $(B)/test_hostroom
 
 .PHONY: test-hostroom
 
+$(B)/test_mods: tools/test_mods.c runtime/mods_scan.h runtime/services/rstb_botw.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -o $@ tools/test_mods.c
+
+test-mods: $(B)/test_mods
+	$(B)/test_mods
+
+.PHONY: test-mods
+
 # The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
 $(B)/test_input_focus: tools/test_input_focus.c tools/test_pointer_disabled.h runtime/hle/input.c $(RT_HDRS)
 	@mkdir -p $(B)

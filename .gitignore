@@ -38,3 +38,6 @@ tools/ghidra/gq.local.json
 docs/RAMAS.md
 # the player's own colour LUTs (runtime/color_grade.h): in the data root, which is the checkout in a source build
 /luts/
+# the player's mods and their order (runtime/mods.h): in the data root too
+/mods/
+/mods.ini

@@ -35,6 +35,7 @@ extern "C" {
 #include "../window_size.h"
 extern "C" {
 #include "../language.h"
+#include "../mods.h"
 }
 #include "menu.h"
 void input_reset(void);
@@ -1045,6 +1046,65 @@ static void tab_quit(float scale, bool in_game) {
     opt_end();
 }
 
+void reveal_folder(const std::string &dir);  // launcher.mm: Explorer / Finder / the file manager
+
+// Mods (runtime/mods.h): the mods folder's list, top first. A selects a mod: its switch and arrows show under it.
+// Changes are saved at once and used when the game next opens its files.
+static void tab_mods(float scale, bool in_game) {
+    static int sel = -1;
+    opt_begin("##mods", scale);
+    opt_section("Mods");
+    char d[1400];
+    snprintf(d, sizeof d, tr("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as "
+                             "emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents "
+                             "layout). A folder whose name starts with _ is left out."), mods_folder());
+    if (opt_action("Open mods folder", "", d)) reveal_folder(mods_folder());
+    if (opt_action("Look for new mods", "", "Reads the mods folder again, for mods copied in while Savage Wind is running."))
+        mods_rescan(), sel = -1;
+    if (in_game && mods_changed())
+        ImGui::TextWrapped("%s", tr("Changes apply at the next start."));
+    opt_section("Order (the top mod wins a file two mods change)");
+    int n = mods_count();
+    if (!n) {
+        opt_disable_next();
+        opt_action("No mods yet", "", "There are no mods in the mods folder yet.");
+    }
+    for (int i = 0; i < n; i++) {
+        Mod m;
+        if (!mods_get(i, &m)) break;
+        const char *value = m.problem != MOD_OK ? tr("Not used") : m.on ? tr("On") : tr("Off");
+        char desc[1200];
+        if (m.problem == MOD_OTHER_GAME)
+            snprintf(desc, sizeof desc, tr("Made for another game (title %s)."), m.other_title);
+        else if (m.problem == MOD_CODE_ONLY)
+            snprintf(desc, sizeof desc, "%s", tr("It has only code patches (exefs, cheats): the game is recompiled ahead of "
+                                                 "time, so they can't be loaded."));
+        else if (m.problem == MOD_EMPTY)
+            snprintf(desc, sizeof desc, "%s", tr("No game files in it. Check where its romfs folder is."));
+        else {
+            int k = snprintf(desc, sizeof desc, tr("Files found in: %s."), m.layout);
+            if (m.aoc) k += snprintf(desc + k, sizeof desc - k, " %s", tr("It changes add-on content files too."));
+            if (m.counted)
+                k += snprintf(desc + k, sizeof desc - k, tr("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it."),
+                              m.replaced, m.added, m.shadowed);
+            if (m.code) snprintf(desc + k, sizeof desc - k, "\n\n%s", tr("Its code patches (exefs, cheats) are not loaded."));
+        }
+        if (opt_action(m.name, value, desc, false)) sel = sel == i ? -1 : i;
+        if (sel != i) continue;
+        opt_indent(1);
+        bool on = m.on;
+        if (m.problem != MOD_OK) opt_disable_next();
+        if (opt_toggle("Use this mod", &on, true, "Switches the mod on or off.") && m.problem == MOD_OK) mods_set_on(i, on);
+        if (i == 0) opt_disable_next();
+        if (opt_action("Move up", "", "Moves the mod up: it wins over the mods below it.") && i > 0) mods_move(i, -1), sel = i - 1;
+        if (i == n - 1) opt_disable_next();
+        if (opt_action("Move down", "", "Moves the mod down: the mods above it win over it.") && i < n - 1)
+            mods_move(i, 1), sel = i + 1;
+        opt_indent(-1);
+    }
+    opt_end();
+}
+
 static void tab_about(void) {
     header("Movement");
     toggle("D-pad as left stick", &g_settings.dpad_move);
@@ -1307,9 +1367,9 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
     Tab tabs[11];
     int ntabs = 0;
     if (prelaunch) tabs[ntabs++] = {"Prelaunch", -1, true};
-    // (ids 4-7 were Link's Awakening tabs; the ids stay: test hooks)
-    static const char *names[] = {"Video", "Audio", "Language", "Saves", "", "", "", "", "Controls", "Quit"};
-    static const int order[] = {8, 0, 1, 2, 3, 9};  // Controls, Video, Audio, Language, Saves, Quit
+    // (ids 5-7 were Link's Awakening tabs, 4 too before Mods; the ids stay: test hooks)
+    static const char *names[] = {"Video", "Audio", "Language", "Saves", "Mods", "", "", "", "Controls", "Quit"};
+    static const int order[] = {8, 0, 1, 2, 3, 4, 9};  // Controls, Video, Audio, Language, Saves, Mods, Quit
     for (int i : order) {  // (Quit: in game only - the start screen has its own QUIT; Saves: on the start screen only,
         if (i == 9 && prelaunch) continue;  //  the game must not be running while its saves change)
         if (i == 3 && (!prelaunch || !game_is_botw())) continue;  // (the save format here is BOTW's)
@@ -1393,6 +1453,7 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                 case 1: tab_audio(); break;
                 case 2: tab_language(in_game); break;
                 case 3: saves_tab_draw(); break;
+                case 4: tab_mods(scale, in_game); break;
                 case 8: tab_about(); break;
                 case 9: tab_quit(scale, in_game); break;
                 }
