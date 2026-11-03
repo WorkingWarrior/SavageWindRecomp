@@ -187,6 +187,8 @@ extern "C" bool menu_input_captured(void) {
 
 // Esc opens the game's pause screen or backs out of a menu. F2 frees the mouse cursor; a click in the
 // window holds it again (runtime/hle/input.c).
+// The menu opens with F1 (Back + Start or Guide on a controller) in either game; Esc opens it too where the game has
+// no Options screen of Savage Wind's (TotK, or SAVAGEWIND_OVERLAY): in BOTW Esc stays the game's
 static bool overlay_enabled(void) {
     static const bool on = getenv("SAVAGEWIND_OVERLAY") && *getenv("SAVAGEWIND_OVERLAY") != '0';
     return on || !game_is_botw();  // (only BOTW has the game's own Options screen to take its place)
@@ -280,8 +282,8 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         if (!e->key.repeat && (e->key.scancode == SDL_SCANCODE_F1 ||
                                (!pc_cursor_enabled() && e->key.scancode == SDL_SCANCODE_ESCAPE && !g_open.load()))) {
-            if (!overlay_enabled()) {
-                if (e->key.scancode == (pc_cursor_enabled() ? SDL_SCANCODE_F2 : SDL_SCANCODE_ESCAPE) && !typing) g_cursor_free = !g_cursor_free.load();
+            if (e->key.scancode != SDL_SCANCODE_F1 && !overlay_enabled()) {  // (Esc, the mouse pointer off)
+                if (!typing) g_cursor_free = !g_cursor_free.load();
                 return true;
             }
             if (!typing) set_open(!g_open.load());  // (Esc with the menu open goes to ImGui below: it cancels a field)
@@ -332,7 +334,7 @@ bool menu_handle_event(const SDL_Event *e) {
         bool down = e->type == SDL_EVENT_GAMEPAD_BUTTON_DOWN;
         if (e->gbutton.button == SDL_GAMEPAD_BUTTON_BACK) back_down = down;
         if (e->gbutton.button == SDL_GAMEPAD_BUTTON_START) start_down = down;
-        if (down && !typing && overlay_enabled() &&
+        if (down && !typing &&
             ((back_down && start_down) || e->gbutton.button == SDL_GAMEPAD_BUTTON_GUIDE)) {
             set_open(!g_open.load());
             return true;
@@ -1070,6 +1072,54 @@ static void desc_add(char *d, size_t cap, int *k, const char *fmt, ...) {
     if (w > 0) *k = (size_t)(*k + w) < cap - 1 ? *k + w : (int)cap - 1;
 }
 
+// A mod's description
+static void mod_describe(const Mod *m, char *desc, size_t cap) {
+    if (m->problem == MOD_OTHER_GAME)
+        snprintf(desc, cap, tr("Made for another game (title %s)."), m->other_title);
+    else if (m->problem == MOD_EMPTY)
+        snprintf(desc, cap, "%s", tr("No game files, ExeFS patches or cheats in it. Check where its romfs or exefs folder is."));
+    else {
+        int k = 0;
+        desc[0] = 0;
+        if (m->layout[0]) desc_add(desc, cap, &k, tr("Files found in: %s."), m->layout);
+        else desc_add(desc, cap, &k, "%s", m->exefs && m->cheats ? tr("No game files: ExeFS patches and cheats only.")
+                                                   : m->exefs ? tr("No game files: ExeFS patches only.")
+                                                             : tr("No game files: cheats only."));
+        if (m->aoc) desc_add(desc, cap, &k, " %s", tr("It changes add-on content files too."));
+        if (m->counted)
+            desc_add(desc, cap, &k, tr("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it."),
+                          m->replaced, m->added, m->shadowed);
+        if (m->exefs) {
+            desc_add(desc, cap, &k, "\n\n%s", tr("ExeFS patches: the game's code is recompiled ahead of "
+                                                                   "time, so only what they change in its data works."));
+            if (m->patch_files)
+                desc_add(desc, cap, &k, tr(" This run: %d changes to data applied, %d to code left out."),
+                              m->patch_data, m->patch_code);
+            else if (m->in_run)
+                desc_add(desc, cap, &k, " %s", tr("None of them is for this game's version."));
+        }
+        if (m->cheats) {
+            desc_add(desc, cap, &k, "\n\n%s", tr("Cheats: each one has a switch of its own, off until you switch it on. "
+                                                 "They work at once, whatever the mod's switch."));
+            if (m->cheat_files) {
+                desc_add(desc, cap, &k, m->cheat_files > 1 ? tr(" %d cheats in %d files.")
+                                                   : m->cheat_count != 1 ? tr(" %d cheats in 1 file.")
+                                                                       : tr(" 1 cheat in 1 file."),
+                         m->cheat_count, m->cheat_files);
+                desc_add(desc, cap, &k, tr(" On: %d."), m->cheat_on);
+            } else if (!m->cheats_checked)
+                desc_add(desc, cap, &k, " %s", tr("They are listed once the game is running."));
+            else
+                desc_add(desc, cap, &k, " %s", tr("None of its cheat files is for this game's version."));
+            if (m->cheat_code)
+                desc_add(desc, cap, &k, " %s", tr("Some change the game's code, which is recompiled: "
+                                                                    "those cheats are left out."));
+            if (m->cheat_bad)
+                desc_add(desc, cap, &k, " %s", tr("They stopped at a code Savage Wind can't run."));
+        }
+    }
+}
+
 // Mods (runtime/mods.h): the mods folder's list, top first. A selects a mod: its switch and arrows show under it.
 // Changes are saved at once and used when the game next opens its files.
 static void tab_mods(float scale, bool in_game) {
@@ -1096,57 +1146,34 @@ static void tab_mods(float scale, bool in_game) {
         if (!mods_get(i, &m)) break;
         const char *value = m.problem != MOD_OK ? tr("Not used") : m.on ? tr("On") : tr("Off");
         char desc[1200];
-        if (m.problem == MOD_OTHER_GAME)
-            snprintf(desc, sizeof desc, tr("Made for another game (title %s)."), m.other_title);
-        else if (m.problem == MOD_EMPTY)
-            snprintf(desc, sizeof desc, "%s", tr("No game files, ExeFS patches or cheats in it. Check where its romfs or exefs folder is."));
-        else {
-            int k = 0;
-            desc[0] = 0;
-            if (m.layout[0]) desc_add(desc, sizeof desc, &k, tr("Files found in: %s."), m.layout);
-            else desc_add(desc, sizeof desc, &k, "%s", m.exefs && m.cheats ? tr("No game files: ExeFS patches and cheats only.")
-                                                       : m.exefs ? tr("No game files: ExeFS patches only.")
-                                                                 : tr("No game files: cheats only."));
-            if (m.aoc) desc_add(desc, sizeof desc, &k, " %s", tr("It changes add-on content files too."));
-            if (m.counted)
-                desc_add(desc, sizeof desc, &k, tr("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it."),
-                              m.replaced, m.added, m.shadowed);
-            if (m.exefs) {
-                desc_add(desc, sizeof desc, &k, "\n\n%s", tr("ExeFS patches: the game's code is recompiled ahead of "
-                                                                       "time, so only what they change in its data works."));
-                if (m.patch_files)
-                    desc_add(desc, sizeof desc, &k, tr(" This run: %d changes to data applied, %d to code left out."),
-                                  m.patch_data, m.patch_code);
-                else if (m.in_run)
-                    desc_add(desc, sizeof desc, &k, " %s", tr("None of them is for this game's version."));
-            }
-            if (m.cheats) {
-                desc_add(desc, sizeof desc, &k, "\n\n%s", tr("Cheats: all of them run while the mod is on, switched at once."));
-                if (m.cheat_files)
-                    desc_add(desc, sizeof desc, &k, m.cheat_files > 1 ? tr(" %d cheats in %d files.")
-                                                       : m.cheat_count != 1 ? tr(" %d cheats in 1 file.")
-                                                                           : tr(" 1 cheat in 1 file."),
-                             m.cheat_count, m.cheat_files);
-                else if (m.cheats_checked)
-                    desc_add(desc, sizeof desc, &k, " %s", tr("None of its cheat files is for this game's version."));
-                if (m.cheat_code)
-                    desc_add(desc, sizeof desc, &k, " %s", tr("Some change the game's code, which is recompiled: "
-                                                                        "those cheats are left out."));
-                if (m.cheat_bad)
-                    desc_add(desc, sizeof desc, &k, " %s", tr("They stopped at a code Savage Wind can't run."));
-            }
-        }
+        mod_describe(&m, desc, sizeof desc);
         if (opt_action(m.name, value, desc, false)) sel = sel == i ? -1 : i;
         if (sel != i) continue;
         opt_indent(1);
         bool on = m.on;
         if (m.problem != MOD_OK) opt_disable_next();
-        if (opt_toggle("Use this mod", &on, true, "Switches the mod on or off.") && m.problem == MOD_OK) mods_set_on(i, on);
+        if ((m.problem != MOD_OK || m.layout[0] || m.exefs) &&  // (a mod of cheats alone: they have their own switches)
+            opt_toggle("Use this mod", &on, true, m.cheats ? "Switches its game files on or off. Its cheats have switches of their own."
+                                                           : "Switches the mod on or off.") && m.problem == MOD_OK)
+            mods_set_on(i, on);
         if (i == 0) opt_disable_next();
         if (opt_action("Move up", "", "Moves the mod up: it wins over the mods below it.") && i > 0) mods_move(i, -1), sel = i - 1;
         if (i == n - 1) opt_disable_next();
         if (opt_action("Move down", "", "Moves the mod down: the mods above it win over it.") && i < n - 1)
             mods_move(i, 1), sel = i + 1;
+        for (int j = 0, nc = mods_cheat_count(i); j < nc; j++) {  // its cheats, each switched at once
+            ModCheat c;
+            if (!mods_cheat_get(i, j, &c)) break;
+            ImGui::PushID(j);
+            if (!c.usable) opt_disable_next();
+            const char *why = c.code ? tr("It changes the game's code, which is recompiled: it can't work here.")
+                            : !c.usable ? tr("One of its codes isn't 8 hex digits: it is left out.")
+                            : c.stopped ? tr("Its file's cheats stopped at a code Savage Wind can't run. Switch one off or on to try again.")
+                                        : tr("A cheat from this mod's file. It works at once.");
+            if (opt_action(c.name, !c.usable ? tr("Not used") : tr(c.on ? "On" : "Off"), why, false) && c.usable)
+                mods_cheat_set(i, j, !c.on);
+            ImGui::PopID();
+        }
         opt_indent(-1);
     }
     opt_end();

@@ -325,16 +325,22 @@ void mods_exefs_apply(Module *m, const char *build_id) {
     pthread_mutex_unlock(&lock);
 }
 
-// ---- cheats: every mod's in the list, loaded once the game's build id is known (and files found later by a rescan);
-// each file's run while its mod is on, switched at once
+// ---- cheats: every mod's in the list, loaded once the game's build id is known (and files found later by a rescan).
+// Each cheat has a switch of its own, off until the player switches it on (kept in cheats.ini in the mods folder: a
+// line "<mod>\t<cheat>" per cheat on), apart from its mod's switch, which is for its game files. A file runs as one
+// program, as Atmosphere loads it: its master codes, then its cheats on, in the file's order; none on, nothing runs.
+enum { CH_OK, CH_BROKEN, CH_CODE };  // a cheat: usable, a code that isn't 8 hex digits, it patches the game's code
 typedef struct {
     char mod[256];
-    uint32_t *op, n;  // the file's codes: master, then the rest
-    int count;
+    Cheat *cheat;           // the file's cheats, in its order
+    uint8_t *state;         // CH_* each
+    bool *on;               // each one's switch (the lock; masters: unused)
+    int k, count;           // how many; the usable ones that aren't master codes
+    uint32_t *op, n;        // the codes run (the lock: made again at a switch, gen counted up)
+    unsigned gen, ran_gen;  // (ran_gen: the cheat thread's, the codes it last ran)
     CheatVm vm;
-    bool on;     // its mod is on (the lock)
-    int rank;    // its mod's place in the list, top 0 (the lock)
-    _Atomic bool stopped, code;  // (the cheat thread)
+    int rank;               // its mod's place in the list, top 0 (the lock)
+    _Atomic bool stopped, code;  // (the cheat thread; stopped: until the cheats on change)
 } CheatProg;
 static CheatProg **progs;
 static int nprogs;
@@ -342,6 +348,49 @@ static char cheat_bid[80];      // the main module's build id ("" before the loa
 static char (*seen)[1400];      // the cheat files read (loaded or not): a rescan reads only new ones
 static int nseen;
 #define PROGS_MAX 256
+static char cheat_file[1200];   // <folder>/cheats.ini
+static char (*cheat_keys)[330]; // its lines: the cheats on ("<mod>\t<cheat>")
+static int ncheat_keys = -1;    // (-1: not read yet)
+
+static void cheat_key(char *out, size_t cap, const char *mod, const char *name) { snprintf(out, cap, "%s\t%s", mod, name); }
+
+static void cheat_keys_read_locked(void) {
+    if (ncheat_keys >= 0) return;
+    snprintf(cheat_file, sizeof cheat_file, "%s/cheats.ini", folder);
+    ncheat_keys = 0;
+    FILE *f = fopen(cheat_file, "r");
+    char line[512];
+    while (f && fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (line[0] == '#' || !strchr(line, '\t')) continue;
+        cheat_keys = realloc(cheat_keys, sizeof *cheat_keys * (ncheat_keys + 1));
+        snprintf(cheat_keys[ncheat_keys++], sizeof *cheat_keys, "%s", line);
+    }
+    if (f) fclose(f);
+}
+
+static bool cheat_key_on(const char *key) {
+    for (int i = 0; i < ncheat_keys; i++)
+        if (!strcmp(cheat_keys[i], key)) return true;
+    return false;
+}
+
+// cheats.ini: the cheats on, of the files loaded, and the lines of the ones not loaded this run (another version's file,
+// a mod moved away) kept as they were
+static void cheat_keys_save_locked(void);
+
+// The codes a file runs: its master codes and its cheats on (none on: nothing)
+static void cheat_build_locked(CheatProg *g) {
+    bool any = false;
+    for (int j = 0; j < g->k; j++) any |= !g->cheat[j].master && g->state[j] == CH_OK && g->on[j];
+    g->n = 0;
+    for (int pass = 0; pass < 2 && any; pass++)  // (the master codes first)
+        for (int j = 0; j < g->k; j++)
+            if (g->cheat[j].master == !pass && g->state[j] == CH_OK && (g->cheat[j].master || g->on[j]))
+                memcpy(g->op + g->n, g->cheat[j].op, sizeof *g->op * g->cheat[j].n), g->n += g->cheat[j].n;
+    g->gen++;
+    g->stopped = false;
+}
 
 static bool cheat_rd(uint64_t a, void *b, size_t n) { return kernel_guest_copy(a, b, n, GUEST_READ); }
 
@@ -391,6 +440,8 @@ static void *cheat_thread(void *arg) {
     (void)arg;
     Module *main = loader_module("main");
     static CheatProg *run[PROGS_MAX];
+    static uint32_t *ops[PROGS_MAX], nops[PROGS_MAX];
+    static unsigned gens[PROGS_MAX];
     uint64_t next = plat_now_ns();
     for (;;) {
         next += 1000000000ull / 12;  // (twelve times a second, as Atmosphere and the emulators run them)
@@ -399,8 +450,14 @@ static void *cheat_thread(void *arg) {
         int k = 0;
         pthread_mutex_lock(&lock);
         for (int i = 0; i < nprogs; i++)
-            if (progs[i]->on && !progs[i]->stopped) run[k++] = progs[i];
+            if (progs[i]->n && !progs[i]->stopped) run[k++] = progs[i];
         qsort(run, k, sizeof *run, by_rank);
+        for (int i = 0; i < k; i++) {  // (a copy of the codes: a switch makes them again meanwhile)
+            CheatProg *p = run[i];
+            ops[i] = realloc(ops[i], sizeof **ops * (p->n ? p->n : 1));
+            memcpy(ops[i], p->op, sizeof **ops * p->n), nops[i] = p->n, gens[i] = p->gen;
+            if (p->ran_gen != p->gen) memset(p->vm.edge, 0, p->vm.nedge), p->ran_gen = p->gen;  // (other codes: no edges)
+        }
         pthread_mutex_unlock(&lock);
         CheatEnv e = {.base = {main ? main->base : MAIN_BASE, HEAP_BASE, ALIAS_BASE, GUEST_LO, 0},
                       .keys = input_game_buttons(), .rd = cheat_rd, .wr = cheat_wr, .log = cheat_log,
@@ -408,10 +465,12 @@ static void *cheat_thread(void *arg) {
         for (int i = 0; i < k; i++) {
             CheatProg *p = run[i];  // (never freed: a program stays while the program runs)
             cur = p, e.ctx = p;
-            int r = cheat_vm_run(&p->vm, p->op, p->n, &e);
+            int r = cheat_vm_run(&p->vm, ops[i], nops[i], &e);
             cheat_pause(p, false);
             if (r == CHEAT_DONE) continue;
-            p->stopped = true;
+            pthread_mutex_lock(&lock);
+            if (p->gen == gens[i]) p->stopped = true;  // (the cheats on changed meanwhile: those run next time)
+            pthread_mutex_unlock(&lock);
             LOG("[mods] %s: its cheats stopped (%s)\n", p->mod, r == CHEAT_BAD ? "a code that isn't one" : "a loop that never ends");
         }
     }
@@ -439,50 +498,134 @@ static void cheats_load_locked(const Entry *x) {
         if (k <= 0) { LOG("[mods] %s: no cheats in it\n", p); continue; }
         CheatProg *g = calloc(1, sizeof *g);
         snprintf(g->mod, sizeof g->mod, "%s", x->m.name);
-        g->op = malloc(sizeof *g->op * CHEAT_OPS_MAX * (k ? k : 1));
+        g->k = k;
+        g->cheat = malloc(sizeof *g->cheat * k), memcpy(g->cheat, c, sizeof *g->cheat * k);
+        g->state = calloc(k, 1), g->on = calloc(k, sizeof *g->on);
+        uint32_t total = 0;
+        for (int j = 0; j < k; j++) total += c[j].n;
+        g->op = malloc(sizeof *g->op * (total ? total : 1));
         // A cheat that patches the game's code is left out whole: what else it writes (code of its own put in a
         // free spot of the data) only makes sense with that patch, which a recompiled game can't take
-        static bool code[256];
         Module *main = loader_module("main");
         int broken = 0, coded = 0;
         for (int j = 0; j < k; j++) {
-            code[j] = !c[j].broken && main && cheat_writes_main(&c[j], main->text_off, main->text_off + ((main->text_size + 0xFFF) & ~0xFFFull));
-            broken += c[j].broken, coded += code[j];
+            bool code = !c[j].broken && main &&
+                        cheat_writes_main(&c[j], main->text_off, main->text_off + ((main->text_size + 0xFFF) & ~0xFFFull));
+            g->state[j] = c[j].broken ? CH_BROKEN : code ? CH_CODE : CH_OK;
+            broken += c[j].broken, coded += code;
+            g->count += !c[j].master && g->state[j] == CH_OK;
+            char key[330];
+            cheat_key(key, sizeof key, g->mod, c[j].name);
+            g->on[j] = cheat_key_on(key);
         }
-        for (int pass = 0; pass < 2; pass++)  // (the master code first)
-            for (int j = 0; j < k; j++)
-                if (c[j].master == !pass && !c[j].broken && !code[j])
-                    memcpy(g->op + g->n, c[j].op, sizeof *g->op * c[j].n), g->n += c[j].n;
-        g->count = k - broken;
         g->code = coded > 0;
-        cheat_vm_init(&g->vm, g->n);
+        cheat_vm_init(&g->vm, total);
+        cheat_build_locked(g);
         progs = realloc(progs, sizeof *progs * (nprogs + 1));
         progs[nprogs++] = g;
-        LOG("[mods] %s: %d cheats%s, %d of them changing the game's code (left out: recompiled)\n", p, g->count,
+        LOG("[mods] %s: %d cheats%s, %d of them changing the game's code (left out: recompiled)\n", p, k,
             broken ? ", some left out (a code that isn't 8 hex digits)" : "", coded);
         for (int j = 0; j < k; j++)
             if (c[j].broken) LOG("[mods]   [%s] left out: a code that isn't 8 hex digits\n", c[j].name);
-            else if (code[j]) LOG("[mods]   [%s] left out: it changes the game's code\n", c[j].name);
+            else if (g->state[j] == CH_CODE) LOG("[mods]   [%s] left out: it changes the game's code\n", c[j].name);
     }
     if (d) closedir(d);
 }
 
 // The list's mods' cheat files loaded (the ones not read yet: a file copied into a known mod comes in too), each
-// file switched as its mod is
+// file's rank its mod's place (a mod gone from the list: its cheats stop)
 static void cheats_sync_locked(void) {
     if (!cheat_bid[0]) return;
+    cheat_keys_read_locked();
     for (int i = 0; i < n; i++) {
         const Entry *x = &list[i];
         if (x->f.cheats[0] && x->m.problem == MOD_OK) cheats_load_locked(x);
     }
     for (int p = 0; p < nprogs; p++) {
         CheatProg *g = progs[p];
-        bool was = g->on;
-        g->on = false;
-        for (int i = 0; i < n; i++)
-            if (!strcmp(list[i].m.name, g->mod)) { g->on = list[i].m.on, g->rank = i; break; }
-        if (g->on != was) LOG("[mods] %s: its cheats %s\n", g->mod, g->on ? "on" : "off");
+        int r = -1;
+        for (int i = 0; i < n && r < 0; i++)
+            if (!strcmp(list[i].m.name, g->mod)) r = i;
+        if (r < 0 && g->n) {
+            for (int j = 0; j < g->k; j++) g->on[j] = false;
+            cheat_build_locked(g);
+        }
+        g->rank = r < 0 ? n : r;
     }
+}
+
+static void cheat_keys_save_locked(void) {
+    char tmp[1300];
+    snprintf(tmp, sizeof tmp, "%s.tmp", cheat_file);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    fprintf(f, "# Savage Wind cheats switched on, a line each: <mod>\t<cheat>\n");
+    char key[330];
+    for (int i = 0; i < ncheat_keys; i++) {  // (the ones of files not loaded this run)
+        bool loaded = false;
+        for (int p = 0; p < nprogs && !loaded; p++)
+            for (int j = 0; j < progs[p]->k && !loaded; j++)
+                cheat_key(key, sizeof key, progs[p]->mod, progs[p]->cheat[j].name), loaded = !strcmp(key, cheat_keys[i]);
+        if (!loaded) fprintf(f, "%s\n", cheat_keys[i]);
+    }
+    for (int p = 0; p < nprogs; p++)
+        for (int j = 0; j < progs[p]->k; j++)
+            if (progs[p]->on[j] && !progs[p]->cheat[j].master) fprintf(f, "%s\t%s\n", progs[p]->mod, progs[p]->cheat[j].name);
+    if (fclose(f) == 0) rename(tmp, cheat_file);
+    // (read back: the lines now)
+    ncheat_keys = -1;
+    cheat_keys_read_locked();
+}
+
+// Mod i's cheats (master codes left out), j counted over its files
+static bool cheat_find_locked(int i, int j, CheatProg **g, int *at) {
+    if (i < 0 || i >= n) return false;
+    for (int p = 0; p < nprogs; p++) {
+        if (strcmp(progs[p]->mod, list[i].m.name)) continue;
+        for (int c = 0; c < progs[p]->k; c++)
+            if (!progs[p]->cheat[c].master && j-- == 0) { *g = progs[p], *at = c; return true; }
+    }
+    return false;
+}
+
+int mods_cheat_count(int i) {
+    pthread_mutex_lock(&lock);
+    int k = 0;
+    if (i >= 0 && i < n)
+        for (int p = 0; p < nprogs; p++)
+            if (!strcmp(progs[p]->mod, list[i].m.name))
+                for (int c = 0; c < progs[p]->k; c++) k += !progs[p]->cheat[c].master;
+    pthread_mutex_unlock(&lock);
+    return k;
+}
+
+bool mods_cheat_get(int i, int j, ModCheat *out) {
+    pthread_mutex_lock(&lock);
+    CheatProg *g;
+    int c;
+    bool ok = cheat_find_locked(i, j, &g, &c);
+    if (ok) {
+        snprintf(out->name, sizeof out->name, "%s", g->cheat[c].name);
+        out->on = g->on[c];
+        out->usable = g->state[c] == CH_OK;
+        out->code = g->state[c] == CH_CODE;
+        out->stopped = g->stopped && g->on[c];
+    }
+    pthread_mutex_unlock(&lock);
+    return ok;
+}
+
+void mods_cheat_set(int i, int j, bool on) {
+    pthread_mutex_lock(&lock);
+    CheatProg *g;
+    int c;
+    if (cheat_find_locked(i, j, &g, &c) && g->state[c] == CH_OK && g->on[c] != on) {
+        g->on[c] = on;
+        cheat_build_locked(g);
+        cheat_keys_save_locked();
+        LOG("[mods] %s: [%s] %s\n", g->mod, g->cheat[c].name, on ? "on" : "off");
+    }
+    pthread_mutex_unlock(&lock);
 }
 
 static void cheats_get_locked(Mod *out) {
@@ -491,6 +634,7 @@ static void cheats_get_locked(Mod *out) {
         CheatProg *g = progs[p];
         if (strcmp(g->mod, out->name)) continue;
         out->cheat_files++, out->cheat_count += g->count;
+        for (int j = 0; j < g->k; j++) out->cheat_on += g->on[j] && !g->cheat[j].master && g->state[j] == CH_OK;
         out->cheat_bad |= g->stopped, out->cheat_code |= g->code;
     }
 }

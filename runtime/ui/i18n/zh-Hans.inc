@@ -661,7 +661,6 @@ T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", 
 T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "ExeFS 补丁：游戏代码已预先重新编译，因此只有它们对数据的修改有效。")  // runtime/ui/menu.mm:1115
 T(" This run: %d changes to data applied, %d to code left out.", " 本次运行：应用了 %d 处数据修改，跳过了 %d 处代码修改。")  // runtime/ui/menu.mm:1118
 T("None of them is for this game's version.", "没有一个适用于此游戏版本。")  // runtime/ui/menu.mm:1121
-T("Cheats: all of them run while the mod is on, switched at once.", "金手指：模组开启时全部运行，切换立即生效。")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " %d 个金手指，共 %d 个文件。")  // runtime/ui/menu.mm:1126
 T(" %d cheats in 1 file.", " %d 个金手指，共 1 个文件。")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " 1 个金手指，共 1 个文件。")  // runtime/ui/menu.mm:1128
@@ -677,3 +676,11 @@ T("Moves the mod down: the mods above it win over it.", "将模组下移：上�
 T("amiibo", "")  // runtime/ui/menu.mm:1396
 T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "还没有 amiibo 转储。请将你自己的手办的转储（.bin，540 字节，或 Flipper .nfc）放入 %s。")  // runtime/ui/menu.mm:1400
 T("A  scan      B  put the list away (the game's own B stops searching)", "A  扫描      B  收起列表（游戏自身的 B 停止搜索）")  // runtime/ui/menu.mm:1421
+T("Cheats: each one has a switch of its own, off until you switch it on. They work at once, whatever the mod's switch.", "金手指：每个都有自己的开关，在你开启之前处于关闭状态。无论模组的开关如何，都会立即生效。")  // runtime/ui/menu.mm:1102
+T(" On: %d.", " 已开启：%d。")  // runtime/ui/menu.mm:1109
+T("They are listed once the game is running.", "游戏运行后会列出它们。")  // runtime/ui/menu.mm:1111
+T("Switches its game files on or off. Its cheats have switches of their own.", "开启或关闭它的游戏文件。它的金手指有各自的开关。")  // runtime/ui/menu.mm:1156
+T("It changes the game's code, which is recompiled: it can't work here.", "它会修改已重新编译的游戏代码：在这里无法生效。")  // runtime/ui/menu.mm:1169
+T("One of its codes isn't 8 hex digits: it is left out.", "它的某个代码不是 8 位十六进制数：已跳过。")  // runtime/ui/menu.mm:1170
+T("Its file's cheats stopped at a code Savage Wind can't run. Switch one off or on to try again.", "它所在文件的金手指停在了 Savage Wind 无法运行的代码上。关闭或开启其中一个即可重试。")  // runtime/ui/menu.mm:1171
+T("A cheat from this mod's file. It works at once.", "此模组文件中的一个金手指。立即生效。")  // runtime/ui/menu.mm:1172

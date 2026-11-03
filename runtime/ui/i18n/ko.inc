@@ -661,7 +661,6 @@ T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", 
 T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "ExeFS 패치: 게임 코드는 미리 재컴파일되어 있으므로 데이터에 대한 변경만 작동합니다.")  // runtime/ui/menu.mm:1115
 T(" This run: %d changes to data applied, %d to code left out.", " 이번 실행: 데이터 변경 %d개 적용, 코드 변경 %d개 제외.")  // runtime/ui/menu.mm:1118
 T("None of them is for this game's version.", "이 게임 버전용은 하나도 없습니다.")  // runtime/ui/menu.mm:1121
-T("Cheats: all of them run while the mod is on, switched at once.", "치트: 모드가 켜져 있는 동안 모두 실행되며, 바로 전환됩니다.")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " 치트 %d개(파일 %d개).")  // runtime/ui/menu.mm:1126
 T(" %d cheats in 1 file.", " 치트 %d개(파일 1개).")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " 치트 1개(파일 1개).")  // runtime/ui/menu.mm:1128
@@ -677,3 +676,11 @@ T("Moves the mod down: the mods above it win over it.", "모드를 아래로 옮
 T("amiibo", "")  // runtime/ui/menu.mm:1396
 T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "아직 amiibo 덤프가 없습니다. 직접 가진 피규어의 덤프(.bin, 540바이트, 또는 Flipper .nfc)를 %s에 넣으세요.")  // runtime/ui/menu.mm:1400
 T("A  scan      B  put the list away (the game's own B stops searching)", "A  스캔      B  목록 치우기(게임의 B는 검색 중지)")  // runtime/ui/menu.mm:1421
+T("Cheats: each one has a switch of its own, off until you switch it on. They work at once, whatever the mod's switch.", "치트: 각 치트마다 스위치가 있으며, 직접 켜기 전까지는 꺼져 있습니다. 모드의 스위치와 상관없이 바로 적용됩니다.")  // runtime/ui/menu.mm:1102
+T(" On: %d.", " 켜짐: %d.")  // runtime/ui/menu.mm:1109
+T("They are listed once the game is running.", "게임이 실행 중일 때 목록이 표시됩니다.")  // runtime/ui/menu.mm:1111
+T("Switches its game files on or off. Its cheats have switches of their own.", "이 모드의 게임 파일을 켜거나 끕니다. 치트에는 각자의 스위치가 있습니다.")  // runtime/ui/menu.mm:1156
+T("It changes the game's code, which is recompiled: it can't work here.", "재컴파일된 게임 코드를 바꾸므로 여기서는 작동할 수 없습니다.")  // runtime/ui/menu.mm:1169
+T("One of its codes isn't 8 hex digits: it is left out.", "코드 중 하나가 16진수 8자리가 아니어서 제외됩니다.")  // runtime/ui/menu.mm:1170
+T("Its file's cheats stopped at a code Savage Wind can't run. Switch one off or on to try again.", "이 파일의 치트가 Savage Wind가 실행할 수 없는 코드에서 멈췄습니다. 하나를 끄거나 켜면 다시 시도합니다.")  // runtime/ui/menu.mm:1171
+T("A cheat from this mod's file. It works at once.", "이 모드 파일의 치트입니다. 바로 적용됩니다.")  // runtime/ui/menu.mm:1172

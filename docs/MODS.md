@@ -28,9 +28,10 @@ of the Wild's; Tears of the Kingdom's title is 0100F2C0115B6000.
 
 ## Order and switches
 
-Settings > Mods lists every mod, top first. The top mod wins a file two mods change. A on a mod shows its switch and
-Move up / Move down. The list is kept in `mods.ini` in the game's mods folder; new mods come in switched on, below the
-known ones. Changes apply at the next start (cheats: at once). Each mod's description says where its files were found
+Settings > Mods lists every mod, top first; in the game F1 (Back + Start on a controller) opens the same menu. The top
+mod wins a file two mods change. A on a mod shows its switch, Move up / Move down and its cheats. The list is kept in
+`mods.ini` in the game's mods folder; new mods come in switched on, below the known ones. Changes apply at the next
+start (cheats: at once). Each mod's description says where its files were found
 and, once the game has loaded, how many game files it replaces and adds, and how many a mod above it takes.
 
 ## The resource size table
@@ -51,15 +52,15 @@ recompiled game.
 
 ## Cheats
 
-Atmosphere cheat files (`cheats/<build id>.txt`, the first 16 digits of the build id) work as in emulators of the yuzu
-line such as Eden: a mod with a cheat file is one entry in Settings > Mods, and while it is on every cheat in its file
-runs, twelve times a second. Unlike the other changes a mod makes, its cheats switch on and off at once, in the game
-too, and a cheat mod copied in while the game runs comes in with Look for new mods. To pick cheats one by one, give
-each one a mod folder of its own (cheat packs made for those emulators come that way). As with ExeFS patches, a cheat
-that changes the game's code can't work: it is left out whole, with what else it writes (often code of its own, put in
-a free spot of the game's data), and the log and the mod's description say so. Cheats that change the game's data
-(health, stamina, items, its values in memory) work. A cheat with a code Savage Wind can't run stops, and its
-description says so. The codes that pause the game (FF0 / FF1) pause it while the codes between them run, as on the console.
+Atmosphere cheat files (`cheats/<build id>.txt`, the first 16 digits of the build id) list their cheats under the
+mod in Settings > Mods, once the game is running: each cheat has a switch of its own, off until you switch it on, and
+works from that moment, twelve times a second. The mod's own switch is for its game files, not its cheats. The cheats
+on are kept in `cheats.ini` in the game's mods folder. A file's master code (`{name}`) runs with its cheats on. A
+cheat copied in while the game runs comes in with Look for new mods. As with ExeFS patches, a cheat that changes the
+game's code can't work: it is left out whole, with what else it writes (often code of its own, put in a free spot of
+the game's data), and shown greyed. Cheats that change the game's data (health, stamina, items, its values in memory)
+work. When a code can't be run, the file's cheats stop until a switch changes. The codes that pause the game (FF0 /
+FF1) pause it while the codes between them run, as on the console.
 
 A cheat is made for one version of the game: its file is named for that build, and its addresses are that build's.
 Most cheats shared for Breath of the Wild 1.9.0 change its code (they write instructions, like `04000000 00CE9B60

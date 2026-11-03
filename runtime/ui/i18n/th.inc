@@ -661,7 +661,6 @@ T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", 
 T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "แพตช์ ExeFS: โค้ดของเกมถูกคอมไพล์ใหม่ไว้ล่วงหน้า จึงใช้ได้เฉพาะสิ่งที่มันเปลี่ยนในข้อมูลของเกม")  // runtime/ui/menu.mm:1115
 T(" This run: %d changes to data applied, %d to code left out.", " รอบนี้: ใช้การเปลี่ยนข้อมูล %d จุด ข้ามการเปลี่ยนโค้ด %d จุด")  // runtime/ui/menu.mm:1118
 T("None of them is for this game's version.", "ไม่มีอันไหนเป็นของเกมเวอร์ชันนี้")  // runtime/ui/menu.mm:1121
-T("Cheats: all of them run while the mod is on, switched at once.", "สูตรโกง: ทั้งหมดทำงานขณะที่ม็อดเปิดอยู่ และสลับได้ทันที")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " สูตรโกง %d รายการใน %d ไฟล์")  // runtime/ui/menu.mm:1126
 T(" %d cheats in 1 file.", " สูตรโกง %d รายการใน 1 ไฟล์")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " สูตรโกง 1 รายการใน 1 ไฟล์")  // runtime/ui/menu.mm:1128
@@ -677,3 +676,11 @@ T("Moves the mod down: the mods above it win over it.", "เลื่อนม�
 T("amiibo", "")  // runtime/ui/menu.mm:1396
 T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "ยังไม่มีไฟล์ดัมพ์ amiibo ใส่ไฟล์ดัมพ์ของฟิกเกอร์ของคุณเอง (.bin 540 ไบต์ หรือ Flipper .nfc) ใน %s")  // runtime/ui/menu.mm:1400
 T("A  scan      B  put the list away (the game's own B stops searching)", "A  สแกน      B  เก็บรายการ (ปุ่ม B ของเกมหยุดการค้นหา)")  // runtime/ui/menu.mm:1421
+T("Cheats: each one has a switch of its own, off until you switch it on. They work at once, whatever the mod's switch.", "สูตรโกง: แต่ละรายการมีสวิตช์ของตัวเอง และปิดอยู่จนกว่าคุณจะเปิด ทำงานทันทีไม่ว่าสวิตช์ของม็อดจะเป็นอย่างไร")  // runtime/ui/menu.mm:1102
+T(" On: %d.", " เปิด: %d")  // runtime/ui/menu.mm:1109
+T("They are listed once the game is running.", "จะแสดงรายการเมื่อเกมกำลังทำงาน")  // runtime/ui/menu.mm:1111
+T("Switches its game files on or off. Its cheats have switches of their own.", "เปิดหรือปิดไฟล์เกมของม็อดนี้ สูตรโกงของมันมีสวิตช์ของตัวเอง")  // runtime/ui/menu.mm:1156
+T("It changes the game's code, which is recompiled: it can't work here.", "มันเปลี่ยนโค้ดของเกมซึ่งถูกคอมไพล์ใหม่: จึงใช้ที่นี่ไม่ได้")  // runtime/ui/menu.mm:1169
+T("One of its codes isn't 8 hex digits: it is left out.", "โค้ดหนึ่งของมันไม่ใช่เลขฐานสิบหก 8 หลัก: จึงถูกข้าม")  // runtime/ui/menu.mm:1170
+T("Its file's cheats stopped at a code Savage Wind can't run. Switch one off or on to try again.", "สูตรโกงในไฟล์ของมันหยุดที่โค้ดที่ Savage Wind รันไม่ได้ ปิดหรือเปิดสักรายการเพื่อลองใหม่")  // runtime/ui/menu.mm:1171
+T("A cheat from this mod's file. It works at once.", "สูตรโกงจากไฟล์ของม็อดนี้ ทำงานทันที")  // runtime/ui/menu.mm:1172

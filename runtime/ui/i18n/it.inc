@@ -661,7 +661,6 @@ T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", 
 T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "Patch ExeFS: il codice del gioco è ricompilato in anticipo, quindi funziona solo ciò che cambiano nei suoi dati.")  // runtime/ui/menu.mm:1115
 T(" This run: %d changes to data applied, %d to code left out.", " Questa sessione: %d modifiche ai dati applicate, %d al codice escluse.")  // runtime/ui/menu.mm:1118
 T("None of them is for this game's version.", "Nessuna è per questa versione del gioco.")  // runtime/ui/menu.mm:1121
-T("Cheats: all of them run while the mod is on, switched at once.", "Trucchi: girano tutti mentre la mod è attiva, e si attivano subito.")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " %d trucchi in %d file.")  // runtime/ui/menu.mm:1126
 T(" %d cheats in 1 file.", " %d trucchi in 1 file.")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " 1 trucco in 1 file.")  // runtime/ui/menu.mm:1128
@@ -677,3 +676,11 @@ T("Moves the mod down: the mods above it win over it.", "Sposta la mod in basso:
 T("amiibo", "")  // runtime/ui/menu.mm:1396
 T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "Ancora nessun dump di amiibo. Metti i dump delle tue figure (.bin, 540 byte, o Flipper .nfc) in %s.")  // runtime/ui/menu.mm:1400
 T("A  scan      B  put the list away (the game's own B stops searching)", "A  scansiona      B  metti via l'elenco (il B del gioco smette di cercare)")  // runtime/ui/menu.mm:1421
+T("Cheats: each one has a switch of its own, off until you switch it on. They work at once, whatever the mod's switch.", "Trucchi: ognuno ha un interruttore suo, spento finché non lo accendi. Funzionano subito, qualunque sia l'interruttore della mod.")  // runtime/ui/menu.mm:1102
+T(" On: %d.", " Attivi: %d.")  // runtime/ui/menu.mm:1109
+T("They are listed once the game is running.", "Vengono elencati quando il gioco è in esecuzione.")  // runtime/ui/menu.mm:1111
+T("Switches its game files on or off. Its cheats have switches of their own.", "Attiva o disattiva i suoi file del gioco. I suoi trucchi hanno interruttori propri.")  // runtime/ui/menu.mm:1156
+T("It changes the game's code, which is recompiled: it can't work here.", "Cambia il codice del gioco, che è ricompilato: qui non può funzionare.")  // runtime/ui/menu.mm:1169
+T("One of its codes isn't 8 hex digits: it is left out.", "Uno dei suoi codici non ha 8 cifre esadecimali: viene escluso.")  // runtime/ui/menu.mm:1170
+T("Its file's cheats stopped at a code Savage Wind can't run. Switch one off or on to try again.", "I trucchi del suo file si sono fermati su un codice che Savage Wind non può eseguire. Disattivane o attivane uno per riprovare.")  // runtime/ui/menu.mm:1171
+T("A cheat from this mod's file. It works at once.", "Un trucco dal file di questa mod. Funziona subito.")  // runtime/ui/menu.mm:1172

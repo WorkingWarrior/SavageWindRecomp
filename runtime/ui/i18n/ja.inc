@@ -661,7 +661,6 @@ T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", 
 T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "ExeFSパッチ：ゲームのコードは事前に再コンパイルされているため、データへの変更のみ有効です。")  // runtime/ui/menu.mm:1115
 T(" This run: %d changes to data applied, %d to code left out.", " 今回の起動：データへの変更 %d 件を適用、コードへの変更 %d 件を除外。")  // runtime/ui/menu.mm:1118
 T("None of them is for this game's version.", "どれもこのバージョンのゲーム用ではありません。")  // runtime/ui/menu.mm:1121
-T("Cheats: all of them run while the mod is on, switched at once.", "チート：Modがオンの間はすべて動作し、切り替えはすぐに反映されます。")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " チート %d 個（%d ファイル）。")  // runtime/ui/menu.mm:1126
 T(" %d cheats in 1 file.", " チート %d 個（1 ファイル）。")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " チート 1 個（1 ファイル）。")  // runtime/ui/menu.mm:1128
@@ -677,3 +676,11 @@ T("Moves the mod down: the mods above it win over it.", "Modを下へ移動し�
 T("amiibo", "")  // runtime/ui/menu.mm:1396
 T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "amiiboのダンプはまだありません。自分のフィギュアのダンプ（.bin、540バイト、またはFlipper .nfc）を %s に置いてください。")  // runtime/ui/menu.mm:1400
 T("A  scan      B  put the list away (the game's own B stops searching)", "A  スキャン      B  リストをしまう（ゲーム側のBで検索を中止）")  // runtime/ui/menu.mm:1421
+T("Cheats: each one has a switch of its own, off until you switch it on. They work at once, whatever the mod's switch.", "チート：それぞれに専用のスイッチがあり、オンにするまではオフです。Modのスイッチに関係なく、すぐに反映されます。")  // runtime/ui/menu.mm:1102
+T(" On: %d.", " オン：%d。")  // runtime/ui/menu.mm:1109
+T("They are listed once the game is running.", "ゲームの実行中に一覧が表示されます。")  // runtime/ui/menu.mm:1111
+T("Switches its game files on or off. Its cheats have switches of their own.", "このModのゲームファイルをオン／オフします。チートには専用のスイッチがあります。")  // runtime/ui/menu.mm:1156
+T("It changes the game's code, which is recompiled: it can't work here.", "再コンパイル済みのゲームのコードを変更するため、ここでは動作しません。")  // runtime/ui/menu.mm:1169
+T("One of its codes isn't 8 hex digits: it is left out.", "コードの1つが8桁の16進数ではないため、除外されます。")  // runtime/ui/menu.mm:1170
+T("Its file's cheats stopped at a code Savage Wind can't run. Switch one off or on to try again.", "このファイルのチートは、Savage Windが実行できないコードで停止しました。どれかをオフ／オンにすると再試行します。")  // runtime/ui/menu.mm:1171
+T("A cheat from this mod's file. It works at once.", "このModのファイルのチートです。すぐに反映されます。")  // runtime/ui/menu.mm:1172
