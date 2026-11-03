@@ -293,8 +293,9 @@ switches - are in [docs/SAVAGE-WIND.md](docs/SAVAGE-WIND.md).
 - [Ryujinx](https://github.com/Ryujinx/Ryujinx) (MIT) - its shader decoder was the reference for instruction field
   layouts.
 - [Weeping of the Empire](https://github.com/daniel-madrid-07/weeping-of-the-empire) (MIT) - smaller transient
-  chunks when host memory runs short, the quick exit when the window closes, and the mods folder's layouts and
-  ResourceSizeTable merge, adapted from its v0.1.8.2 (its mod layouts follow totk-pc-recomp by Valiantsin Dzerakh, MIT).
+  chunks when host memory runs short, the quick exit when the window closes, the mods folder's layouts and
+  ResourceSizeTable merge, and amiibo from dumps, adapted from its v0.1.8.2 (its mod layouts and TotK table sizes follow
+  totk-pc-recomp by Valiantsin Dzerakh, MIT).
 - [envytools](https://github.com/envytools/envytools) - NVIDIA GPU documentation used for the shader translator.
 - The Switch homebrew community's documentation ([Switchbrew](https://switchbrew.org)).
 - [Ghidra](https://github.com/NationalSecurityAgency/ghidra) and the

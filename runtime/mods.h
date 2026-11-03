@@ -1,9 +1,15 @@
 // The player's mods (runtime/mods.c): each folder in <data root>/mods is one mod, laid out as emulators and the Switch
-// take them (runtime/mods_scan.h); a name starting with '_' or '.' is left out. Their order (the top mod wins a file
-// two mods change) and switches are in <data root>/mods.ini, a line per mod, top first: "+name" on, "-name" off. New
-// mods come on, below the known ones, by name. fs.c serves the RomFS files of the mods that were on when the game
-// opened its RomFS (below the SAVAGEWIND_ROMFS_OVERLAY folder); the Mods tab (runtime/ui/menu.mm) edits the list for
-// the next start. Code patches (exefs, cheats) are not loaded: a recompiled game would need building again.
+// take them (runtime/mods_scan.h); a name starting with '_' or '.' is left out. A whole emulator mods folder copied
+// in (yuzu's load/<title>, Ryujinx's mods/contents/<title>) is one mod per folder in it, named <folder>/<mod>. Their
+// order (the top mod wins a file two mods change) and switches are in <data root>/mods.ini, a line per mod, top first:
+// "+name" on, "-name" off. New mods come on, below the known ones, by name. The mods on when the game starts are the
+// run's: fs.c serves their RomFS files (below the SAVAGEWIND_ROMFS_OVERLAY folder), the loader their ExeFS patches
+// (mods_exefs_apply); the Mods tab (runtime/ui/menu.mm) edits the list for the next start. Cheats switch at once.
+// ExeFS patches are applied to the module images as Atmosphere does, but the game's code is recompiled ahead of time:
+// only what they change in its data (.rodata, .data) takes effect; what they change in its code (.text) is counted and
+// left out. Atmosphere cheats (cheats/<build id>.txt) run as emulators run them: every cheat in the file of each mod
+// on, twelve times a second, on a thread of their own (runtime/cheat_vm.h), from the moment the mod is switched on
+// (mods found by a rescan too); what they write to the game's code is left out the same way.
 #pragma once
 #include <stdbool.h>
 
@@ -11,20 +17,31 @@
 extern "C" {
 #endif
 
-enum { MOD_OK, MOD_EMPTY /* no RomFS files */, MOD_OTHER_GAME, MOD_CODE_ONLY /* only exefs / cheats */ };
+enum { MOD_OK, MOD_EMPTY /* no RomFS files, no ExeFS patches, no cheats */, MOD_OTHER_GAME };
 
 typedef struct {
-    char name[256];          // the folder's name: its key in mods.ini
+    char name[256];          // the folder's name (<folder>/<mod> in a collection): its key in mods.ini
     char layout[200];        // where its RomFS was found (mods_scan.h)
     char other_title[17];    // MOD_OTHER_GAME: the title it is for
     int problem;             // MOD_*
     bool on;                 // the player's switch
     bool aoc;                // it changes add-on content files too
-    bool code;               // it has code patches too (left out)
+    bool exefs;              // it has ExeFS patch folders
+    bool cheats;             // it has an Atmosphere cheats folder
     // fs.c, once the game opened its RomFS (counted: false until then)
     bool counted;
     int replaced, added;     // game files it serves instead of the game's, files it adds
     int shadowed;            // files a mod above it (or the overlay folder) serves instead
+    bool in_run;             // it is one of this run's mods (on and usable when the game started)
+    // the loader (mods_exefs_apply)
+    int patch_files;         // ExeFS patch files for this game's build
+    int patch_data, patch_code;  // their records: applied (data), left out (code)
+    // its cheats, once the game is loaded (mods_cheats_start)
+    bool cheats_checked;     // the game's build id is known: the counts below are its
+    int cheat_files;         // cheat files for this game's build
+    int cheat_count;         // the cheats in them (master codes included)
+    bool cheat_bad;          // one stopped at a code it can't decode, or never ended
+    bool cheat_code;         // one writes to the game's code (left out)
 } Mod;
 
 // The list as it is now (the tab's edits included), top first; scanned at the first call. Copies: any thread.
@@ -40,6 +57,13 @@ bool mods_changed(void);           // order or switches differ from what the gam
 // game's, n: add-on content n (only 1 has mod files). mod[] gets each one's index in the start list (mods_note).
 int mods_roots(int image, const char **roots, int *mod, int max);
 void mods_note(int mod, int replaced, int added, int shadowed);
+// runtime/loader.c: the ExeFS patches of the run's mods for module m (its build id: 64 hex digits), on its image as
+// loaded, before relocation; the lowest mod first, so the top one wins a byte two change
+struct Module;
+void mods_exefs_apply(struct Module *m, const char *build_id);
+// runtime/loader.c, once the modules are in: the mods' cheats for the main module's build id loaded, and their thread
+// started (once a run of the program: a reboot of the game keeps them)
+void mods_cheats_start(const char *main_build_id);
 
 #ifdef __cplusplus
 }

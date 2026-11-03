@@ -1087,18 +1087,38 @@ static void tab_mods(float scale, bool in_game) {
         char desc[1200];
         if (m.problem == MOD_OTHER_GAME)
             snprintf(desc, sizeof desc, tr("Made for another game (title %s)."), m.other_title);
-        else if (m.problem == MOD_CODE_ONLY)
-            snprintf(desc, sizeof desc, "%s", tr("It has only code patches (exefs, cheats): the game is recompiled ahead of "
-                                                 "time, so they can't be loaded."));
         else if (m.problem == MOD_EMPTY)
-            snprintf(desc, sizeof desc, "%s", tr("No game files in it. Check where its romfs folder is."));
+            snprintf(desc, sizeof desc, "%s", tr("No game files, ExeFS patches or cheats in it. Check where its romfs or exefs folder is."));
         else {
-            int k = snprintf(desc, sizeof desc, tr("Files found in: %s."), m.layout);
+            int k = m.layout[0] ? snprintf(desc, sizeof desc, tr("Files found in: %s."), m.layout)
+                                : snprintf(desc, sizeof desc, "%s", m.exefs ? tr("No game files: ExeFS patches only.")
+                                                                             : tr("No game files: cheats only."));
             if (m.aoc) k += snprintf(desc + k, sizeof desc - k, " %s", tr("It changes add-on content files too."));
             if (m.counted)
                 k += snprintf(desc + k, sizeof desc - k, tr("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it."),
                               m.replaced, m.added, m.shadowed);
-            if (m.code) snprintf(desc + k, sizeof desc - k, "\n\n%s", tr("Its code patches (exefs, cheats) are not loaded."));
+            if (m.exefs) {
+                k += snprintf(desc + k, sizeof desc - k, "\n\n%s", tr("ExeFS patches: the game's code is recompiled ahead of "
+                                                                       "time, so only what they change in its data works."));
+                if (m.patch_files)
+                    k += snprintf(desc + k, sizeof desc - k, tr(" This run: %d changes to data applied, %d to code left out."),
+                                  m.patch_data, m.patch_code);
+                else if (m.in_run)
+                    k += snprintf(desc + k, sizeof desc - k, " %s", tr("None of them is for this game's version."));
+            }
+            if (m.cheats) {
+                k += snprintf(desc + k, sizeof desc - k, "\n\n%s", tr("Cheats: all of them run while the mod is on, switched at once."));
+                if (m.cheat_files)
+                    k += snprintf(desc + k, sizeof desc - k, tr(" %d cheats in %d files."), m.cheat_count,
+                                  m.cheat_files);
+                else if (m.cheats_checked)
+                    k += snprintf(desc + k, sizeof desc - k, " %s", tr("None of its cheat files is for this game's version."));
+                if (m.cheat_code)
+                    k += snprintf(desc + k, sizeof desc - k, " %s", tr("Some change the game's code, which is recompiled: "
+                                                                        "those changes are left out."));
+                if (m.cheat_bad)
+                    snprintf(desc + k, sizeof desc - k, " %s", tr("They stopped at a code Savage Wind can't run."));
+            }
         }
         if (opt_action(m.name, value, desc, false)) sel = sel == i ? -1 : i;
         if (sel != i) continue;

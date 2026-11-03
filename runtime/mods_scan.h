@@ -21,7 +21,10 @@ typedef struct {
     char aoc[1100];          // its add-on content RomFS root ("" none)
     char layout[200];        // where the RomFS was found ("romfs", "atmosphere/contents/<title>/romfs", "folder", ...)
     char other_title[17];    // contents/<id>/ of another game ("" none)
-    bool code;               // exefs / cheats folders (code patches: not loaded by Savage Wind)
+    char exefs[4][1100];     // folders with its ExeFS patches (.ips / .pchtxt): its exefs, Atmosphere's exefs_patches/<name>
+    int nexefs;
+    char cheats[1100];       // its Atmosphere cheats folder (cheats/<build id>.txt; "" none)
+    bool code;               // either of those
 } ModFound;
 
 static inline bool ms_is_dir(const char *p) {
@@ -126,6 +129,12 @@ static inline bool ms_side_file(const char *n) {
     return false;
 }
 
+static inline void ms_add_exefs(ModFound *f, const char *dir) {
+    for (int i = 0; i < f->nexefs; i++)
+        if (!strcmp(f->exefs[i], dir)) return;
+    if (f->nexefs < 4) snprintf(f->exefs[f->nexefs++], sizeof f->exefs[0], "%s", dir);
+}
+
 // What mod folder `mod` holds for the game `title` (its add-on content: `aoc_title`, NULL none) and where. One level
 // of a lone wrapper folder is looked through.
 static inline void mods_scan_one(const char *mod, const char *title, const char *aoc_title, ModFound *f) {
@@ -140,10 +149,26 @@ static inline void mods_scan_one(const char *mod, const char *title, const char 
             f->romfs[0] = 0;
         if (aoc_title && !ms_find_part(root, "romfs", aoc_title, title, f->aoc, sizeof f->aoc, lay, sizeof lay, f->other_title))
             f->aoc[0] = 0;
-        f->code |= (ms_child_ci(root, "exefs", p, sizeof p) && ms_is_dir(p)) ||
-                   (ms_child_ci(root, "cheats", p, sizeof p) && ms_is_dir(p)) ||
-                   ms_find_part(root, "exefs", title, aoc_title, p, sizeof p, lay, sizeof lay, f->other_title) ||
-                   ms_find_part(root, "cheats", title, aoc_title, p, sizeof p, lay, sizeof lay, f->other_title);
+        if ((ms_child_ci(root, "exefs", p, sizeof p) && ms_is_dir(p)) ||
+            ms_find_part(root, "exefs", title, aoc_title, p, sizeof p, lay, sizeof lay, f->other_title))
+            ms_add_exefs(f, p);
+        for (int k = 0; k < 2; k++) {  // Atmosphere's exefs_patches/<name>/ (under atmosphere/, or bare)
+            char a[1100], ep[1100];
+            snprintf(a, sizeof a, "%s", root);
+            if (k == 0 && !ms_child_ci(root, "atmosphere", a, sizeof a)) continue;
+            if (!ms_child_ci(a, "exefs_patches", ep, sizeof ep)) continue;
+            DIR *d = opendir(ep);
+            struct dirent *e;
+            while (d && (e = readdir(d))) {
+                snprintf(p, sizeof p, "%s/%s", ep, e->d_name);
+                if (e->d_name[0] != '.' && ms_is_dir(p)) ms_add_exefs(f, p);
+            }
+            if (d) closedir(d);
+        }
+        if (!f->cheats[0] && ((ms_child_ci(root, "cheats", p, sizeof p) && ms_is_dir(p)) ||
+                              ms_find_part(root, "cheats", title, aoc_title, p, sizeof p, lay, sizeof lay, f->other_title)))
+            snprintf(f->cheats, sizeof f->cheats, "%s", p);
+        f->code = f->nexefs || f->cheats[0];
         if (f->romfs[0] || f->aoc[0]) break;
         // the folder itself is a RomFS tree?
         DIR *d = opendir(root);
@@ -179,6 +204,60 @@ static inline void mods_scan_one(const char *mod, const char *title, const char 
     if (f->romfs[0] && !ms_has_file(f->romfs, 0)) f->romfs[0] = 0;
     if (f->aoc[0] && !ms_has_file(f->aoc, 0)) f->aoc[0] = 0;
     if (!f->romfs[0] && !f->aoc[0]) f->layout[0] = 0;
+}
+
+// A copied emulator collection: the folder is, or holds under load/, contents/, atmosphere/contents/ or mods/contents/
+// (one lone wrapper folder looked through), <title>/ with one folder per mod (yuzu's load/<title>/<mod>, Ryujinx's
+// mods/contents/<title>/<mod>). Its mod folders ('_' / '.' names and folders with nothing for the game left out), sorted,
+// into out; returns how many (0: not a collection). Only for a folder that is no mod itself (mods_scan_one).
+static inline int mods_scan_collection(const char *dir, const char *title, const char *aoc_title, char (*out)[1100],
+                                       int max) {
+    static const char *const pres[] = {"", "load", "contents", "atmosphere/contents", "mods/contents"};
+    char where[2][1100], t[1100] = "", p[1100], next[1100];
+    int nwhere = 1, dirs = 0;
+    snprintf(where[0], sizeof where[0], "%s", dir);
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    while (d && (e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        if (ms_is_dir(p) && !dirs++) snprintf(where[1], sizeof where[1], "%s", p);
+    }
+    if (d) closedir(d);
+    if (dirs == 1) nwhere = 2;
+    for (int w = 0; w < nwhere && !t[0]; w++)
+        for (int k = 0; k < 5 && !t[0]; k++) {
+            char base[1100];
+            snprintf(base, sizeof base, "%s", where[w]);
+            bool ok = true;
+            for (const char *s = pres[k]; ok && *s;) {
+                const char *slash = strchr(s, '/');
+                char name[64];
+                snprintf(name, sizeof name, "%.*s", slash ? (int)(slash - s) : (int)strlen(s), s);
+                ok = ms_child_ci(base, name, next, sizeof next);
+                if (ok) memcpy(base, next, sizeof base);
+                s = slash ? slash + 1 : "";
+            }
+            if (ok && ms_child_ci(base, title, p, sizeof p) && ms_is_dir(p)) memcpy(t, p, sizeof t);
+        }
+    if (!t[0]) return 0;
+    int n = 0;
+    d = opendir(t);
+    while (d && (e = readdir(d)) && n < max) {
+        if (e->d_name[0] == '.' || e->d_name[0] == '_') continue;
+        snprintf(p, sizeof p, "%s/%s", t, e->d_name);
+        if (!ms_is_dir(p)) continue;
+        ModFound f;
+        mods_scan_one(p, title, aoc_title, &f);
+        if (f.romfs[0] || f.aoc[0] || f.code || f.other_title[0]) memcpy(out[n++], p, sizeof *out);
+    }
+    if (d) closedir(d);
+    for (int i = 1; i < n; i++)
+        for (int j = i; j > 0 && strcmp(out[j - 1], out[j]) > 0; j--) {
+            char tmp[1100];
+            memcpy(tmp, out[j], sizeof tmp), memcpy(out[j], out[j - 1], sizeof tmp), memcpy(out[j - 1], tmp, sizeof tmp);
+        }
+    return n;
 }
 
 // The names in list order: the saved order's names first (those still there), then the new ones by name. `saved` and

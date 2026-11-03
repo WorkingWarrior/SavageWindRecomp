@@ -26,6 +26,7 @@
 #include "archive.h"
 #include "fs_layout.h"
 #include "rstb_botw.h"
+#include "rstb_totk.h"
 
 #define FS_PATH_NOT_FOUND MAKE_RESULT(2, 1)
 #define FS_PATH_EXISTS MAKE_RESULT(2, 2)
@@ -985,10 +986,141 @@ static void rstb_mods(uint8_t **d, size_t *n, const char *rstb_path) {
             "their files (%llu KB)\n", tables, raised, added, grown, (unsigned long long)(grew >> 10));
 }
 
+// A file's size unpacked from its first bytes: a .zs file's zstd frame content size (4x its size without one), else
+// its own
+static uint64_t zs_unpacked_size(const char *rel, const uint8_t *head, size_t n, uint64_t size) {
+    size_t len = strlen(rel);
+    if (len < 3 || strcmp(rel + len - 3, ".zs")) return size;
+    unsigned long long c = ZSTD_getFrameContentSize(head, n);
+    return c == ZSTD_CONTENTSIZE_ERROR ? size : c == ZSTD_CONTENTSIZE_UNKNOWN ? size * 4 : c;
+}
+
+static uint64_t host_unpacked_size(const char *host, const char *rel, uint64_t size) {
+    uint8_t head[18] = {0};
+    size_t n = 0;
+    FILE *f = fopen(host, "rb");
+    if (f) n = fread(head, 1, sizeof head, f), fclose(f);
+    return zs_unpacked_size(rel, head, n, size);
+}
+
+// TotK: the resource size table (rstb_totk.h) for the mods' files. The tables mods bring (the overlay folder's too) are
+// merged into the game's, each entry at the larger size; an entry no table raised grows with its file (restbl_grow); a
+// file a mod adds gets an estimated entry (restbl_estimate). A replaced file the game's table has no entry for is sized
+// by the game without it, as its own is. The table is served from memory, packed again.
+static void rstb_totk_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
+    static const char prefix[] = "System/Resource/ResourceSizeTable.Product.", suffix[] = ".rsizetable.zs";
+    int k = 0;
+    for (; k < R->rom_nfiles; k++) {
+        const char *p = R->rom_files[k].path;
+        size_t n = strlen(p);
+        if (!strncmp(p, prefix, sizeof prefix - 1) && n > sizeof suffix && !strcmp(p + n - (sizeof suffix - 1), suffix)) break;
+    }
+    if (k == R->rom_nfiles) return;
+    const char *rstb_path = R->rom_files[k].path;
+    // the files the roots add (the first root with one serves it)
+    char **known = malloc(sizeof *known * R->rom_nfiles);
+    for (int i = 0; i < R->rom_nfiles; i++) known[i] = R->rom_files[i].path;
+    qsort(known, R->rom_nfiles, sizeof *known, path_cmp);
+    int nadded = 0;
+    for (int r = 0; r < R->nroots; r++)
+        for (int i = 0; i < R->roots[r].nfiles; i++)
+            if (!bsearch(&R->roots[r].files[i], known, R->rom_nfiles, sizeof *known, path_cmp)) nadded++;
+    if (!R->nreplaced && !nadded) { free(known); return; }
+    size_t zn = R->rom_files[k].size;
+    uint8_t *z = malloc(zn), *d = NULL, *out = NULL;
+    unsigned long long dn = 0;
+    if (romfs_image_pread(R->img, z, zn, R->rom_files[k].off) == (ssize_t)zn) {
+        dn = ZSTD_getFrameContentSize(z, zn);
+        if (dn != ZSTD_CONTENTSIZE_UNKNOWN && dn != ZSTD_CONTENTSIZE_ERROR && dn <= (64u << 20)) {
+            d = malloc(dn);
+            if (ZSTD_isError(ZSTD_decompress(d, dn, z, zn))) free(d), d = NULL;
+        }
+    }
+    free(z);
+    Restbl t, orig;
+    if (!d || !restbl_parse(d, dn, &t)) {
+        LOG("[mods] %s not as expected: the mods' files keep the game's entries\n", rstb_path);
+        free(d), free(known);
+        return;
+    }
+    restbl_parse(d, dn, &orig);
+    free(d);
+    int tables = 0, raised = 0, added = 0, grown = 0, estimated = 0;
+    for (int r = 0; r < R->nroots; r++) {
+        char host[1400];
+        if (root_find(rstb_path, r, host, sizeof host) != r) continue;
+        FILE *f = fopen(host, "rb");
+        uint8_t *mz = NULL, *md = NULL;
+        size_t mzn = 0;
+        if (f && !fseek(f, 0, SEEK_END) && (mzn = (size_t)ftell(f)) > 0 && !fseek(f, 0, SEEK_SET) && (mz = malloc(mzn)) &&
+            fread(mz, 1, mzn, f) != mzn)
+            mzn = 0;
+        if (f) fclose(f);
+        unsigned long long mn = mzn ? ZSTD_getFrameContentSize(mz, mzn) : ZSTD_CONTENTSIZE_ERROR;
+        Restbl m;
+        bool ok = mn != ZSTD_CONTENTSIZE_UNKNOWN && mn != ZSTD_CONTENTSIZE_ERROR && mn <= (64u << 20) && (md = malloc(mn)) &&
+                  !ZSTD_isError(ZSTD_decompress(md, mn, mz, mzn)) && restbl_parse(md, mn, &m);
+        if (ok) ok = restbl_merge(&t, &m, &raised, &added), restbl_free(&m);
+        if (ok) tables++;
+        else LOG("[mods] %s: not a resource size table, left out\n", host);
+        free(mz), free(md);
+    }
+    char key[1100];
+    for (int i = 0; i < R->nreplaced; i++) {
+        const RomFile *g = &R->rom_files[R->replaced[i].file];
+        if (g->path == rstb_path) continue;
+        restbl_key(g->path, key, sizeof key);
+        uint32_t *v = restbl_get(&t, key), *was = restbl_get(&orig, key);
+        if (!v || !was || *v != *was) continue;  // (none: the game sizes it without the table; raised: a mod's table did)
+        uint8_t head[18] = {0};
+        romfs_image_pread(R->img, head, g->size < sizeof head ? g->size : sizeof head, g->off);
+        uint64_t gs = zs_unpacked_size(g->path, head, sizeof head, g->size);
+        uint64_t ms = host_unpacked_size(R->replaced[i].host, g->path, R->replaced[i].host_size);
+        size_t len = strlen(g->path);
+        uint32_t nv = restbl_grow(key, *v, gs, ms, len > 3 && !strcmp(g->path + len - 3, ".mc"));
+        if (nv > *v) *v = nv, grown++;
+    }
+    for (int r = 0; r < R->nroots; r++)
+        for (int i = 0; i < R->roots[r].nfiles; i++) {
+            const char *rel = R->roots[r].files[i];
+            if (bsearch(&R->roots[r].files[i], known, R->rom_nfiles, sizeof *known, path_cmp)) continue;
+            char below[1400];
+            if (root_find(rel, 0, below, sizeof below) != r) continue;  // (a root above serves it)
+            restbl_key(rel, key, sizeof key);
+            if (restbl_get(&t, key)) continue;  // (a mod's table has it)
+            struct stat sb;
+            if (stat(below, &sb)) continue;
+            uint32_t e = restbl_estimate(key, host_unpacked_size(below, rel, (uint64_t)sb.st_size));
+            if (e && restbl_raise(&t, key, e)) estimated++;
+        }
+    free(known);
+    restbl_free(&orig);
+    size_t n = 0, on = 0;
+    uint8_t *raw = restbl_serialize(&t, &n);
+    restbl_free(&t);
+    on = ZSTD_compressBound(n);
+    out = malloc(on);
+    on = ZSTD_compress(out, on, raw, n, 3);
+    free(raw);
+    if (ZSTD_isError(on)) {
+        LOG("[mods] %s: could not be packed again, the game's stays\n", rstb_path);
+        free(out);
+        return;
+    }
+    meta_copy(fmeta, foff, fsz);
+    uint64_t rel = R->ov_end - R->rom_data_off, size = on;
+    memcpy(R->ov_meta + R->rom_files[k].meta + 8, &rel, 8);
+    memcpy(R->ov_meta + R->rom_files[k].meta + 0x10, &size, 8);
+    if (R->ov_n == R->ov_cap) { R->ov_cap = R->ov_cap ? R->ov_cap * 2 : 256; R->ov = realloc(R->ov, sizeof *R->ov * R->ov_cap); }
+    R->ov[R->ov_n++] = (Overlay){R->ov_end, size, NULL, -1, out};
+    R->ov_end = (R->ov_end + size + 0xF) & ~0xFull;
+    LOG("[mods] resource size table: %d tables of mods merged (%d entries raised, %d added), %d entries grown with "
+        "their files, %d estimated for added files\n", tables, raised, added, grown, estimated);
+}
+
 static void rstb_patch(const uint8_t *fmeta, uint64_t foff, uint64_t fsz) {
     if (!game_is_botw()) {
-        if (R->nreplaced && R->nroots && R->roots[R->nroots - 1].mod >= 0)  // (TotK's table is another format)
-            LOG("[mods] the ResourceSizeTable is not adjusted for this game's mods\n");
+        rstb_totk_patch(fmeta, foff, fsz);
         return;
     }
     static const char rstb_path[] = "System/Resource/ResourceSizeTable.product.srsizetable";

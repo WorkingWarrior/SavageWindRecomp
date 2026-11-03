@@ -5,6 +5,7 @@
 #include "game_versions.h"
 #include "gamelib.h"
 #include "lz4.h"
+#include "mods.h"
 #include "rt.h"
 
 Module g_modules[MAX_MODULES];
@@ -258,5 +259,8 @@ void loader_load(const char *exefs) {
         if (!known) FATAL("%s is not in the game code: build it again\n", path);
         LOG("[loader] %s is not one of the game's modules (a mod?): left out\n", path);
     }
+    // the mods' ExeFS patches (runtime/mods.h), on the images as Atmosphere's loader applies them: before relocation
+    for (uint32_t i = 0; i < *g->nmodules; i++) mods_exefs_apply(&g_modules[i], g->modules[i].build_id);
     for (int i = 0; i < g_nmodules; i++) relocate(&g_modules[i]);
+    if (main_id) mods_cheats_start(main_id);  // (their cheats: the main module's build id names the file)
 }

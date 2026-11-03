@@ -455,9 +455,9 @@ test-hostroom: $(B)/test_hostroom
 
 .PHONY: test-hostroom
 
-$(B)/test_mods: tools/test_mods.c runtime/mods_scan.h runtime/services/rstb_botw.h
+$(B)/test_mods: tools/test_mods.c runtime/mods_scan.h runtime/services/rstb_botw.h runtime/services/rstb_totk.h runtime/exefs_patch.h runtime/cheat_vm.h
 	@mkdir -p $(B)
-	$(CC) -O1 -Wall -o $@ tools/test_mods.c
+	$(CC) -O1 -Wall -o $@ tools/test_mods.c -lz
 
 test-mods: $(B)/test_mods
 	$(B)/test_mods

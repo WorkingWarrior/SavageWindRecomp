@@ -1,0 +1,75 @@
+# Mods
+
+Savage Wind loads mods made for the Switch version of the game (1.9.0 for Breath of the Wild), the way emulators and a
+modded Switch take them. No mods ship with it: use mods you trust.
+
+## Where mods go
+
+Each mod is a folder of its own in the `mods` folder of the data folder ([data-folder.md](data-folder.md)); Settings >
+Mods > Open mods folder opens it. A folder whose name starts with `_` or `.` is left out, a quick way to park a mod.
+
+Any of these layouts works (names in any case):
+
+| Layout | Example |
+|---|---|
+| Emulator mod folder | `mods/Better Rain/romfs/...` |
+| Switch SD card | `mods/Better Rain/atmosphere/contents/01007EF00011E000/romfs/...` |
+| Title folder (BCML's output) | `mods/Better Rain/01007EF00011E000/romfs/...` or `.../contents/01007EF00011E000/romfs/...` |
+| Bare RomFS tree | `mods/Better Rain/Actor/...`, `.../Pack/...` (the game's own top folders) |
+| Zip unpacked into a folder of its own name | `mods/Better Rain/Better Rain/romfs/...` |
+| The DLC's files | `.../01007EF00011F001/romfs/...` (BCML) or `.../romfs/aoc/0010/...` (as on the Wii U) |
+| ExeFS patches | `mods/Some Patch/exefs/<build id>.ips` or `*.pchtxt`, or the SD card's `atmosphere/exefs_patches/<name>/` |
+| Cheats | `mods/Infinite Stamina/cheats/<build id>.txt`, or `.../atmosphere/contents/01007EF00011E000/cheats/...` |
+
+A whole emulator mods folder can be copied in as it is (yuzu's `load/01007EF00011E000`, Ryujinx's
+`mods/contents/01007EF00011E000`): each mod in it is listed on its own, as `<folder>/<mod>`.
+
+## Order and switches
+
+Settings > Mods lists every mod, top first. The top mod wins a file two mods change. A on a mod shows its switch and
+Move up / Move down. The list is kept in `mods.ini` next to the `mods` folder; new mods come in switched on, below the
+known ones. Changes apply at the next start (cheats: at once). Each mod's description says where its files were found and, once the game
+has loaded, how many game files it replaces and adds, and how many a mod above it takes.
+
+## The resource size table
+
+The game sizes each file's memory from a table, and a bigger file needs a bigger entry. You need no RSTB tool: at start
+the tables mods bring are merged into the game's (each entry the larger), and an entry no table raised grows with its
+file. In Tears of the Kingdom files a mod adds get an estimated entry too. In Breath of the Wild a file the table has
+no entry for is sized by the game from the file, as its own are.
+
+## ExeFS patches
+
+The game's code is recompiled ahead of time, so a patch to its code (`.text`) has nothing to change: only what a patch
+changes in the game's data (`.rodata`, `.data`) takes effect. Most frame rate and resolution patches change code and do
+nothing here; use Savage Wind's own settings instead. The log (`[mods]` lines) and the mod's description say how many
+changes of each kind a patch had. Patches are read only from files named for the build you play (by build id, in the
+file name or a `.pchtxt`'s `@nsobid`). Mods that bring code modules (`subsdk`, a replaced `main`) cannot work in a
+recompiled game.
+
+## Cheats
+
+Atmosphere cheat files (`cheats/<build id>.txt`, the first 16 digits of the build id) work as in emulators of the yuzu
+line such as Eden: a mod with a cheat file is one entry in Settings > Mods, and while it is on every cheat in its file
+runs, twelve times a second. Unlike the other changes a mod makes, its cheats switch on and off at once, in the game
+too, and a cheat mod copied in while the game runs comes in with Look for new mods. To pick cheats one by one, give
+each one a mod folder of its own (cheat packs made for those emulators come that way). As with ExeFS patches, what a
+cheat writes to the game's code does nothing (the log and the mod's description say so); cheats that change the game's
+data (health, stamina, items, its values in memory) work. A cheat with a code Savage Wind can't run stops, and its
+description says so. The codes that pause the game (FF0 / FF1) are skipped: cheats run beside the game.
+
+A cheat is made for one version of the game: its file is named for that build, and its addresses are that build's.
+Most cheats shared for Breath of the Wild 1.9.0 change its code (they write instructions, like `04000000 00CE9B60
+D503201F`), so they do nothing here; a cheat that follows pointers to the game's data (`58...` codes) works once its
+addresses are the ones of the version you play. A line of a cheat file that is not codes (a note under a cheat's name)
+is skipped, and a cheat with a broken code (not 8 hex digits) is left out, the rest of the file still loads.
+
+## Limits
+
+- A file a mod adds must go into a folder the game's RomFS has; one in a new folder is left out (the log says so).
+- Mods are not installed from archives: unpack them into the `mods` folder.
+
+## When something goes wrong
+
+Switch a mod off (or rename its folder to start with `_`) and start again. `savagewind.log` in the data folder has a
+`[mods]` line per mod (on, off, or why it is not used) and what each one's files did.
