@@ -625,7 +625,8 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout layout) {
 // 64 MB host-visible chunks (device-local when the GPU exposes resizable BAR); a chunk is reused once every
 // submission that allocated from it has completed.
 #define CHUNK_SIZE (64ull << 20)
-typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq; } Chunk;
+// reuse: bumped each time the chunk starts over from its beginning (guest_copy: a shared copy in it is gone then)
+typedef struct { VkBuffer buf; VmaAllocation mem; uint8_t *ptr; uint64_t size, used, seq, reuse; } Chunk;
 static Chunk *chunks;
 static int nchunks, active = -1;
 
@@ -732,6 +733,7 @@ VkSpan vk_transient(uint64_t size, uint64_t align) {
     active = pick;
     chunks[pick].used = size;
     chunks[pick].seq = pending;
+    chunks[pick].reuse++;
     stat_upload_bytes += size;
     return (VkSpan){chunks[pick].buf, 0, chunks[pick].ptr};
 }
@@ -791,7 +793,8 @@ static VkSpan copy_dedupe(int slot, const void *data, uint64_t size, uint64_t al
 // a frame in the open world.)
 #define GCOPY_TAB 4096
 #define UUB_MAX 64
-static struct { uint64_t addr, size, gen, serial, mask; int chunk; VkSpan span; } gcopy[GCOPY_TAB];
+static struct { uint64_t addr, size, gen, serial, mask, reuse; int chunk; VkSpan span; } gcopy[GCOPY_TAB];
+static uint64_t stat_gcopy_gone;  // shared copies whose chunk started over (taken as misses; "[vk] guest copy" lines)
 static uint64_t gcopy_gen = 1;
 static struct { uint64_t lo, hi, serial; } uubt[UUB_MAX];  // ranges UpdateUniformBuffer wrote, with the last update's count
 static int nuub;
@@ -823,6 +826,13 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     if (e->gen == gen && e->addr == addr && e->size == size) {
         bool stale = false;
         for (uint64_t m = e->mask; m && !stale; m &= m - 1) stale = uubt[__builtin_ctzll(m)].serial > e->serial;
+        // The chunk started over since (a list goes to the GPU in pieces: one piece's chunk is free again once the GPU
+        // finished it, while the rest of the list still shares its copies): the copy was overwritten.
+        if (!stale && chunks[e->chunk].reuse != e->reuse) {
+            stale = true;
+            if (stat_gcopy_gone++ < 8 || !(stat_gcopy_gone & (stat_gcopy_gone - 1)))
+                LOG("[vk] guest copy in a chunk that started over: copied again (%llu so far)\n", (unsigned long long)stat_gcopy_gone);
+        }
         if (!stale) {
             uint64_t pending = vk_pending_seq();
             if (chunks[e->chunk].seq < pending) chunks[e->chunk].seq = pending;
@@ -837,6 +847,7 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     for (int i = 0; i < nuub; i++)
         if (addr < uubt[i].hi && uubt[i].lo < addr + size) mask |= 1ull << i;
     e->addr = addr; e->size = size; e->gen = gen; e->serial = uub_serial; e->mask = mask; e->chunk = active; e->span = s;
+    e->reuse = chunks[active].reuse;
     return s;
 }
 
