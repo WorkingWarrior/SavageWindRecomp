@@ -53,6 +53,35 @@ questions and frame rates are history, and where they disagree with this section
 Next comes a real test past the cave (save and load, scene changes, the open world), because the next faults are most likely
 there. The reference remains the safer way to play until that passes.
 
+## Flat plan for pc-loop shaders: tried, dropped (2026-11-03)
+
+weeping-of-the-empire's translator runs shaders with only forward branches as flag-guarded blocks in address order instead of
+the `switch (pc)` loop (its `flat_plan`, since 2026-10-16; a Steam Deck cloud shader took 5.5 of ~15 ms of GPU time), and since
+v0.1.8 also BRX switches and backward loops in vertex shaders ("flat npc"). Ported here as its first form (forward branches
+only, tried only where `structure_flow` says no); the fuzz test passed and BOTW drew correctly, but it was removed: it applies
+to almost nothing here, and the shaders it would have to reach cost little.
+
+**Where the pc loop is left** (`switch (pc)` in the cached translations; the flat plan's reasons with its decision log)
+- BOTW, Great Plateau and a stable: 4 of 1180 shaders, 4-13 cases each. `structure_flow` (if / else, do / while) covers the
+  rest. The flat plan took 2 of the 4 (small vertex shaders); the other 2 have a backward BRA.
+- TotK 1.0.0, opening and cave: 31 of 449, up to 701 cases. The flat plan took none: 23 have PBK / BRK loops, 8 a BRX.
+
+**What they cost** (headless gamescope 1280x720, RX 9070, `SAVAGEWIND_GPUPROF_AT` at frames 600 to 3000, with a temporary
+probe that put a timestamp before and after each draw and dispatch whose shader has the pc loop)
+| Frame | GPU frame | Pixel shaders with the loop | Compute shaders with the loop |
+|---|---|---|---|
+| 600 | 13.9 ms | 0.14 ms | 0.01 ms |
+| 1200 | 13.8 ms | 0.14 ms | 0.01 ms |
+| 1800 | 12.6 ms | 0.40 ms | 0.20 ms |
+| 2400 | 6.6 ms | 0.42 ms | 0.18 ms |
+| 3000 | 6.7 ms | 0.45 ms | 0.22 ms |
+
+Vertex shaders with the loop cost nothing measurable: the probe's ~2 ms for them were 142 six-vertex quads at ~16 us each, their
+pixel work and the timestamps' own stalls. The largest single draw is a full-screen pixel shader at 0.25-0.29 ms. Only the
+loop's own overhead could be saved, not the shader's work, and the pixel shaders here loop through PBK, which their flat npc
+form takes in vertex shaders only. Not measured: higher resolutions (the full-screen shader grows with the pixel count) and
+weaker GPUs, where their gain was measured.
+
 ## Registers in locals and -O2: tried, dropped (2026-11-02)
 
 The largest difference from weeping-of-the-empire's generated code: x0-x30, sp and NZCV in C locals, stored only before calls and
