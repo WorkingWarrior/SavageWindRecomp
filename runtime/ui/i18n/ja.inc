@@ -640,3 +640,38 @@ T("Steam", "")  // runtime/hle/bindings.c:91
 T("Quick access (...)", "")  // runtime/hle/bindings.c:92
 T("Left trackpad click", "")  // runtime/hle/bindings.c:93
 T("Right trackpad click", "")  // runtime/hle/bindings.c:93
+T("Mods", "Mod")  // runtime/ui/menu.mm:1078
+T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "Modフォルダ（%s）をファイルマネージャーで開きます。エミュレーターと同じく、Modはそれぞれ専用のフォルダに入れます（中にromfsフォルダ、またはSwitchのSDカードのatmosphere/contents構成）。名前が _ で始まるフォルダは除外されます。")  // runtime/ui/menu.mm:1080
+T("Open mods folder", "Modフォルダを開く")  // runtime/ui/menu.mm:1083
+T("Look for new mods", "新しいModを探す")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Savage Windの実行中にコピーしたModのために、Modフォルダを読み直します。")  // runtime/ui/menu.mm:1084
+T("Changes apply at the next start.", "変更は次回の起動から反映されます。")  // runtime/ui/menu.mm:1087
+T("Order (the top mod wins a file two mods change)", "順序（2つのModが同じファイルを変える場合は上のModが優先）")  // runtime/ui/menu.mm:1088
+T("No mods yet", "Modはまだありません")  // runtime/ui/menu.mm:1092
+T("There are no mods in the mods folder yet.", "Modフォルダにはまだ Modがありません。")  // runtime/ui/menu.mm:1092
+T("Not used", "未使用")  // runtime/ui/menu.mm:1097
+T("Made for another game (title %s).", "別のゲーム用です（タイトル %s）。")  // runtime/ui/menu.mm:1100
+T("No game files, ExeFS patches or cheats in it. Check where its romfs or exefs folder is.", "ゲームファイル、ExeFSパッチ、チートのいずれも入っていません。romfsまたはexefsフォルダの場所を確認してください。")  // runtime/ui/menu.mm:1102
+T("Files found in: %s.", "ファイルの場所：%s。")  // runtime/ui/menu.mm:1106
+T("No game files: ExeFS patches and cheats only.", "ゲームファイルなし：ExeFSパッチとチートのみ。")  // runtime/ui/menu.mm:1107
+T("No game files: ExeFS patches only.", "ゲームファイルなし：ExeFSパッチのみ。")  // runtime/ui/menu.mm:1108
+T("No game files: cheats only.", "ゲームファイルなし：チートのみ。")  // runtime/ui/menu.mm:1109
+T("It changes add-on content files too.", "追加コンテンツのファイルも変更します。")  // runtime/ui/menu.mm:1110
+T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", "\n\n今回の起動：ゲームファイル %d 個を置換、%d 個を追加、%d 個は上のModに譲りました。")  // runtime/ui/menu.mm:1112
+T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "ExeFSパッチ：ゲームのコードは事前に再コンパイルされているため、データへの変更のみ有効です。")  // runtime/ui/menu.mm:1115
+T(" This run: %d changes to data applied, %d to code left out.", " 今回の起動：データへの変更 %d 件を適用、コードへの変更 %d 件を除外。")  // runtime/ui/menu.mm:1118
+T("None of them is for this game's version.", "どれもこのバージョンのゲーム用ではありません。")  // runtime/ui/menu.mm:1121
+T("Cheats: all of them run while the mod is on, switched at once.", "チート：Modがオンの間はすべて動作し、切り替えはすぐに反映されます。")  // runtime/ui/menu.mm:1124
+T(" %d cheats in %d files.", " チート %d 個（%d ファイル）。")  // runtime/ui/menu.mm:1126
+T("None of its cheat files is for this game's version.", "このModのチートファイルはどれもこのバージョンのゲーム用ではありません。")  // runtime/ui/menu.mm:1129
+T("Some change the game's code, which is recompiled: those changes are left out.", "一部はゲームのコードを変更しますが、コードは再コンパイル済みのため、その変更は除外されます。")  // runtime/ui/menu.mm:1131
+T("They stopped at a code Savage Wind can't run.", "一部はSavage Windが実行できないコードで停止しました。")  // runtime/ui/menu.mm:1134
+T("Use this mod", "このModを使う")  // runtime/ui/menu.mm:1142
+T("Switches the mod on or off.", "Modのオン／オフを切り替えます。")  // runtime/ui/menu.mm:1142
+T("Move up", "上へ")  // runtime/ui/menu.mm:1144
+T("Moves the mod up: it wins over the mods below it.", "Modを上へ移動します：下のModより優先されます。")  // runtime/ui/menu.mm:1144
+T("Move down", "下へ")  // runtime/ui/menu.mm:1146
+T("Moves the mod down: the mods above it win over it.", "Modを下へ移動します：上のModが優先されます。")  // runtime/ui/menu.mm:1146
+T("amiibo", "")  // runtime/ui/menu.mm:1396
+T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "amiiboのダンプはまだありません。自分のフィギュアのダンプ（.bin、540バイト、またはFlipper .nfc）を %s に置いてください。")  // runtime/ui/menu.mm:1400
+T("A  scan      B  put the list away (the game's own B stops searching)", "A  スキャン      B  リストをしまう（ゲーム側のBで検索を中止）")  // runtime/ui/menu.mm:1421

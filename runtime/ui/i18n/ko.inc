@@ -640,3 +640,38 @@ T("Steam", "")  // runtime/hle/bindings.c:91
 T("Quick access (...)", "")  // runtime/hle/bindings.c:92
 T("Left trackpad click", "")  // runtime/hle/bindings.c:93
 T("Right trackpad click", "")  // runtime/hle/bindings.c:93
+T("Mods", "모드")  // runtime/ui/menu.mm:1078
+T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "모드 폴더(%s)를 파일 관리자에서 엽니다. 에뮬레이터처럼 모드마다 자체 폴더에 넣습니다(안에 romfs 폴더, 또는 Switch SD 카드의 atmosphere/contents 구조). 이름이 _로 시작하는 폴더는 제외됩니다.")  // runtime/ui/menu.mm:1080
+T("Open mods folder", "모드 폴더 열기")  // runtime/ui/menu.mm:1083
+T("Look for new mods", "새 모드 찾기")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Savage Wind 실행 중에 복사한 모드를 위해 모드 폴더를 다시 읽습니다.")  // runtime/ui/menu.mm:1084
+T("Changes apply at the next start.", "변경 사항은 다음 시작 때 적용됩니다.")  // runtime/ui/menu.mm:1087
+T("Order (the top mod wins a file two mods change)", "순서(두 모드가 같은 파일을 바꾸면 위의 모드가 우선)")  // runtime/ui/menu.mm:1088
+T("No mods yet", "아직 모드 없음")  // runtime/ui/menu.mm:1092
+T("There are no mods in the mods folder yet.", "모드 폴더에 아직 모드가 없습니다.")  // runtime/ui/menu.mm:1092
+T("Not used", "사용 안 함")  // runtime/ui/menu.mm:1097
+T("Made for another game (title %s).", "다른 게임용입니다(타이틀 %s).")  // runtime/ui/menu.mm:1100
+T("No game files, ExeFS patches or cheats in it. Check where its romfs or exefs folder is.", "게임 파일, ExeFS 패치, 치트가 하나도 없습니다. romfs 또는 exefs 폴더의 위치를 확인하세요.")  // runtime/ui/menu.mm:1102
+T("Files found in: %s.", "파일 위치: %s.")  // runtime/ui/menu.mm:1106
+T("No game files: ExeFS patches and cheats only.", "게임 파일 없음: ExeFS 패치와 치트만 있음.")  // runtime/ui/menu.mm:1107
+T("No game files: ExeFS patches only.", "게임 파일 없음: ExeFS 패치만 있음.")  // runtime/ui/menu.mm:1108
+T("No game files: cheats only.", "게임 파일 없음: 치트만 있음.")  // runtime/ui/menu.mm:1109
+T("It changes add-on content files too.", "추가 콘텐츠 파일도 바꿉니다.")  // runtime/ui/menu.mm:1110
+T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", "\n\n이번 실행: 게임 파일 %d개 교체, %d개 추가, %d개는 위의 모드에 양보.")  // runtime/ui/menu.mm:1112
+T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "ExeFS 패치: 게임 코드는 미리 재컴파일되어 있으므로 데이터에 대한 변경만 작동합니다.")  // runtime/ui/menu.mm:1115
+T(" This run: %d changes to data applied, %d to code left out.", " 이번 실행: 데이터 변경 %d개 적용, 코드 변경 %d개 제외.")  // runtime/ui/menu.mm:1118
+T("None of them is for this game's version.", "이 게임 버전용은 하나도 없습니다.")  // runtime/ui/menu.mm:1121
+T("Cheats: all of them run while the mod is on, switched at once.", "치트: 모드가 켜져 있는 동안 모두 실행되며, 바로 전환됩니다.")  // runtime/ui/menu.mm:1124
+T(" %d cheats in %d files.", " 치트 %d개(파일 %d개).")  // runtime/ui/menu.mm:1126
+T("None of its cheat files is for this game's version.", "이 모드의 치트 파일 중 이 게임 버전용은 없습니다.")  // runtime/ui/menu.mm:1129
+T("Some change the game's code, which is recompiled: those changes are left out.", "일부는 재컴파일된 게임 코드를 바꿉니다: 그 변경은 제외됩니다.")  // runtime/ui/menu.mm:1131
+T("They stopped at a code Savage Wind can't run.", "일부는 Savage Wind가 실행할 수 없는 코드에서 멈췄습니다.")  // runtime/ui/menu.mm:1134
+T("Use this mod", "이 모드 사용")  // runtime/ui/menu.mm:1142
+T("Switches the mod on or off.", "모드를 켜거나 끕니다.")  // runtime/ui/menu.mm:1142
+T("Move up", "위로")  // runtime/ui/menu.mm:1144
+T("Moves the mod up: it wins over the mods below it.", "모드를 위로 옮깁니다: 아래의 모드보다 우선합니다.")  // runtime/ui/menu.mm:1144
+T("Move down", "아래로")  // runtime/ui/menu.mm:1146
+T("Moves the mod down: the mods above it win over it.", "모드를 아래로 옮깁니다: 위의 모드가 우선합니다.")  // runtime/ui/menu.mm:1146
+T("amiibo", "")  // runtime/ui/menu.mm:1396
+T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "아직 amiibo 덤프가 없습니다. 직접 가진 피규어의 덤프(.bin, 540바이트, 또는 Flipper .nfc)를 %s에 넣으세요.")  // runtime/ui/menu.mm:1400
+T("A  scan      B  put the list away (the game's own B stops searching)", "A  스캔      B  목록 치우기(게임의 B는 검색 중지)")  // runtime/ui/menu.mm:1421

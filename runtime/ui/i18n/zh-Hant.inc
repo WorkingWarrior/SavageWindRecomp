@@ -640,3 +640,38 @@ T("Steam", "")  // runtime/hle/bindings.c:91
 T("Quick access (...)", "")  // runtime/hle/bindings.c:92
 T("Left trackpad click", "")  // runtime/hle/bindings.c:93
 T("Right trackpad click", "")  // runtime/hle/bindings.c:93
+T("Mods", "模組")  // runtime/ui/menu.mm:1078
+T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "在檔案管理員中開啟模組資料夾（%s）。與模擬器相同，每個模組放在各自的資料夾中（裡面是 romfs 資料夾，或 Switch SD 卡的 atmosphere/contents 結構）。名稱以 _ 開頭的資料夾會被略過。")  // runtime/ui/menu.mm:1080
+T("Open mods folder", "開啟模組資料夾")  // runtime/ui/menu.mm:1083
+T("Look for new mods", "尋找新模組")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "重新讀取模組資料夾，用於 Savage Wind 執行時複製進來的模組。")  // runtime/ui/menu.mm:1084
+T("Changes apply at the next start.", "變更將在下次啟動時生效。")  // runtime/ui/menu.mm:1087
+T("Order (the top mod wins a file two mods change)", "順序（兩個模組修改同一檔案時，上方的模組優先）")  // runtime/ui/menu.mm:1088
+T("No mods yet", "還沒有模組")  // runtime/ui/menu.mm:1092
+T("There are no mods in the mods folder yet.", "模組資料夾中還沒有模組。")  // runtime/ui/menu.mm:1092
+T("Not used", "未使用")  // runtime/ui/menu.mm:1097
+T("Made for another game (title %s).", "為其他遊戲製作（標題 %s）。")  // runtime/ui/menu.mm:1100
+T("No game files, ExeFS patches or cheats in it. Check where its romfs or exefs folder is.", "其中沒有遊戲檔案、ExeFS 修補或金手指。請檢查其 romfs 或 exefs 資料夾的位置。")  // runtime/ui/menu.mm:1102
+T("Files found in: %s.", "檔案位置：%s。")  // runtime/ui/menu.mm:1106
+T("No game files: ExeFS patches and cheats only.", "沒有遊戲檔案：僅有 ExeFS 修補和金手指。")  // runtime/ui/menu.mm:1107
+T("No game files: ExeFS patches only.", "沒有遊戲檔案：僅有 ExeFS 修補。")  // runtime/ui/menu.mm:1108
+T("No game files: cheats only.", "沒有遊戲檔案：僅有金手指。")  // runtime/ui/menu.mm:1109
+T("It changes add-on content files too.", "它也修改追加內容的檔案。")  // runtime/ui/menu.mm:1110
+T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", "\n\n本次執行：取代了 %d 個遊戲檔案，新增 %d 個，%d 個讓給了上方的模組。")  // runtime/ui/menu.mm:1112
+T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "ExeFS 修補：遊戲程式碼已預先重新編譯，因此只有它們對資料的修改有效。")  // runtime/ui/menu.mm:1115
+T(" This run: %d changes to data applied, %d to code left out.", " 本次執行：套用了 %d 處資料修改，略過了 %d 處程式碼修改。")  // runtime/ui/menu.mm:1118
+T("None of them is for this game's version.", "沒有一個適用於此遊戲版本。")  // runtime/ui/menu.mm:1121
+T("Cheats: all of them run while the mod is on, switched at once.", "金手指：模組開啟時全部執行，切換立即生效。")  // runtime/ui/menu.mm:1124
+T(" %d cheats in %d files.", " %d 個金手指，共 %d 個檔案。")  // runtime/ui/menu.mm:1126
+T("None of its cheat files is for this game's version.", "它的金手指檔案都不適用於此遊戲版本。")  // runtime/ui/menu.mm:1129
+T("Some change the game's code, which is recompiled: those changes are left out.", "有些會修改已重新編譯的遊戲程式碼：這些修改會被略過。")  // runtime/ui/menu.mm:1131
+T("They stopped at a code Savage Wind can't run.", "有些停在了 Savage Wind 無法執行的程式碼上。")  // runtime/ui/menu.mm:1134
+T("Use this mod", "使用此模組")  // runtime/ui/menu.mm:1142
+T("Switches the mod on or off.", "開啟或關閉模組。")  // runtime/ui/menu.mm:1142
+T("Move up", "上移")  // runtime/ui/menu.mm:1144
+T("Moves the mod up: it wins over the mods below it.", "將模組上移：它優先於下方的模組。")  // runtime/ui/menu.mm:1144
+T("Move down", "下移")  // runtime/ui/menu.mm:1146
+T("Moves the mod down: the mods above it win over it.", "將模組下移：上方的模組優先於它。")  // runtime/ui/menu.mm:1146
+T("amiibo", "")  // runtime/ui/menu.mm:1396
+T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "還沒有 amiibo 傾印。請將你自己的公仔的傾印（.bin，540 位元組，或 Flipper .nfc）放入 %s。")  // runtime/ui/menu.mm:1400
+T("A  scan      B  put the list away (the game's own B stops searching)", "A  掃描      B  收起清單（遊戲本身的 B 停止搜尋）")  // runtime/ui/menu.mm:1421

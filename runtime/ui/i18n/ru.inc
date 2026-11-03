@@ -640,3 +640,38 @@ T("Steam", "")  // runtime/hle/bindings.c:91
 T("Quick access (...)", "")  // runtime/hle/bindings.c:92
 T("Left trackpad click", "")  // runtime/hle/bindings.c:93
 T("Right trackpad click", "")  // runtime/hle/bindings.c:93
+T("Mods", "Моды")  // runtime/ui/menu.mm:1078
+T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "Открывает папку модов (%s) в файловом менеджере. Каждый мод лежит в своей папке, как их принимают эмуляторы (с папкой romfs внутри или со структурой atmosphere/contents SD-карты Switch). Папка, имя которой начинается с _, пропускается.")  // runtime/ui/menu.mm:1080
+T("Open mods folder", "Открыть папку модов")  // runtime/ui/menu.mm:1083
+T("Look for new mods", "Искать новые моды")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Заново читает папку модов — для модов, скопированных, пока работает Savage Wind.")  // runtime/ui/menu.mm:1084
+T("Changes apply at the next start.", "Изменения вступят в силу при следующем запуске.")  // runtime/ui/menu.mm:1087
+T("Order (the top mod wins a file two mods change)", "Порядок (верхний мод побеждает в файле, который меняют два мода)")  // runtime/ui/menu.mm:1088
+T("No mods yet", "Модов пока нет")  // runtime/ui/menu.mm:1092
+T("There are no mods in the mods folder yet.", "В папке модов пока нет модов.")  // runtime/ui/menu.mm:1092
+T("Not used", "Не используется")  // runtime/ui/menu.mm:1097
+T("Made for another game (title %s).", "Сделан для другой игры (title %s).")  // runtime/ui/menu.mm:1100
+T("No game files, ExeFS patches or cheats in it. Check where its romfs or exefs folder is.", "В нём нет файлов игры, патчей ExeFS или читов. Проверьте, где лежит его папка romfs или exefs.")  // runtime/ui/menu.mm:1102
+T("Files found in: %s.", "Файлы найдены в: %s.")  // runtime/ui/menu.mm:1106
+T("No game files: ExeFS patches and cheats only.", "Нет файлов игры: только патчи ExeFS и читы.")  // runtime/ui/menu.mm:1107
+T("No game files: ExeFS patches only.", "Нет файлов игры: только патчи ExeFS.")  // runtime/ui/menu.mm:1108
+T("No game files: cheats only.", "Нет файлов игры: только читы.")  // runtime/ui/menu.mm:1109
+T("It changes add-on content files too.", "Он также меняет файлы дополнительного контента.")  // runtime/ui/menu.mm:1110
+T("\n\nThis run: %d game files replaced, %d added, %d left to a mod above it.", "\n\nВ этом запуске: заменено файлов игры: %d, добавлено: %d, уступлено моду выше: %d.")  // runtime/ui/menu.mm:1112
+T("ExeFS patches: the game's code is recompiled ahead of time, so only what they change in its data works.", "Патчи ExeFS: код игры заранее перекомпилирован, поэтому работает только то, что они меняют в её данных.")  // runtime/ui/menu.mm:1115
+T(" This run: %d changes to data applied, %d to code left out.", " В этом запуске: изменений данных применено: %d, изменений кода пропущено: %d.")  // runtime/ui/menu.mm:1118
+T("None of them is for this game's version.", "Ни один из них не для этой версии игры.")  // runtime/ui/menu.mm:1121
+T("Cheats: all of them run while the mod is on, switched at once.", "Читы: все работают, пока мод включён, и переключаются сразу.")  // runtime/ui/menu.mm:1124
+T(" %d cheats in %d files.", " Читов: %d, в файлах: %d.")  // runtime/ui/menu.mm:1126
+T("None of its cheat files is for this game's version.", "Ни один из его файлов читов не для этой версии игры.")  // runtime/ui/menu.mm:1129
+T("Some change the game's code, which is recompiled: those changes are left out.", "Некоторые меняют код игры, который перекомпилирован: эти изменения пропускаются.")  // runtime/ui/menu.mm:1131
+T("They stopped at a code Savage Wind can't run.", "Некоторые остановились на коде, который Savage Wind не может выполнить.")  // runtime/ui/menu.mm:1134
+T("Use this mod", "Использовать этот мод")  // runtime/ui/menu.mm:1142
+T("Switches the mod on or off.", "Включает или выключает мод.")  // runtime/ui/menu.mm:1142
+T("Move up", "Выше")  // runtime/ui/menu.mm:1144
+T("Moves the mod up: it wins over the mods below it.", "Перемещает мод выше: он побеждает моды под ним.")  // runtime/ui/menu.mm:1144
+T("Move down", "Ниже")  // runtime/ui/menu.mm:1146
+T("Moves the mod down: the mods above it win over it.", "Перемещает мод ниже: моды над ним побеждают его.")  // runtime/ui/menu.mm:1146
+T("amiibo", "")  // runtime/ui/menu.mm:1396
+T("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) in %s.", "Дампов amiibo пока нет. Положите дампы своих фигурок (.bin, 540 байт, или Flipper .nfc) в %s.")  // runtime/ui/menu.mm:1400
+T("A  scan      B  put the list away (the game's own B stops searching)", "A  сканировать      B  убрать список (B самой игры прекращает поиск)")  // runtime/ui/menu.mm:1421
