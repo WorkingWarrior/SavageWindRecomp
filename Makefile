@@ -464,6 +464,15 @@ test-mods: $(B)/test_mods
 
 .PHONY: test-mods
 
+$(B)/test_amiibo: tools/test_amiibo.c runtime/amiibo_dump.h
+	@mkdir -p $(B)
+	$(CC) -O1 -Wall -o $@ tools/test_amiibo.c
+
+test-amiibo: $(B)/test_amiibo
+	$(B)/test_amiibo
+
+.PHONY: test-amiibo
+
 # The input test includes input.c; discard its unused HLE functions and their runtime dependencies.
 $(B)/test_input_focus: tools/test_input_focus.c tools/test_pointer_disabled.h runtime/hle/input.c $(RT_HDRS)
 	@mkdir -p $(B)

@@ -36,6 +36,7 @@ extern "C" {
 extern "C" {
 #include "../language.h"
 #include "../mods.h"
+#include "../amiibo.h"
 }
 #include "menu.h"
 void input_reset(void);
@@ -166,7 +167,17 @@ extern "C" void menu_size_list_open(void) {
     input_reset();
     g_sizes = true;
 }
-static bool capturing() { return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open(); }
+// The list of amiibo dumps (runtime/services/nfp.c): up while the game searches for a figure, until one is picked or
+// the list is put away (B: the game goes on searching, its own B stops it)
+static std::atomic<bool> g_amiibo{false};
+extern "C" void menu_amiibo_open(void) {
+    input_reset();
+    g_amiibo = true;
+}
+extern "C" void menu_amiibo_close(void) { g_amiibo = false; }
+static bool capturing() {
+    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || g_amiibo.load() || console_is_open();
+}
 // The game gets no input while this is true (runtime/hle/input.c): menu or name entry up, or a binding capture begun
 // from the game's Options screen.
 extern "C" bool menu_input_captured(void) {
@@ -299,7 +310,7 @@ bool menu_handle_event(const SDL_Event *e) {
             return true;
         }
         ImGuiKey k = key_from_scancode(e->key.scancode);
-        if (g_sizes.load()) {  // Window size's list (in game): the keys bound to A, B and up / down work it too
+        if (g_sizes.load() || g_amiibo.load()) {  // (in game) lists: the keys bound to A, B and up / down work them too
             int sc = e->key.scancode;
             if (sc == g_bind_key[BIND_A]) k = ImGuiKey_Enter;
             else if (sc == g_bind_key[BIND_B]) k = ImGuiKey_Escape;
@@ -327,7 +338,7 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         if (!capturing()) return false;
         ImGuiKey k = key_from_pad(e->gbutton.button);
-        if (g_sizes.load()) {  // Window size's list (in game): the buttons bound to A and B, wherever they are
+        if (g_sizes.load() || g_amiibo.load()) {  // (in game) lists: the buttons bound to A and B, wherever they are
             int b = e->gbutton.button;
             if (b == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
             else if (b == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
@@ -1335,6 +1346,54 @@ static void size_list_draw(ImGuiIO &io, float scale) {
     }
 }
 
+// The amiibo dumps, in the middle of the screen while the game searches for a figure: A puts one on the reader
+static void amiibo_list_draw(ImGuiIO &io, float scale) {
+    static bool was_open;
+    bool appearing = !was_open;
+    was_open = true;
+    ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, 120));
+    float w = fminf(io.DisplaySize.x * 0.9f, 760 * scale);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0), ImVec2(w, io.DisplaySize.y * 0.8f));
+    if (appearing) ImGui::SetNextWindowFocus();
+    ImGui::Begin("##amiibo", NULL, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                       ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PushFont(g_font_big);
+    ImGui::TextColored(ImVec4(0.93f, 0.76f, 0.33f, 1), "%s", tr("amiibo"));
+    ImGui::PopFont();
+    int n = amiibo_count(), usable = 0;
+    if (!n)
+        ImGui::TextWrapped(tr("No amiibo dumps yet. Put the dumps of your own figures (.bin, 540 bytes, or Flipper .nfc) "
+                              "in %s."), amiibo_folder());
+    for (int i = 0; i < n; i++) {
+        char name[128];
+        const char *problem;
+        if (!amiibo_get(i, name, sizeof name, &problem)) break;
+        ImGui::PushID(i);
+        ImGui::BeginDisabled(problem[0] != 0);
+        if (ImGui::Selectable(name)) {
+            amiibo_scan(i);
+            g_amiibo = false;
+        }
+        if (appearing && !problem[0] && !usable++) {
+            ImGui::SetItemDefaultFocus();
+            ImGui::SetNavCursorVisible(g_last_pad.load());
+        }
+        ImGui::EndDisabled();
+        if (problem[0]) ImGui::TextDisabled("    %s", tr(problem));
+        ImGui::PopID();
+    }
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s", tr("A  scan      B  put the list away (the game's own B stops searching)"));
+    bool cancel = !appearing && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false));
+    ImGui::End();
+    if (cancel) g_amiibo = false;
+    if (!g_amiibo.load()) {
+        g_sizes_hold = SDL_GetTicks() + 300;  // (the A / B that closed it, still down, stays out of the game)
+        was_open = false;
+    }
+}
+
 // Game thread (runtime/hle/swkbd.c): show the dialog, re-present the last frame until it's answered.
 // Returns 1 confirmed (out = text, UTF-8), 0 cancelled.
 extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, int cap) {
@@ -1494,7 +1553,7 @@ static bool menu_draws(bool *pointer_hover = NULL, float *pointer_box = NULL, bo
     bool gyro_on = pc_gyro_scene_view(gyro ? gyro : &gs);
     if (pointer_hover) *pointer_hover = hover;
     if (gyro_show) *gyro_show = gyro_on;
-    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || console_is_open() || gyro_on || hover ||
+    return g_open.load() || g_kbd.load() == 1 || g_sizes.load() || g_amiibo.load() || console_is_open() || gyro_on || hover ||
            g_settings.perf_overlay != PERF_OFF;
 }
 
@@ -1510,6 +1569,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
     bool open = g_open.load();
     bool kbd = g_kbd.load() == 1;
     bool sizes = g_sizes.load();
+    bool amiibo = g_amiibo.load();
     bool con = console_is_open();
     console_collect();
     GyroScene gyro_scene;
@@ -1627,6 +1687,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
 
     if (kbd) keyboard_draw(io, scale);
     if (sizes) size_list_draw(io, scale);
+    if (amiibo) amiibo_list_draw(io, scale);
     if (con) console_draw(io, scale, g_font_mono ? g_font_mono : g_font);
     ImGui::Render();
     g_text_busy = open && ui_text_busy();
