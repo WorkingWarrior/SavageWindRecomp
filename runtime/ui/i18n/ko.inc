@@ -646,7 +646,7 @@ T("Open mods folder", "모드 폴더 열기")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "새 모드 찾기")  // runtime/ui/menu.mm:1084
 T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Savage Wind 실행 중에 복사한 모드를 위해 모드 폴더를 다시 읽습니다.")  // runtime/ui/menu.mm:1084
 T("Changes apply at the next start.", "변경 사항은 다음 시작 때 적용됩니다.")  // runtime/ui/menu.mm:1087
-T("Order (the top mod wins a file two mods change)", "순서(두 모드가 같은 파일을 바꾸면 위의 모드가 우선)")  // runtime/ui/menu.mm:1088
+T("Order (the top mod wins a file two mods change)", "순서(위의 모드가 우선)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "아직 모드 없음")  // runtime/ui/menu.mm:1092
 T("There are no mods in the mods folder yet.", "모드 폴더에 아직 모드가 없습니다.")  // runtime/ui/menu.mm:1092
 T("Not used", "사용 안 함")  // runtime/ui/menu.mm:1097
@@ -663,8 +663,10 @@ T(" This run: %d changes to data applied, %d to code left out.", " 이번 실행
 T("None of them is for this game's version.", "이 게임 버전용은 하나도 없습니다.")  // runtime/ui/menu.mm:1121
 T("Cheats: all of them run while the mod is on, switched at once.", "치트: 모드가 켜져 있는 동안 모두 실행되며, 바로 전환됩니다.")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " 치트 %d개(파일 %d개).")  // runtime/ui/menu.mm:1126
+T(" %d cheats in 1 file.", " 치트 %d개(파일 1개).")  // runtime/ui/menu.mm:1127
+T(" 1 cheat in 1 file.", " 치트 1개(파일 1개).")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "이 모드의 치트 파일 중 이 게임 버전용은 없습니다.")  // runtime/ui/menu.mm:1129
-T("Some change the game's code, which is recompiled: those changes are left out.", "일부는 재컴파일된 게임 코드를 바꿉니다: 그 변경은 제외됩니다.")  // runtime/ui/menu.mm:1131
+T("Some change the game's code, which is recompiled: those cheats are left out.", "일부는 재컴파일된 게임 코드를 바꿉니다: 그 치트는 제외됩니다.")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "일부는 Savage Wind가 실행할 수 없는 코드에서 멈췄습니다.")  // runtime/ui/menu.mm:1134
 T("Use this mod", "이 모드 사용")  // runtime/ui/menu.mm:1142
 T("Switches the mod on or off.", "모드를 켜거나 끕니다.")  // runtime/ui/menu.mm:1142

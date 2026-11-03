@@ -1123,13 +1123,15 @@ static void tab_mods(float scale, bool in_game) {
             if (m.cheats) {
                 desc_add(desc, sizeof desc, &k, "\n\n%s", tr("Cheats: all of them run while the mod is on, switched at once."));
                 if (m.cheat_files)
-                    desc_add(desc, sizeof desc, &k, tr(" %d cheats in %d files."), m.cheat_count,
-                                  m.cheat_files);
+                    desc_add(desc, sizeof desc, &k, m.cheat_files > 1 ? tr(" %d cheats in %d files.")
+                                                       : m.cheat_count != 1 ? tr(" %d cheats in 1 file.")
+                                                                           : tr(" 1 cheat in 1 file."),
+                             m.cheat_count, m.cheat_files);
                 else if (m.cheats_checked)
                     desc_add(desc, sizeof desc, &k, " %s", tr("None of its cheat files is for this game's version."));
                 if (m.cheat_code)
                     desc_add(desc, sizeof desc, &k, " %s", tr("Some change the game's code, which is recompiled: "
-                                                                        "those changes are left out."));
+                                                                        "those cheats are left out."));
                 if (m.cheat_bad)
                     desc_add(desc, sizeof desc, &k, " %s", tr("They stopped at a code Savage Wind can't run."));
             }

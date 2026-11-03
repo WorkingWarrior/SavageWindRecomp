@@ -646,7 +646,7 @@ T("Open mods folder", "打开模组文件夹")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "查找新模组")  // runtime/ui/menu.mm:1084
 T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "重新读取模组文件夹，用于 Savage Wind 运行时复制进来的模组。")  // runtime/ui/menu.mm:1084
 T("Changes apply at the next start.", "更改将在下次启动时生效。")  // runtime/ui/menu.mm:1087
-T("Order (the top mod wins a file two mods change)", "顺序（两个模组修改同一文件时，上方的模组优先）")  // runtime/ui/menu.mm:1088
+T("Order (the top mod wins a file two mods change)", "顺序（上方的模组优先）")  // runtime/ui/menu.mm:1088
 T("No mods yet", "还没有模组")  // runtime/ui/menu.mm:1092
 T("There are no mods in the mods folder yet.", "模组文件夹中还没有模组。")  // runtime/ui/menu.mm:1092
 T("Not used", "未使用")  // runtime/ui/menu.mm:1097
@@ -663,8 +663,10 @@ T(" This run: %d changes to data applied, %d to code left out.", " 本次运行�
 T("None of them is for this game's version.", "没有一个适用于此游戏版本。")  // runtime/ui/menu.mm:1121
 T("Cheats: all of them run while the mod is on, switched at once.", "金手指：模组开启时全部运行，切换立即生效。")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " %d 个金手指，共 %d 个文件。")  // runtime/ui/menu.mm:1126
+T(" %d cheats in 1 file.", " %d 个金手指，共 1 个文件。")  // runtime/ui/menu.mm:1127
+T(" 1 cheat in 1 file.", " 1 个金手指，共 1 个文件。")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "它的金手指文件都不适用于此游戏版本。")  // runtime/ui/menu.mm:1129
-T("Some change the game's code, which is recompiled: those changes are left out.", "有些会修改已重新编译的游戏代码：这些修改会被跳过。")  // runtime/ui/menu.mm:1131
+T("Some change the game's code, which is recompiled: those cheats are left out.", "有些会修改已重新编译的游戏代码：这些金手指会被跳过。")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "有些停在了 Savage Wind 无法运行的代码上。")  // runtime/ui/menu.mm:1134
 T("Use this mod", "使用此模组")  // runtime/ui/menu.mm:1142
 T("Switches the mod on or off.", "开启或关闭模组。")  // runtime/ui/menu.mm:1142

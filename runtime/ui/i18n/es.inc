@@ -646,7 +646,7 @@ T("Open mods folder", "Abrir carpeta de mods")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "Buscar mods nuevos")  // runtime/ui/menu.mm:1084
 T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Vuelve a leer la carpeta de mods, para los mods copiados mientras Savage Wind está en marcha.")  // runtime/ui/menu.mm:1084
 T("Changes apply at the next start.", "Los cambios se aplican en el próximo inicio.")  // runtime/ui/menu.mm:1087
-T("Order (the top mod wins a file two mods change)", "Orden (el mod de arriba gana un archivo que cambian dos mods)")  // runtime/ui/menu.mm:1088
+T("Order (the top mod wins a file two mods change)", "Orden (el mod de arriba tiene prioridad)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "Aún no hay mods")  // runtime/ui/menu.mm:1092
 T("There are no mods in the mods folder yet.", "Aún no hay mods en la carpeta de mods.")  // runtime/ui/menu.mm:1092
 T("Not used", "Sin usar")  // runtime/ui/menu.mm:1097
@@ -663,8 +663,10 @@ T(" This run: %d changes to data applied, %d to code left out.", " Esta sesión:
 T("None of them is for this game's version.", "Ninguno es para esta versión del juego.")  // runtime/ui/menu.mm:1121
 T("Cheats: all of them run while the mod is on, switched at once.", "Trucos: todos se ejecutan mientras el mod está activado, y se cambian al instante.")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " %d trucos en %d archivos.")  // runtime/ui/menu.mm:1126
+T(" %d cheats in 1 file.", " %d trucos en 1 archivo.")  // runtime/ui/menu.mm:1127
+T(" 1 cheat in 1 file.", " 1 truco en 1 archivo.")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "Ninguno de sus archivos de trucos es para esta versión del juego.")  // runtime/ui/menu.mm:1129
-T("Some change the game's code, which is recompiled: those changes are left out.", "Algunos cambian el código del juego, que está recompilado: esos cambios se omiten.")  // runtime/ui/menu.mm:1131
+T("Some change the game's code, which is recompiled: those cheats are left out.", "Algunos cambian el código del juego, que está recompilado: esos trucos se omiten.")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "Algunos se detuvieron en un código que Savage Wind no puede ejecutar.")  // runtime/ui/menu.mm:1134
 T("Use this mod", "Usar este mod")  // runtime/ui/menu.mm:1142
 T("Switches the mod on or off.", "Activa o desactiva el mod.")  // runtime/ui/menu.mm:1142

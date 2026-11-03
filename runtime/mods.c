@@ -347,7 +347,7 @@ static bool cheat_rd(uint64_t a, void *b, size_t n) { return kernel_guest_copy(a
 
 static bool in_code(uint64_t a, size_t n) {
     for (int i = 0; i < g_nmodules; i++) {
-        uint64_t lo = g_modules[i].base + g_modules[i].text_off, hi = lo + g_modules[i].text_size;
+        uint64_t lo = g_modules[i].base + g_modules[i].text_off, hi = lo + ((g_modules[i].text_size + 0xFFF) & ~0xFFFull);
         if (a < hi && a + n > lo) return true;
     }
     return false;
@@ -440,18 +440,29 @@ static void cheats_load_locked(const Entry *x) {
         CheatProg *g = calloc(1, sizeof *g);
         snprintf(g->mod, sizeof g->mod, "%s", x->m.name);
         g->op = malloc(sizeof *g->op * CHEAT_OPS_MAX * (k ? k : 1));
+        // A cheat that patches the game's code is left out whole: what else it writes (code of its own put in a
+        // free spot of the data) only makes sense with that patch, which a recompiled game can't take
+        static bool code[256];
+        Module *main = loader_module("main");
+        int broken = 0, coded = 0;
+        for (int j = 0; j < k; j++) {
+            code[j] = !c[j].broken && main && cheat_writes_main(&c[j], main->text_off, main->text_off + ((main->text_size + 0xFFF) & ~0xFFFull));
+            broken += c[j].broken, coded += code[j];
+        }
         for (int pass = 0; pass < 2; pass++)  // (the master code first)
             for (int j = 0; j < k; j++)
-                if (c[j].master == !pass && !c[j].broken) memcpy(g->op + g->n, c[j].op, sizeof *g->op * c[j].n), g->n += c[j].n;
-        int broken = 0;
-        for (int j = 0; j < k; j++) broken += c[j].broken;
+                if (c[j].master == !pass && !c[j].broken && !code[j])
+                    memcpy(g->op + g->n, c[j].op, sizeof *g->op * c[j].n), g->n += c[j].n;
         g->count = k - broken;
+        g->code = coded > 0;
         cheat_vm_init(&g->vm, g->n);
         progs = realloc(progs, sizeof *progs * (nprogs + 1));
         progs[nprogs++] = g;
-        LOG("[mods] %s: %d cheats%s\n", p, g->count, broken ? ", some left out (a code that isn't 8 hex digits)" : "");
+        LOG("[mods] %s: %d cheats%s, %d of them changing the game's code (left out: recompiled)\n", p, g->count,
+            broken ? ", some left out (a code that isn't 8 hex digits)" : "", coded);
         for (int j = 0; j < k; j++)
             if (c[j].broken) LOG("[mods]   [%s] left out: a code that isn't 8 hex digits\n", c[j].name);
+            else if (code[j]) LOG("[mods]   [%s] left out: it changes the game's code\n", c[j].name);
     }
     if (d) closedir(d);
 }

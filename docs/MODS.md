@@ -55,9 +55,10 @@ Atmosphere cheat files (`cheats/<build id>.txt`, the first 16 digits of the buil
 line such as Eden: a mod with a cheat file is one entry in Settings > Mods, and while it is on every cheat in its file
 runs, twelve times a second. Unlike the other changes a mod makes, its cheats switch on and off at once, in the game
 too, and a cheat mod copied in while the game runs comes in with Look for new mods. To pick cheats one by one, give
-each one a mod folder of its own (cheat packs made for those emulators come that way). As with ExeFS patches, what a
-cheat writes to the game's code does nothing (the log and the mod's description say so); cheats that change the game's
-data (health, stamina, items, its values in memory) work. A cheat with a code Savage Wind can't run stops, and its
+each one a mod folder of its own (cheat packs made for those emulators come that way). As with ExeFS patches, a cheat
+that changes the game's code can't work: it is left out whole, with what else it writes (often code of its own, put in
+a free spot of the game's data), and the log and the mod's description say so. Cheats that change the game's data
+(health, stamina, items, its values in memory) work. A cheat with a code Savage Wind can't run stops, and its
 description says so. The codes that pause the game (FF0 / FF1) pause it while the codes between them run, as on the console.
 
 A cheat is made for one version of the game: its file is named for that build, and its addresses are that build's.

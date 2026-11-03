@@ -646,7 +646,7 @@ T("Open mods folder", "Modフォルダを開く")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "新しいModを探す")  // runtime/ui/menu.mm:1084
 T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Savage Windの実行中にコピーしたModのために、Modフォルダを読み直します。")  // runtime/ui/menu.mm:1084
 T("Changes apply at the next start.", "変更は次回の起動から反映されます。")  // runtime/ui/menu.mm:1087
-T("Order (the top mod wins a file two mods change)", "順序（2つのModが同じファイルを変える場合は上のModが優先）")  // runtime/ui/menu.mm:1088
+T("Order (the top mod wins a file two mods change)", "順序（上のModが優先）")  // runtime/ui/menu.mm:1088
 T("No mods yet", "Modはまだありません")  // runtime/ui/menu.mm:1092
 T("There are no mods in the mods folder yet.", "Modフォルダにはまだ Modがありません。")  // runtime/ui/menu.mm:1092
 T("Not used", "未使用")  // runtime/ui/menu.mm:1097
@@ -663,8 +663,10 @@ T(" This run: %d changes to data applied, %d to code left out.", " 今回の起�
 T("None of them is for this game's version.", "どれもこのバージョンのゲーム用ではありません。")  // runtime/ui/menu.mm:1121
 T("Cheats: all of them run while the mod is on, switched at once.", "チート：Modがオンの間はすべて動作し、切り替えはすぐに反映されます。")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " チート %d 個（%d ファイル）。")  // runtime/ui/menu.mm:1126
+T(" %d cheats in 1 file.", " チート %d 個（1 ファイル）。")  // runtime/ui/menu.mm:1127
+T(" 1 cheat in 1 file.", " チート 1 個（1 ファイル）。")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "このModのチートファイルはどれもこのバージョンのゲーム用ではありません。")  // runtime/ui/menu.mm:1129
-T("Some change the game's code, which is recompiled: those changes are left out.", "一部はゲームのコードを変更しますが、コードは再コンパイル済みのため、その変更は除外されます。")  // runtime/ui/menu.mm:1131
+T("Some change the game's code, which is recompiled: those cheats are left out.", "一部はゲームのコードを変更しますが、コードは再コンパイル済みのため、それらのチートは除外されます。")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "一部はSavage Windが実行できないコードで停止しました。")  // runtime/ui/menu.mm:1134
 T("Use this mod", "このModを使う")  // runtime/ui/menu.mm:1142
 T("Switches the mod on or off.", "Modのオン／オフを切り替えます。")  // runtime/ui/menu.mm:1142

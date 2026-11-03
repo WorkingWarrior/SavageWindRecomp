@@ -646,7 +646,7 @@ T("Open mods folder", "เปิดโฟลเดอร์ม็อด")  // ru
 T("Look for new mods", "ค้นหาม็อดใหม่")  // runtime/ui/menu.mm:1084
 T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "อ่านโฟลเดอร์ม็อดอีกครั้ง สำหรับม็อดที่คัดลอกเข้ามาขณะ Savage Wind ทำงานอยู่")  // runtime/ui/menu.mm:1084
 T("Changes apply at the next start.", "การเปลี่ยนแปลงจะมีผลในการเริ่มครั้งถัดไป")  // runtime/ui/menu.mm:1087
-T("Order (the top mod wins a file two mods change)", "ลำดับ (ม็อดด้านบนชนะเมื่อสองม็อดเปลี่ยนไฟล์เดียวกัน)")  // runtime/ui/menu.mm:1088
+T("Order (the top mod wins a file two mods change)", "ลำดับ (ม็อดด้านบนมาก่อน)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "ยังไม่มีม็อด")  // runtime/ui/menu.mm:1092
 T("There are no mods in the mods folder yet.", "ยังไม่มีม็อดในโฟลเดอร์ม็อด")  // runtime/ui/menu.mm:1092
 T("Not used", "ไม่ได้ใช้")  // runtime/ui/menu.mm:1097
@@ -663,8 +663,10 @@ T(" This run: %d changes to data applied, %d to code left out.", " รอบน�
 T("None of them is for this game's version.", "ไม่มีอันไหนเป็นของเกมเวอร์ชันนี้")  // runtime/ui/menu.mm:1121
 T("Cheats: all of them run while the mod is on, switched at once.", "สูตรโกง: ทั้งหมดทำงานขณะที่ม็อดเปิดอยู่ และสลับได้ทันที")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " สูตรโกง %d รายการใน %d ไฟล์")  // runtime/ui/menu.mm:1126
+T(" %d cheats in 1 file.", " สูตรโกง %d รายการใน 1 ไฟล์")  // runtime/ui/menu.mm:1127
+T(" 1 cheat in 1 file.", " สูตรโกง 1 รายการใน 1 ไฟล์")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "ไม่มีไฟล์สูตรโกงของมันที่เป็นของเกมเวอร์ชันนี้")  // runtime/ui/menu.mm:1129
-T("Some change the game's code, which is recompiled: those changes are left out.", "บางรายการเปลี่ยนโค้ดของเกมซึ่งถูกคอมไพล์ใหม่: การเปลี่ยนเหล่านั้นถูกข้าม")  // runtime/ui/menu.mm:1131
+T("Some change the game's code, which is recompiled: those cheats are left out.", "บางรายการเปลี่ยนโค้ดของเกมซึ่งถูกคอมไพล์ใหม่: สูตรโกงเหล่านั้นถูกข้าม")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "บางรายการหยุดที่โค้ดที่ Savage Wind รันไม่ได้")  // runtime/ui/menu.mm:1134
 T("Use this mod", "ใช้ม็อดนี้")  // runtime/ui/menu.mm:1142
 T("Switches the mod on or off.", "เปิดหรือปิดม็อด")  // runtime/ui/menu.mm:1142

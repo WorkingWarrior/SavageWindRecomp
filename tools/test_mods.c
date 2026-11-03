@@ -207,7 +207,7 @@ int main(void) {
     assert(exefs_bid_match("0123456789ABCDEF.ips", id) && exefs_bid_match("0123456789abcdef0011", id));
     assert(!exefs_bid_match("0123456789abcde.ips", id) && !exefs_bid_match("0123456789abcdef1.ips", id));
     // cheats: the file, then the codes on memory made here (region 0 at 0x1000)
-    static Cheat ch[4];
+    static Cheat ch[8];
     const char *ctext = "{Master}\n04000000 00000010 0000002A\n\n[Infinite \"HP\"]\r\n040A0000 00000010 12345678\n";
     assert(cheat_parse(ctext, strlen(ctext), ch, 4) == 2 && ch[0].master && !ch[1].master);
     assert(!strcmp(ch[1].name, "Infinite \"HP\"") && ch[1].n == 3 && ch[1].op[0] == 0x040A0000);
@@ -215,6 +215,14 @@ int main(void) {
     const char *shared = "[Money]\nThese need the menu open\n041F0000 0E440AC0 00999\n[Left open\n[Ok]\r\n04000000 00000010\n"
                          "00000001\n";
     assert(cheat_parse(shared, strlen(shared), ch, 4) == 2 && ch[0].broken && !ch[1].broken && ch[1].n == 3);
+    // a store to the main module's code (between the offsets given), not to its data or another region, nor a compare
+    const char *patch = "[Code]\n04000000 00229BE8 150C3BA0\n04000000 04538A68 5C000078\n[Data]\n04000000 04538A68 00000001\n"
+                        "[Heap]\n04100000 00000010 00000001\n[If]\n14000000 00000010 00000001\n20000000\n"
+                        "[Edge]\n08000000 00000FFC 00000000 00000000\n";
+    assert(cheat_parse(patch, strlen(patch), ch, 8) == 5);
+    assert(cheat_writes_main(&ch[0], 0, 0x2AA7000) && !cheat_writes_main(&ch[1], 0, 0x2AA7000));
+    assert(!cheat_writes_main(&ch[2], 0, 0x1000) && !cheat_writes_main(&ch[3], 0, 0x1000));
+    assert(cheat_writes_main(&ch[4], 0x1000, 0x2000) && !cheat_writes_main(&ch[4], 0x1004, 0x2000));
     CheatVm vm;
     cheat_vm_init(&vm, CHEAT_OPS_MAX);
     CheatEnv env = {.base = {0x1000, 0x2000, 0x3000, 0x4000, 0}, .rd = mem_rd, .wr = mem_wr};

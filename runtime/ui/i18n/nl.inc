@@ -646,7 +646,7 @@ T("Open mods folder", "Modsmap openen")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "Zoeken naar nieuwe mods")  // runtime/ui/menu.mm:1084
 T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Leest de modsmap opnieuw, voor mods die erin zijn gekopieerd terwijl Savage Wind draait.")  // runtime/ui/menu.mm:1084
 T("Changes apply at the next start.", "Wijzigingen gelden bij de volgende start.")  // runtime/ui/menu.mm:1087
-T("Order (the top mod wins a file two mods change)", "Volgorde (de bovenste mod wint een bestand dat twee mods wijzigen)")  // runtime/ui/menu.mm:1088
+T("Order (the top mod wins a file two mods change)", "Volgorde (de bovenste mod gaat voor)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "Nog geen mods")  // runtime/ui/menu.mm:1092
 T("There are no mods in the mods folder yet.", "Er staan nog geen mods in de modsmap.")  // runtime/ui/menu.mm:1092
 T("Not used", "Niet gebruikt")  // runtime/ui/menu.mm:1097
@@ -663,8 +663,10 @@ T(" This run: %d changes to data applied, %d to code left out.", " Deze sessie: 
 T("None of them is for this game's version.", "Geen ervan is voor deze versie van het spel.")  // runtime/ui/menu.mm:1121
 T("Cheats: all of them run while the mod is on, switched at once.", "Cheats: ze draaien allemaal zolang de mod aan staat, en schakelen meteen.")  // runtime/ui/menu.mm:1124
 T(" %d cheats in %d files.", " %d cheats in %d bestanden.")  // runtime/ui/menu.mm:1126
+T(" %d cheats in 1 file.", " %d cheats in 1 bestand.")  // runtime/ui/menu.mm:1127
+T(" 1 cheat in 1 file.", " 1 cheat in 1 bestand.")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "Geen van de cheatbestanden is voor deze versie van het spel.")  // runtime/ui/menu.mm:1129
-T("Some change the game's code, which is recompiled: those changes are left out.", "Sommige wijzigen de code van het spel, die gehercompileerd is: die wijzigingen worden overgeslagen.")  // runtime/ui/menu.mm:1131
+T("Some change the game's code, which is recompiled: those cheats are left out.", "Sommige wijzigen de code van het spel, die gehercompileerd is: die cheats worden overgeslagen.")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "Sommige stopten bij een code die Savage Wind niet kan uitvoeren.")  // runtime/ui/menu.mm:1134
 T("Use this mod", "Deze mod gebruiken")  // runtime/ui/menu.mm:1142
 T("Switches the mod on or off.", "Zet de mod aan of uit.")  // runtime/ui/menu.mm:1142

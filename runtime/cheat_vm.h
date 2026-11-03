@@ -125,6 +125,19 @@ static inline uint32_t cvm_len(const uint32_t *p, uint32_t n, uint32_t at) {
     return at + len <= n ? len : 0;
 }
 
+// A store of the cheat's (code 0) to the main module between lo and hi (offsets in it): its code, patched. The
+// offset register is taken as 0, as such cheats leave it; one that sets it is caught where it writes (CheatEnv.wr).
+static inline bool cheat_writes_main(const Cheat *c, uint64_t lo, uint64_t hi) {
+    for (uint32_t at = 0, len; at < c->n; at += len) {
+        if (!(len = cvm_len(c->op, c->n, at))) return false;
+        uint32_t f = c->op[at];
+        if (f >> 28 || CVM_NB(f, 2)) continue;
+        uint64_t rel = (uint64_t)(f & 0xFF) << 32 | c->op[at + 1];
+        if (rel < hi && rel + CVM_NB(f, 1) > lo) return true;
+    }
+    return false;
+}
+
 static inline bool cvm_begins(uint32_t f) { return f >> 28 == 1 || f >> 28 == 8 || f >> 24 == 0xC0 || f >> 24 == 0xC4; }
 
 // Past the block that starts before `at`: after its End, or (else_too) its Else
