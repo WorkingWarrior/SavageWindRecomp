@@ -348,6 +348,29 @@ int kernel_data_regions(uint64_t *addr, uint64_t *size, int max) {
     return n;
 }
 
+// Host code off the guest's threads (runtime/mods.c: the cheats) reads or writes guest memory: only inside one mapped
+// region that allows it (QueryMemory's map), under g_klock so no svc unmaps it meanwhile, and not once a reboot is
+// asked for (the renderer lets the heap go before kernel_reset empties the map). In place, not through the OS: the heap
+// can be the renderer's GPU memory, which an OS copy (process_vm_readv) can't reach.
+bool kernel_guest_copy(uint64_t a, void *buf, size_t n, bool write) {
+    if (!n || a + n < a) return false;
+    klock();
+    int lo = 0, hi = nregions - 1, f = -1;
+    while (lo <= hi) {  // (the last region starting at or below a: the map is sorted by address)
+        int m = (lo + hi) / 2;
+        if (regions[m].addr <= a) f = m, lo = m + 1;
+        else hi = m - 1;
+    }
+    bool ok = !rt_reboot_requested() && f >= 0 && a + n <= regions[f].addr + regions[f].size &&
+              (regions[f].perm & (write ? 2 : 1));
+    if (ok) {
+        if (write) memcpy((void *)(uintptr_t)a, buf, n);
+        else memcpy(buf, (const void *)(uintptr_t)a, n);
+    }
+    pthread_mutex_unlock(&g_klock);
+    return ok;
+}
+
 static void region_add(uint64_t addr, uint64_t size, uint32_t type, uint32_t perm) {
     uint64_t commit_addr = addr, commit_size = size;
     if (type == 7) {
