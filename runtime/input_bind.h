@@ -1,7 +1,7 @@
 // Control remapping (runtime/hle/bindings.c): which controller button / key drives each Switch input. Edited from
 // the in-game menu's Controls tab and the start screen (runtime/ui/controls_ui.mm), saved in savagewind.ini.
-// Menus (the overlay, the start screen) never use these: they keep the fixed default layout, so no binding can lock
-// the player out.
+// Menus (the overlay, the start screen) keep the fixed default layout, so no binding can lock the player out; the
+// overlay's confirm and back follow the buttons bound to A and B while both are buttons.
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

@@ -341,7 +341,10 @@ bool menu_handle_event(const SDL_Event *e) {
         }
         if (!capturing()) return false;
         ImGuiKey k = key_from_pad(e->gbutton.button);
-        if (g_sizes.load() || g_amiibo.load()) {  // (in game) lists: the buttons bound to A and B, wherever they are
+        // the buttons bound to A and B, wherever they are: in the (in game) lists, and in the menu when both are
+        // buttons (bound to a trigger, one of them can't be pressed here: the fixed layout stays, none locks it)
+        if (g_sizes.load() || g_amiibo.load() ||
+            (g_bind_pad[BIND_A] < PADB_LTRIGGER && g_bind_pad[BIND_B] < PADB_LTRIGGER)) {
             int b = e->gbutton.button;
             if (b == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
             else if (b == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
