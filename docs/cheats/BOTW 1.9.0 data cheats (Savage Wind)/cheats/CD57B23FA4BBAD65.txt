@@ -42,6 +42,40 @@ C045C2E0 00000010
 20000000
 310D0000
 
+[999 Materials]
+Walks the inventory list (PauseMenuDataMgr at main + 0x1E18570, its list head at +0x68), all 420 places it can
+hold, and sets each material (type 7) to 999. Kept in the save when the game saves.
+580F0000 01E18570
+780F0000 00000068
+580E2F00 00000008
+400C0000 00000000 00000007
+400B0000 00000000 00000018
+300D0000 000001A5
+C086E5F0
+C045C2E0 00000010
+640E01B0 00000000 000003E7
+20000000
+580E1000 00000008
+20000000
+310D0000
+
+[999 Food]
+Walks the inventory list (PauseMenuDataMgr at main + 0x1E18570, its list head at +0x68), all 420 places it can
+hold, and sets each meal or roasted food (type 8) to 999. Kept in the save when the game saves.
+580F0000 01E18570
+780F0000 00000068
+580E2F00 00000008
+400C0000 00000000 00000008
+400B0000 00000000 00000018
+300D0000 000001A5
+C086E5F0
+C045C2E0 00000010
+640E01B0 00000000 000003E7
+20000000
+580E1000 00000008
+20000000
+310D0000
+
 [Weapons and bows never break]
 Keeps the durability of the weapon and the bow in Link's hands at 100000 (1000 hits or shots; the game counts 100 a
 hit). From PlayerInfo (main + 0x1E13ED0) the player (+0x60), the links to its weapon (+0xB98) and bow (+0xBC8), each

@@ -1028,13 +1028,18 @@ static void tab_language(bool in_game) {
     opt_end();
 }
 
+// A page used this frame's B / Esc itself (an open mod folded, a question backed out of): the menu, or the start
+// screen's page, stays
+static bool g_back_taken;
+bool menu_back_taken(void) { return g_back_taken; }
+
 // Quit: back to the start screen (in game: the game reboots to it) or out to the desktop. Each asks first (progress
 // since the last save is lost); B / Esc or Cancel backs out.
 extern "C" void rt_request_reboot(int kind);  // runtime/main.c (RT_REBOOT_TITLE = 2: the start screen)
 static void tab_quit(float scale, bool in_game) {
     static int ask;  // 0: the two choices; 1: start screen?; 2: desktop?
     if (ask && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
-        ask = 0;
+        ask = 0, g_back_taken = true;
     const char *lost = in_game ? tr("\n\nProgress since your last save is lost.") : "";
     char d1[400], d2[400];
     snprintf(d1, sizeof d1, tr("Leaves the game and goes back to the Savage Wind start screen.%s"), lost);
@@ -1124,10 +1129,6 @@ static void mod_describe(const Mod *m, char *desc, size_t cap) {
         }
     }
 }
-
-// A page used this frame's B / Esc itself (an open mod folded): the menu, or the start screen's page, stays
-static bool g_back_taken;
-bool menu_back_taken(void) { return g_back_taken; }
 
 // Mods (runtime/mods.h): the mods folder's list, top first. A selects a mod: its switch and arrows show under it, B
 // folds it again. Changes are saved at once and used when the game next opens its files.
