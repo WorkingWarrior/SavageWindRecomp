@@ -122,7 +122,7 @@ void rt_paths_init(void) {
 const char *rt_data_root(void) { return g_root; }
 
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
-    char c[4][1100] = {{0}};
+    char c[5][1100] = {{0}};
     if (name) {
         snprintf(c[0], sizeof c[0], "%s" SEP "%s", g_exe_dir, name);
         snprintf(c[1], sizeof c[1], "%s" SEP ".." SEP "Resources" SEP "%s", g_exe_dir, name);  // .app/Contents/Resources
@@ -130,8 +130,9 @@ bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n) {
     if (dev_rel) {
         snprintf(c[2], sizeof c[2], "%s" SEP "%s", g_start, dev_rel);
         snprintf(c[3], sizeof c[3], "%s" SEP ".." SEP "%s", g_exe_dir, dev_rel);  // build/savagewind -> repo root
+        snprintf(c[4], sizeof c[4], "%s" SEP ".." SEP ".." SEP "%s", g_exe_dir, dev_rel);  // make B=build/<dir>
     }
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 5; i++)
         if (c[i][0] && exists(c[i])) return (size_t)snprintf(out, n, "%s", c[i]) < n;  // (as is: a venv python must stay a link)
     return false;
 }

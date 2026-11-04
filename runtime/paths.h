@@ -28,7 +28,7 @@ const char *rt_data_root(void);   // absolute
 bool rt_dev_mode(void);           // dev / portable mode (rule 2 above): e.g. a source checkout
 
 // A shipped file: `name` next to the executable or in Contents/Resources, else `dev_rel` in the source tree (the
-// starting directory or the executable's parent; NULL = shipped builds only). Absolute path in out; false = none.
+// starting directory, the executable's parent or grandparent; NULL = shipped builds only). Absolute path in out; false = none.
 bool rt_resource(const char *name, const char *dev_rel, char *out, size_t n);
 
 // The only way the app deletes game files. Removes the named entry of game_dir (an extracted/ folder) only if
