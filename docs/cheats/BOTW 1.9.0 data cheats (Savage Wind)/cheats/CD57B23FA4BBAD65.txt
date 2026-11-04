@@ -14,16 +14,27 @@ Ported from EdiZon's 1.6.0 cheat: PlayerInfo (main + 0x1E13ED0) +0xA4, the stami
 640F0000 00000000 453B8000
 
 [999999 Rupees]
-The game data flag CurrentRupee: main + 0x1E3AFC8, +0xD8, the s32 flags (+0x278), flag 376 (+0xBC0), its value
-(+0x18). Kept in the save when the game saves. 376 is its place among the 2801 s32 flags of 1.9.0's
-Bootup.pack (GameData/gamedata.ssarc), sorted by hash: the same with or without the DLC, which adds no flags of its
-own; a mod that changes the game data flags may move it.
+The game data flag CurrentRupee: from main + 0x1E3AFC8, +0xD8, the s32 flags (pointers at +0x278, their count at
++0x270), it looks for the one whose name hash (+0x1C) is CurrentRupee's (23149BF8) and writes its value (+0x18). In
+1.9.0 it is flag 376 of 2801, the same with or without the DLC; looking it up keeps it right when a mod changes the
+game data flags (up to 4096 of them). Kept in the save when the game saves.
 580F0000 01E3AFC8
 580F1000 000000D8
-580F1000 00000278
-580F1000 00000BC0
-780F0000 00000018
-640F0000 00000000 000F423F
+54092F00 00000270
+580D2F00 00000278
+400C0000 00000000 23149BF8
+400B0000 00000000 00000018
+400A0000 00000000 00000000
+30080000 00001000
+C043A590
+580E2D00 00000000
+C045C2E0 0000001C
+640E01B0 00000000 000F423F
+20000000
+780D0000 00000008
+780A0000 00000001
+20000000
+31080000
 
 [999 Arrows (every kind)]
 Walks the inventory list (PauseMenuDataMgr at main + 0x1E18570, its list head at +0x68) and sets each arrow

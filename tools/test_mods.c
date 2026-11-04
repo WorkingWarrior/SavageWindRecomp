@@ -240,6 +240,24 @@ int main(void) {
     assert(run_codes(&vm, &env, "40020000 00000000 00000000 30030000 00000005 94022100 00000003 31030000 "
                                 "A4200400 00000300 C0452400 0000000F 01000000 00000310 00000001 20000000") == CHEAT_DONE);
     assert(mem32(0x300) == 15 && mem[0x310] == 1);
+    // docs/cheats' rupees: a flag looked up by its name hash in a pointer array, within its count (here main + 0x100
+    // for 0x1E3AFC8; CurrentRupee 4th of 5, a flag past the count with its hash left alone)
+    uint64_t mgr = 0x1400, obj = 0x1500, arr = 0x1800;
+    memcpy(mem + 0x100, &mgr, 8), memcpy(mem + 0x400 + 0xD8, &obj, 8), memcpy(mem + 0x500 + 0x278, &arr, 8);
+    uint32_t nflags = 5;
+    memcpy(mem + 0x500 + 0x270, &nflags, 4);
+    for (uint32_t i = 0; i < 6; i++) {
+        uint64_t fl = 0x2000 + i * 0x40;
+        uint32_t h = i == 3 || i == 5 ? 0x23149BF8 : i, zero = 0;
+        memcpy(mem + 0x800 + i * 8, &fl, 8), memcpy(mem + fl - 0x1000 + 0x1C, &h, 4), memcpy(mem + fl - 0x1000 + 0x18, &zero, 4);
+    }
+    assert(run_codes(&vm, &env, "580F0000 00000100 580F1000 000000D8 54092F00 00000270 580D2F00 00000278 "
+                                "400C0000 00000000 23149BF8 400B0000 00000000 00000018 400A0000 00000000 00000000 "
+                                "30080000 00001000 C043A590 580E2D00 00000000 C045C2E0 0000001C "
+                                "640E01B0 00000000 000F423F 20000000 780D0000 00000008 780A0000 00000001 20000000 "
+                                "31080000") == CHEAT_DONE);
+    assert(mem32(0x1000 + 3 * 0x40 + 0x18) == 999999 && !mem32(0x1000 + 2 * 0x40 + 0x18) &&
+           !mem32(0x1000 + 5 * 0x40 + 0x18));
     // float arithmetic: 1.5 + 2.0
     assert(run_codes(&vm, &env, "40050000 00000000 3FC00000 94A55100 40000000 A4500400 00000320") == CHEAT_DONE);
     assert(mem32(0x320) == 0x40600000);
