@@ -35,6 +35,8 @@ T("Performance", "ประสิทธิภาพ")
 T("Ultra Performance", "ประสิทธิภาพสูงสุด")
 T("SMAA", "")
 T("Console (896)", "เท่าคอนโซล (896)")
+T("Console", "เท่าคอนโซล")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "ขนาดของแผนที่ที่ใช้วาดเงา คอนโซล: ค่าของเกมเอง สูง (2048) สูงสุด (4096) และสุดขีด (8192) ให้ขอบเงาคมขึ้น และให้แสงทั้งฉากที่ความละเอียดเต็มแทนครึ่งเดียว แลกกับเวลา GPU และหน่วยความจำวิดีโอมากขึ้น")  // runtime/ui/menu.mm:979
 T("High (2048)", "สูง (2048)")
 T("Ultra (4096)", "สูงสุด (4096)")
 T("Extreme (8192)", "สุดขีด (8192)")
@@ -87,6 +89,9 @@ T("How far out grass, trees, rocks, buildings and enemies appear. Higher costs m
 T("How much the camera shows in play. Cutscenes keep their own.", "ปริมาณที่กล้องแสดงขณะเล่น คัตซีนใช้ค่าของตัวเอง")
 T("How much of the world the camera shows in play: 100% is the game's own. Cutscenes and conversations keep theirs.", "ปริมาณของโลกที่กล้องแสดงขณะเล่น: 100% คือค่าของเกมเอง คัตซีนและบทสนทนาใช้ค่าของตัวเอง")
 T("Frame rate", "อัตราเฟรม")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "จำนวนภาพที่เกมวาดในหนึ่งวินาที ตัวเกมเองเดินด้วยความเร็วเท่ากันทั้งสองค่า (คอนโซลแสดงที่ 30) ผมและผ้ายังขยับตามจังหวะของคอนโซล")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "ความเร็วเกมเท่าเดิมทุกอัตรา จอของคุณ: %d Hz")
 T("Game speed stays the same at every rate.", "ความเร็วเกมเท่าเดิมทุกอัตรา")
 T("VSync", "")

@@ -452,6 +452,9 @@ T("To change settings or the game files later, start Savage Wind with --config."
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "以后要更改设置或游戏文件，请按住Option键打开Savage\u00a0Wind。")
 T("%d FPS", "")
 T("Frame rate", "帧率")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "游戏每秒绘制的画面数。无论哪种，游戏本身的速度都一样（主机以30显示）。头发和布料仍按主机的节奏摆动。")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "任何帧率下游戏速度都相同。你的显示器：%d Hz。")
 T("Game speed stays the same at every rate.", "任何帧率下游戏速度都相同。")
 T("VSync", "垂直同步")
@@ -485,6 +488,8 @@ T("Precompiling shaders", "正在预编译着色器")
 T("%d shaders, %s", "%d 个着色器，%s")
 T("Shadow resolution", "阴影分辨率")
 T("Console (896)", "主机（896）")
+T("Console", "主机")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "绘制阴影所用贴图的大小。主机：游戏原本的大小。高（2048）、超高（4096）和极致（8192）让阴影边缘更清晰，并以完整而非一半的分辨率照亮场景，但会占用更多GPU时间和显存。")  // runtime/ui/menu.mm:979
 T("High (2048)", "高（2048）")
 T("Ultra (4096)", "超高（4096）")
 T("Extreme (8192)", "极致（8192）")

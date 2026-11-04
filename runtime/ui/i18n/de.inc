@@ -452,6 +452,9 @@ T("To change settings or the game files later, start Savage Wind with --config."
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "Um später Einstellungen oder die Spieldateien zu ändern, halte beim Öffnen von Savage Wind die Wahltaste gedrückt.")
 T("%d FPS", "")
 T("Frame rate", "Bildrate")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "Wie viele Bilder pro Sekunde das Spiel zeichnet. Das Spiel selbst läuft bei beiden Raten gleich schnell (die Konsole zeigt es mit 30). Haare und Stoff bewegen sich weiter im Takt der Konsole.")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "Spieltempo bleibt bei jeder Rate gleich. Dein Bildschirm: %d Hz.")
 T("Game speed stays the same at every rate.", "Spieltempo bleibt bei jeder Rate gleich.")
 T("VSync", "VSync")
@@ -485,6 +488,8 @@ T("Precompiling shaders", "Shader werden vorkompiliert")
 T("%d shaders, %s", "%d Shader, %s")
 T("Shadow resolution", "Schattenauflösung")
 T("Console (896)", "Konsole (896)")
+T("Console", "Konsole")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "Die Größe der Karten, aus denen die Schatten gezeichnet werden. Konsole: die des Spiels. Hoch (2048), Ultra (4096) und Extrem (8192) geben schärfere Schattenkanten und beleuchten die Szene in voller statt halber Auflösung, für mehr GPU-Zeit und Videospeicher.")  // runtime/ui/menu.mm:979
 T("High (2048)", "Hoch (2048)")
 T("Ultra (4096)", "Ultra (4096)")
 T("Extreme (8192)", "Extrem (8192)")

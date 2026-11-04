@@ -452,6 +452,9 @@ T("To change settings or the game files later, start Savage Wind with --config."
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "Чтобы позже изменить настройки или файлы игры, удерживайте клавишу Option при открытии Savage Wind.")
 T("%d FPS", "%d к/с")
 T("Frame rate", "Частота кадров")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "Сколько кадров в секунду рисует игра. Сама игра идёт с одной скоростью при любом значении (консоль показывает её с 30). Волосы и ткань по-прежнему двигаются в темпе консоли.")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "Скорость игры одинакова при любой частоте. Ваш экран: %d Гц.")
 T("Game speed stays the same at every rate.", "Скорость игры одинакова при любой частоте.")
 T("VSync", "Вертикальная синхронизация")
@@ -485,6 +488,8 @@ T("Precompiling shaders", "Предкомпиляция шейдеров")
 T("%d shaders, %s", "Шейдеров: %d, %s")
 T("Shadow resolution", "Разрешение теней")
 T("Console (896)", "Консоль (896)")
+T("Console", "Консоль")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "Размер карт, по которым рисуются тени. Консоль: как в самой игре. Высокое (2048), Ультра (4096) и Экстрим (8192) дают более чёткие края теней и освещают сцену в полном разрешении вместо половинного ценой времени GPU и видеопамяти.")  // runtime/ui/menu.mm:979
 T("High (2048)", "Высокое (2048)")
 T("Ultra (4096)", "Ультра (4096)")
 T("Extreme (8192)", "Экстрим (8192)")

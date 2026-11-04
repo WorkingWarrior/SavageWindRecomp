@@ -452,6 +452,9 @@ T("To change settings or the game files later, start Savage Wind with --config."
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "Pour modifier les réglages ou les fichiers du jeu plus tard, maintenez la touche Option enfoncée en ouvrant Savage Wind.")
 T("%d FPS", "")
 T("Frame rate", "Images par seconde")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "Le nombre d'images que le jeu dessine par seconde. Le jeu lui-même tourne à la même vitesse dans les deux cas (la console l'affiche à 30). Les cheveux et les tissus bougent toujours au rythme de la console.")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "La vitesse du jeu reste la même à chaque fréquence. Écran : %d Hz.")
 T("Game speed stays the same at every rate.", "La vitesse du jeu reste la même à chaque fréquence.")
 T("VSync", "Synchro verticale")
@@ -485,6 +488,8 @@ T("Precompiling shaders", "Précompilation des shaders")
 T("%d shaders, %s", "")
 T("Shadow resolution", "Résolution des ombres")
 T("Console (896)", "Console (896)")
+T("Console", "Console")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "La taille des cartes à partir desquelles les ombres sont dessinées. Console : celle du jeu. Élevée (2048), Ultra (4096) et Extrême (8192) donnent des bords d'ombre plus nets et éclairent la scène en pleine résolution au lieu de la moitié, contre plus de temps GPU et de mémoire vidéo.")  // runtime/ui/menu.mm:979
 T("High (2048)", "Élevée (2048)")
 T("Ultra (4096)", "Ultra (4096)")
 T("Extreme (8192)", "Extrême (8192)")

@@ -452,6 +452,9 @@ T("To change settings or the game files later, start Savage Wind with --config."
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "Per cambiare le impostazioni o i file di gioco in seguito, tieni premuto il tasto Opzione mentre apri Savage Wind.")
 T("%d FPS", "")
 T("Frame rate", "Fotogrammi al secondo")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "Quante immagini al secondo disegna il gioco. Il gioco in sé va alla stessa velocità in entrambi i casi (la console lo mostra a 30). Capelli e stoffe si muovono ancora al ritmo della console.")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "La velocità del gioco resta uguale a ogni frequenza. Schermo: %d Hz.")
 T("Game speed stays the same at every rate.", "La velocità del gioco resta uguale a ogni frequenza.")
 T("VSync", "Sincronizzazione verticale")
@@ -485,6 +488,8 @@ T("Precompiling shaders", "Precompilazione degli shader")
 T("%d shaders, %s", "%d shader, %s")
 T("Shadow resolution", "Risoluzione delle ombre")
 T("Console (896)", "Console (896)")
+T("Console", "Console")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "La dimensione delle mappe da cui si disegnano le ombre. Console: quella del gioco. Alta (2048), Ultra (4096) ed Estrema (8192) danno bordi delle ombre più nitidi e illuminano la scena a piena risoluzione invece che a metà, in cambio di più tempo GPU e memoria video.")  // runtime/ui/menu.mm:979
 T("High (2048)", "Alta (2048)")
 T("Ultra (4096)", "Ultra (4096)")
 T("Extreme (8192)", "Estrema (8192)")

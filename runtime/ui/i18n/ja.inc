@@ -452,6 +452,9 @@ T("To change settings or the game files later, start Savage Wind with --config."
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "あとで設定やゲームファイルを変更するには、Optionキーを押しながらSavage\u00a0Windを開いてください。")
 T("%d FPS", "")
 T("Frame rate", "フレームレート")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "ゲームが1秒間に描く画像の数です。どちらでもゲーム自体の速さは同じです（本体は30で表示します）。髪や布は本体と同じ間隔で動きます。")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "どのフレームレートでもゲームの速さは同じです。画面：%d Hz。")
 T("Game speed stays the same at every rate.", "どのフレームレートでもゲームの速さは同じです。")
 T("VSync", "垂直同期")
@@ -485,6 +488,8 @@ T("Precompiling shaders", "シェーダーをプリコンパイル中")
 T("%d shaders, %s", "シェーダー %d 個、%s")
 T("Shadow resolution", "影の解像度")
 T("Console (896)", "本体（896）")
+T("Console", "本体")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "影を描くためのマップの大きさです。本体：ゲーム本来の大きさ。高（2048）、ウルトラ（4096）、エクストリーム（8192）は影の輪郭がくっきりし、シーンの光を半分ではなく全解像度で計算しますが、GPUの時間とビデオメモリを多く使います。")  // runtime/ui/menu.mm:979
 T("High (2048)", "高（2048）")
 T("Ultra (4096)", "ウルトラ（4096）")
 T("Extreme (8192)", "エクストリーム（8192）")

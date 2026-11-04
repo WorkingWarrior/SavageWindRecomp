@@ -118,3 +118,23 @@ As the weapons' cheat, for the shield (the link at +0xBB0).
 C045C2E0 0000001C
 640E01B0 00000000 000186A0
 20000000
+
+[Time stands still]
+Stops the clock: the time of day stays where it is. Writes 0 to the speed of the world's TimeMgr
+(ksys::world::Manager at main + 0x1E57580, its managers at +0x5C8, the first one, the speed at +0xC4: 1/120 of a
+4-minute step a frame, a game minute a second at 30 fps). Switching it off doesn't start the clock again: switch
+Time runs again on for a moment, or start the game again.
+580F0000 01E57580
+580F1000 000005C8
+580F1000 00000000
+780F0000 000000C4
+640F0000 00000000 00000000
+
+[Time runs again]
+After Time stands still: puts the clock's speed back to the game's own (1/120, 0x3C088889). Switch it off again
+once the clock runs (on, it keeps writing the speed back).
+580F0000 01E57580
+580F1000 000005C8
+580F1000 00000000
+780F0000 000000C4
+640F0000 00000000 3C088889

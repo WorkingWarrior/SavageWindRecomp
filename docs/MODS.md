@@ -72,9 +72,9 @@ is skipped, an entry with no codes at all (a file's title, a `-NOTE-`) is not li
 them are on; B folds an open mod.
 
 [docs/cheats](cheats) has a cheat file for Breath of the Wild 1.9.0 written for Savage Wind, from data addresses only:
-infinite health and stamina, 999999 rupees, 999 arrows of every kind, 999 of each material and food, and weapons, bows
-and the shield that never break. Copy its folder (`BOTW 1.9.0 data cheats (Savage Wind)`) into the game's mods folder;
-each cheat's notes say what it changes and where.
+infinite health and stamina, 999999 rupees, 999 arrows of every kind, 999 of each material and food, weapons, bows and
+the shield that never break, and the clock stopped and started again. Copy its folder (`BOTW 1.9.0 data cheats (Savage
+Wind)`) into the game's mods folder; each cheat's notes say what it changes and where.
 
 ## Limits
 

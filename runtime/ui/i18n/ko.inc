@@ -452,6 +452,9 @@ T("To change settings or the game files later, start Savage Wind with --config."
 T("To change settings or the game files later, hold Option while you open Savage Wind.", "나중에 설정이나 게임 파일을 변경하려면 Option 키를 누른 채로 Savage Wind를 여세요.")
 T("%d FPS", "")
 T("Frame rate", "프레임 레이트")
+T("30 FPS", "")  // runtime/ui/menu.mm:793
+T("60 FPS", "")  // runtime/ui/menu.mm:793
+T("How many pictures a second the game draws. The game itself runs at the same speed at either rate (the console runs it at 30). Hair and cloth still move at the console's rate.", "게임이 1초에 그리는 화면 수입니다. 어느 쪽이든 게임 자체의 속도는 같습니다(본체는 30으로 보여 줍니다). 머리카락과 천은 여전히 본체의 박자로 움직입니다.")  // runtime/ui/menu.mm:796
 T("Game speed stays the same at every rate. Your display: %d Hz.", "어떤 프레임 레이트에서도 게임 속도는 같습니다. 화면: %d Hz.")
 T("Game speed stays the same at every rate.", "어떤 프레임 레이트에서도 게임 속도는 같습니다.")
 T("VSync", "수직 동기화")
@@ -485,6 +488,8 @@ T("Precompiling shaders", "셰이더를 미리 컴파일하는 중")
 T("%d shaders, %s", "셰이더 %d개, %s")
 T("Shadow resolution", "그림자 해상도")
 T("Console (896)", "본체 (896)")
+T("Console", "본체")  // runtime/ui/menu.mm:973
+T("The size of the maps the shadows are drawn from. Console: the game's own. High (2048), Ultra (4096) and Extreme (8192) give sharper shadow edges, and light the scene at its full resolution instead of half, for more GPU time and video memory.", "그림자를 그리는 맵의 크기입니다. 본체: 게임 원래의 크기. 높음(2048), 울트라(4096), 익스트림(8192)은 그림자 가장자리가 더 선명해지고 장면의 빛을 절반이 아닌 전체 해상도로 계산하는 대신 GPU 시간과 비디오 메모리를 더 씁니다.")  // runtime/ui/menu.mm:979
 T("High (2048)", "높음 (2048)")
 T("Ultra (4096)", "울트라 (4096)")
 T("Extreme (8192)", "익스트림 (8192)")
