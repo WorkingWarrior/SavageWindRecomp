@@ -836,7 +836,7 @@ static bool menu_item(const char *label, bool enabled, bool *hovered = NULL, con
 }
 
 // Controllers, as in the in-game menu (runtime/ui/menu.mm): read straight from SDL, Nintendo layout - the right face
-// button (A) confirms, the bottom one (B) goes back; d-pad / left stick move. (ImGui's own SDL gamepad handling is
+// button (A) confirms, the bottom one (B) goes back, unless A and B are bound elsewhere; d-pad / left stick move. (ImGui's own SDL gamepad handling is
 // switched off: it used the Xbox layout and, per the user, didn't work on the start screen.)
 static ImGuiKey launcher_pad_key(Uint8 b) {
     switch (b) {
@@ -873,6 +873,12 @@ static bool launcher_pad_event(const SDL_Event &e) {
         return true;
     case SDL_EVENT_GAMEPAD_BUTTON_DOWN: case SDL_EVENT_GAMEPAD_BUTTON_UP: {
         ImGuiKey k = launcher_pad_key(e.gbutton.button);
+        // the buttons bound to A and B confirm and go back, as in the overlay, while both are buttons (bound to a
+        // trigger, one of them can't be pressed here: the fixed layout stays, none locks the screen)
+        if (g_bind_pad[BIND_A] < PADB_LTRIGGER && g_bind_pad[BIND_B] < PADB_LTRIGGER) {
+            if (e.gbutton.button == g_bind_pad[BIND_A]) k = ImGuiKey_GamepadFaceDown;
+            else if (e.gbutton.button == g_bind_pad[BIND_B]) k = ImGuiKey_GamepadFaceRight;
+        }
         if (k != ImGuiKey_None) io.AddKeyEvent(k, e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN);
         return true;
     }
