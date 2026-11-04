@@ -325,11 +325,13 @@ void mods_exefs_apply(Module *m, const char *build_id) {
     pthread_mutex_unlock(&lock);
 }
 
-// ---- cheats: every mod's in the list, loaded once the game's build id is known (and files found later by a rescan).
-// Each cheat has a switch of its own, off until the player switches it on (kept in cheats.ini in the mods folder: a
-// line "<mod>\t<cheat>" per cheat on), apart from its mod's switch, which is for its game files. A file runs as one
-// program, as Atmosphere loads it: its master codes, then its cheats on, in the file's order; none on, nothing runs.
-enum { CH_OK, CH_BROKEN, CH_CODE };  // a cheat: usable, a code that isn't 8 hex digits, it patches the game's code
+// ---- cheats: every mod's in the list, loaded once the game's build id is known (and files found or changed later, at a
+// rescan). Each cheat has a switch of its own, off until the player switches it on (kept in cheats.ini in the mods
+// folder: a line "<mod>\t<cheat>" per cheat on), apart from its mod's switch, which is for its game files. A file runs
+// as one program, as Atmosphere loads it: its master codes, then its cheats on, in the file's order; none on, nothing
+// runs.
+enum { CH_OK, CH_BROKEN, CH_CODE, CH_NOTE };  // a cheat: usable, a code that isn't 8 hex digits, it patches the game's
+                                              // code, no codes at all (a file's title or a note: not listed)
 typedef struct {
     char mod[256];
     Cheat *cheat;           // the file's cheats, in its order
@@ -345,7 +347,8 @@ typedef struct {
 static CheatProg **progs;
 static int nprogs;
 static char cheat_bid[80];      // the main module's build id ("" before the loader gave it)
-static char (*seen)[1400];      // the cheat files read (loaded or not): a rescan reads only new ones
+typedef struct { char path[1400]; time_t mtime; long long size; CheatProg *prog; } CheatSeen;
+static CheatSeen *seen;         // the cheat files read (loaded or not; prog: NULL): a rescan reads only new or changed ones
 static int nseen;
 #define PROGS_MAX 256
 static char cheat_file[1200];   // <folder>/cheats.ini
@@ -487,10 +490,13 @@ static void cheats_load_locked(const Entry *x) {
         char p[1400];
         snprintf(p, sizeof p, "%s/%s", x->f.cheats, de->d_name);
         int s = 0;
-        while (s < nseen && strcmp(seen[s], p)) s++;
+        while (s < nseen && strcmp(seen[s].path, p)) s++;
         if (s < nseen) continue;
+        struct stat sb;
         seen = realloc(seen, sizeof *seen * (nseen + 1));
-        snprintf(seen[nseen++], sizeof *seen, "%s", p);
+        CheatSeen *sn = &seen[nseen++];
+        snprintf(sn->path, sizeof sn->path, "%s", p);
+        sn->mtime = !stat(p, &sb) ? sb.st_mtime : 0, sn->size = sn->mtime ? (long long)sb.st_size : -1, sn->prog = NULL;
         size_t n;
         uint8_t *data = slurp(p, &n);
         int k = data ? cheat_parse((const char *)data, n, c, 256) : -1;
@@ -511,7 +517,7 @@ static void cheats_load_locked(const Entry *x) {
         for (int j = 0; j < k; j++) {
             bool code = !c[j].broken && main &&
                         cheat_writes_main(&c[j], main->text_off, main->text_off + ((main->text_size + 0xFFF) & ~0xFFFull));
-            g->state[j] = c[j].broken ? CH_BROKEN : code ? CH_CODE : CH_OK;
+            g->state[j] = c[j].broken ? CH_BROKEN : code ? CH_CODE : !c[j].n && !c[j].master ? CH_NOTE : CH_OK;
             broken += c[j].broken, coded += code;
             g->count += !c[j].master && g->state[j] == CH_OK;
             char key[330];
@@ -523,6 +529,7 @@ static void cheats_load_locked(const Entry *x) {
         cheat_build_locked(g);
         progs = realloc(progs, sizeof *progs * (nprogs + 1));
         progs[nprogs++] = g;
+        sn->prog = g;
         LOG("[mods] %s: %d cheats%s, %d of them changing the game's code (left out: recompiled)\n", p, k,
             broken ? ", some left out (a code that isn't 8 hex digits)" : "", coded);
         for (int j = 0; j < k; j++)
@@ -537,6 +544,16 @@ static void cheats_load_locked(const Entry *x) {
 static void cheats_sync_locked(void) {
     if (!cheat_bid[0]) return;
     cheat_keys_read_locked();
+    // a file changed or gone since it was read: its cheats stop and it is read again (the switches stay: by name)
+    for (int s = 0; s < nseen; s++) {
+        struct stat sb;
+        if (!stat(seen[s].path, &sb) && sb.st_mtime == seen[s].mtime && (long long)sb.st_size == seen[s].size) continue;
+        CheatProg *g = seen[s].prog;
+        for (int p = 0; g && p < nprogs; p++)
+            if (progs[p] == g) { progs[p] = progs[--nprogs]; break; }  // (not freed: the cheat thread may be running it)
+        LOG("[mods] %s: changed or gone since it was read%s\n", seen[s].path, g ? ": its cheats stop until it is read again" : "");
+        seen[s--] = seen[--nseen];
+    }
     for (int i = 0; i < n; i++) {
         const Entry *x = &list[i];
         if (x->f.cheats[0] && x->m.problem == MOD_OK) cheats_load_locked(x);
@@ -577,13 +594,13 @@ static void cheat_keys_save_locked(void) {
     cheat_keys_read_locked();
 }
 
-// Mod i's cheats (master codes left out), j counted over its files
+// Mod i's cheats (master codes and notes left out), j counted over its files
 static bool cheat_find_locked(int i, int j, CheatProg **g, int *at) {
     if (i < 0 || i >= n) return false;
     for (int p = 0; p < nprogs; p++) {
         if (strcmp(progs[p]->mod, list[i].m.name)) continue;
         for (int c = 0; c < progs[p]->k; c++)
-            if (!progs[p]->cheat[c].master && j-- == 0) { *g = progs[p], *at = c; return true; }
+            if (!progs[p]->cheat[c].master && progs[p]->state[c] != CH_NOTE && j-- == 0) { *g = progs[p], *at = c; return true; }
     }
     return false;
 }
@@ -594,7 +611,7 @@ int mods_cheat_count(int i) {
     if (i >= 0 && i < n)
         for (int p = 0; p < nprogs; p++)
             if (!strcmp(progs[p]->mod, list[i].m.name))
-                for (int c = 0; c < progs[p]->k; c++) k += !progs[p]->cheat[c].master;
+                for (int c = 0; c < progs[p]->k; c++) k += !progs[p]->cheat[c].master && progs[p]->state[c] != CH_NOTE;
     pthread_mutex_unlock(&lock);
     return k;
 }

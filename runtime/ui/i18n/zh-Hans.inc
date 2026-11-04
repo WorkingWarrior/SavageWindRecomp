@@ -644,7 +644,7 @@ T("Mods", "模组")  // runtime/ui/menu.mm:1078
 T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "在文件管理器中打开模组文件夹（%s）。与模拟器一样，每个模组放在单独的文件夹中（里面是 romfs 文件夹，或 Switch SD 卡的 atmosphere/contents 结构）。名称以 _ 开头的文件夹会被跳过。")  // runtime/ui/menu.mm:1080
 T("Open mods folder", "打开模组文件夹")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "查找新模组")  // runtime/ui/menu.mm:1084
-T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "重新读取模组文件夹，用于 Savage Wind 运行时复制进来的模组。")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running and cheat files changed since.", "重新读取模组文件夹，用于 Savage Wind 运行时复制进来的模组和之后改过的作弊文件。")  // runtime/ui/menu.mm:1146
 T("Changes apply at the next start.", "更改将在下次启动时生效。")  // runtime/ui/menu.mm:1087
 T("Order (the top mod wins a file two mods change)", "顺序（上方的模组优先）")  // runtime/ui/menu.mm:1088
 T("No mods yet", "还没有模组")  // runtime/ui/menu.mm:1092
@@ -665,6 +665,8 @@ T(" %d cheats in %d files.", " %d 个金手指，共 %d 个文件。")  // runti
 T(" %d cheats in 1 file.", " %d 个金手指，共 1 个文件。")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " 1 个金手指，共 1 个文件。")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "它的金手指文件都不适用于此游戏版本。")  // runtime/ui/menu.mm:1129
+T("None of its cheats can work here.", "它的作弊码在这里都无法使用。")  // runtime/ui/menu.mm:1108
+T("%d on", "已开 %d")  // runtime/ui/menu.mm:1161
 T("Some change the game's code, which is recompiled: those cheats are left out.", "有些会修改已重新编译的游戏代码：这些金手指会被跳过。")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "有些停在了 Savage Wind 无法运行的代码上。")  // runtime/ui/menu.mm:1134
 T("Use this mod", "使用此模组")  // runtime/ui/menu.mm:1142

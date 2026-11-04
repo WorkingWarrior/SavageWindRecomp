@@ -644,7 +644,7 @@ T("Mods", "Mod")  // runtime/ui/menu.mm:1078
 T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "Modフォルダ（%s）をファイルマネージャーで開きます。エミュレーターと同じく、Modはそれぞれ専用のフォルダに入れます（中にromfsフォルダ、またはSwitchのSDカードのatmosphere/contents構成）。名前が _ で始まるフォルダは除外されます。")  // runtime/ui/menu.mm:1080
 T("Open mods folder", "Modフォルダを開く")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "新しいModを探す")  // runtime/ui/menu.mm:1084
-T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Savage Windの実行中にコピーしたModのために、Modフォルダを読み直します。")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running and cheat files changed since.", "Savage Windの実行中にコピーしたModと、その後に変更したチートファイルのために、Modフォルダを読み直します。")  // runtime/ui/menu.mm:1146
 T("Changes apply at the next start.", "変更は次回の起動から反映されます。")  // runtime/ui/menu.mm:1087
 T("Order (the top mod wins a file two mods change)", "順序（上のModが優先）")  // runtime/ui/menu.mm:1088
 T("No mods yet", "Modはまだありません")  // runtime/ui/menu.mm:1092
@@ -665,6 +665,8 @@ T(" %d cheats in %d files.", " チート %d 個（%d ファイル）。")  // ru
 T(" %d cheats in 1 file.", " チート %d 個（1 ファイル）。")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " チート 1 個（1 ファイル）。")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "このModのチートファイルはどれもこのバージョンのゲーム用ではありません。")  // runtime/ui/menu.mm:1129
+T("None of its cheats can work here.", "このModのチートはどれもここでは動作しません。")  // runtime/ui/menu.mm:1108
+T("%d on", "%d個オン")  // runtime/ui/menu.mm:1161
 T("Some change the game's code, which is recompiled: those cheats are left out.", "一部はゲームのコードを変更しますが、コードは再コンパイル済みのため、それらのチートは除外されます。")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "一部はSavage Windが実行できないコードで停止しました。")  // runtime/ui/menu.mm:1134
 T("Use this mod", "このModを使う")  // runtime/ui/menu.mm:1142

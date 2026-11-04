@@ -644,7 +644,7 @@ T("Mods", "ม็อด")  // runtime/ui/menu.mm:1078
 T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "เปิดโฟลเดอร์ม็อด (%s) ในตัวจัดการไฟล์ ม็อดแต่ละตัวอยู่ในโฟลเดอร์ของตัวเอง เหมือนที่อีมูเลเตอร์ใช้ (มีโฟลเดอร์ romfs อยู่ข้างใน หรือโครงสร้าง atmosphere/contents ของการ์ด SD ของ Switch) โฟลเดอร์ที่ชื่อขึ้นต้นด้วย _ จะถูกข้าม")  // runtime/ui/menu.mm:1080
 T("Open mods folder", "เปิดโฟลเดอร์ม็อด")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "ค้นหาม็อดใหม่")  // runtime/ui/menu.mm:1084
-T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "อ่านโฟลเดอร์ม็อดอีกครั้ง สำหรับม็อดที่คัดลอกเข้ามาขณะ Savage Wind ทำงานอยู่")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running and cheat files changed since.", "อ่านโฟลเดอร์ม็อดอีกครั้ง สำหรับม็อดที่คัดลอกเข้ามาขณะ Savage Wind ทำงานอยู่ และไฟล์สูตรโกงที่แก้ไขหลังจากนั้น")  // runtime/ui/menu.mm:1146
 T("Changes apply at the next start.", "การเปลี่ยนแปลงจะมีผลในการเริ่มครั้งถัดไป")  // runtime/ui/menu.mm:1087
 T("Order (the top mod wins a file two mods change)", "ลำดับ (ม็อดด้านบนมาก่อน)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "ยังไม่มีม็อด")  // runtime/ui/menu.mm:1092
@@ -665,6 +665,8 @@ T(" %d cheats in %d files.", " สูตรโกง %d รายการใน
 T(" %d cheats in 1 file.", " สูตรโกง %d รายการใน 1 ไฟล์")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " สูตรโกง 1 รายการใน 1 ไฟล์")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "ไม่มีไฟล์สูตรโกงของมันที่เป็นของเกมเวอร์ชันนี้")  // runtime/ui/menu.mm:1129
+T("None of its cheats can work here.", "ไม่มีสูตรโกงใดของม็อดนี้ที่ใช้งานได้ที่นี่")  // runtime/ui/menu.mm:1108
+T("%d on", "เปิด %d")  // runtime/ui/menu.mm:1161
 T("Some change the game's code, which is recompiled: those cheats are left out.", "บางรายการเปลี่ยนโค้ดของเกมซึ่งถูกคอมไพล์ใหม่: สูตรโกงเหล่านั้นถูกข้าม")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "บางรายการหยุดที่โค้ดที่ Savage Wind รันไม่ได้")  // runtime/ui/menu.mm:1134
 T("Use this mod", "ใช้ม็อดนี้")  // runtime/ui/menu.mm:1142

@@ -644,7 +644,7 @@ T("Mods", "Моды")  // runtime/ui/menu.mm:1078
 T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "Открывает папку модов (%s) в файловом менеджере. Каждый мод лежит в своей папке, как их принимают эмуляторы (с папкой romfs внутри или со структурой atmosphere/contents SD-карты Switch). Папка, имя которой начинается с _, пропускается.")  // runtime/ui/menu.mm:1080
 T("Open mods folder", "Открыть папку модов")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "Искать новые моды")  // runtime/ui/menu.mm:1084
-T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Заново читает папку модов — для модов, скопированных, пока работает Savage Wind.")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running and cheat files changed since.", "Заново читает папку модов — для модов, скопированных, пока работает Savage Wind, и файлов читов, изменённых с тех пор.")  // runtime/ui/menu.mm:1146
 T("Changes apply at the next start.", "Изменения вступят в силу при следующем запуске.")  // runtime/ui/menu.mm:1087
 T("Order (the top mod wins a file two mods change)", "Порядок (верхний мод главнее)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "Модов пока нет")  // runtime/ui/menu.mm:1092
@@ -665,6 +665,8 @@ T(" %d cheats in %d files.", " Читов: %d, в файлах: %d.")  // runtim
 T(" %d cheats in 1 file.", " Читов: %d, в файлах: 1.")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " Читов: 1, в файлах: 1.")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "Ни один из его файлов читов не для этой версии игры.")  // runtime/ui/menu.mm:1129
+T("None of its cheats can work here.", "Ни один из его читов здесь не работает.")  // runtime/ui/menu.mm:1108
+T("%d on", "Вкл.: %d")  // runtime/ui/menu.mm:1161
 T("Some change the game's code, which is recompiled: those cheats are left out.", "Некоторые меняют код игры, который перекомпилирован: эти читы пропускаются.")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "Некоторые остановились на коде, который Savage Wind не может выполнить.")  // runtime/ui/menu.mm:1134
 T("Use this mod", "Использовать этот мод")  // runtime/ui/menu.mm:1142

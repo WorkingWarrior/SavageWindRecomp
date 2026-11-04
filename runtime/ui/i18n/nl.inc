@@ -644,7 +644,7 @@ T("Mods", "Mods")  // runtime/ui/menu.mm:1078
 T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "Opent de modsmap (%s) in je bestandsbeheerder. Elke mod komt in een eigen map, zoals emulators ze nemen (met een romfs-map erin, of de indeling atmosphere/contents van de SD-kaart van de Switch). Een map waarvan de naam met _ begint, wordt overgeslagen.")  // runtime/ui/menu.mm:1080
 T("Open mods folder", "Modsmap openen")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "Zoeken naar nieuwe mods")  // runtime/ui/menu.mm:1084
-T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Leest de modsmap opnieuw, voor mods die erin zijn gekopieerd terwijl Savage Wind draait.")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running and cheat files changed since.", "Leest de modsmap opnieuw, voor mods die erin zijn gekopieerd terwijl Savage Wind draait en cheatbestanden die sindsdien zijn gewijzigd.")  // runtime/ui/menu.mm:1146
 T("Changes apply at the next start.", "Wijzigingen gelden bij de volgende start.")  // runtime/ui/menu.mm:1087
 T("Order (the top mod wins a file two mods change)", "Volgorde (de bovenste mod gaat voor)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "Nog geen mods")  // runtime/ui/menu.mm:1092
@@ -665,6 +665,8 @@ T(" %d cheats in %d files.", " %d cheats in %d bestanden.")  // runtime/ui/menu.
 T(" %d cheats in 1 file.", " %d cheats in 1 bestand.")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " 1 cheat in 1 bestand.")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "Geen van de cheatbestanden is voor deze versie van het spel.")  // runtime/ui/menu.mm:1129
+T("None of its cheats can work here.", "Geen van de cheats kan hier werken.")  // runtime/ui/menu.mm:1108
+T("%d on", "%d aan")  // runtime/ui/menu.mm:1161
 T("Some change the game's code, which is recompiled: those cheats are left out.", "Sommige wijzigen de code van het spel, die gehercompileerd is: die cheats worden overgeslagen.")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "Sommige stopten bij een code die Savage Wind niet kan uitvoeren.")  // runtime/ui/menu.mm:1134
 T("Use this mod", "Deze mod gebruiken")  // runtime/ui/menu.mm:1142

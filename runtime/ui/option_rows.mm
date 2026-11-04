@@ -107,8 +107,14 @@ static int row(const char *label, const std::string &value, bool changed, const 
     std::string t = upper ? tr_upper(tr(label)) : std::string(tr(label));
     float ty = p.y + (h - fs) * 0.5f;
     ImU32 label_col = off ? IM_COL32(110, 110, 102, 255) : IM_COL32(240, 236, 224, 255);  // (greyed out: clearly dim)
-    dl->AddText(ImVec2(p.x + pad, ty), label_col, t.c_str());
     float right = p.x + w - pad;  // (the value's right edge)
+    // the label ends with "..." where it would run into the value (a long cheat name)
+    float lmax = right;
+    if (!value.empty())
+        lmax -= ImGui::CalcTextSize(value.c_str()).x + pad + (arrows ? fs * (0.42f + 0.55f) * 2 : 0);
+    ImGui::PushStyleColor(ImGuiCol_Text, label_col);
+    ImGui::RenderTextEllipsis(dl, ImVec2(p.x + pad, ty), ImVec2(lmax, ty + fs), lmax, lmax, t.c_str(), NULL, NULL);
+    ImGui::PopStyleColor();
     if (arrows && !value.empty()) {  // ◀ value ▶, drawn (the fonts have no arrow glyphs); a click on one steps
         float aw = fs * 0.42f, gap = fs * 0.55f, cy = ty + fs * 0.52f;
         float rx = right - aw, lx = rx - gap - ImGui::CalcTextSize(value.c_str()).x - gap - aw;

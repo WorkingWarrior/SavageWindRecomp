@@ -1,0 +1,75 @@
+[Infinite Health]
+Keeps Link's health full: writes 30 hearts, the game cuts it to his heart containers. Chain from 1.9.0's
+uking::act::PlayerInfo pointer (main + 0x1E13ED0) to the player (+0x60) and its health in quarter hearts (+0x848),
+as EdiZon's 1.6.0 cheat (optantic, WerWolv, Grattler, WilHiteWarrior, Testerr).
+580F0000 01E13ED0
+580F1000 00000060
+780F0000 00000848
+640F0000 00000000 00000078
+
+[Infinite Stamina]
+Ported from EdiZon's 1.6.0 cheat: PlayerInfo (main + 0x1E13ED0) +0xA4, the stamina wheel (3000 = full).
+580F0000 01E13ED0
+780F0000 000000A4
+640F0000 00000000 453B8000
+
+[999999 Rupees]
+The game data flag CurrentRupee: main + 0x1E3AFC8, +0xD8, the s32 flags (+0x278), flag 376 (+0xBC0), its value
+(+0x18). Kept in the save when the game saves. 376 is its place among the 2801 s32 flags of 1.9.0's
+Bootup.pack (GameData/gamedata.ssarc), sorted by hash: the same with or without the DLC, which adds no flags of its
+own; a mod that changes the game data flags may move it.
+580F0000 01E3AFC8
+580F1000 000000D8
+580F1000 00000278
+580F1000 00000BC0
+780F0000 00000018
+640F0000 00000000 000F423F
+
+[999 Arrows (every kind)]
+Walks the inventory list (PauseMenuDataMgr at main + 0x1E18570, its list head at +0x68) and sets each arrow
+item (type 2) to 999. Kept in the save when the game saves.
+580F0000 01E18570
+780F0000 00000068
+580E2F00 00000008
+400C0000 00000000 00000002
+400B0000 00000000 00000018
+300D0000 00000050
+C086E5F0
+C045C2E0 00000010
+640E01B0 00000000 000003E7
+20000000
+580E1000 00000008
+20000000
+310D0000
+
+[Weapons and bows never break]
+Keeps the durability of the weapon and the bow in Link's hands at 100000 (1000 hits or shots; the game counts 100 a
+hit). From PlayerInfo (main + 0x1E13ED0) the player (+0x60), the links to its weapon (+0xB98) and bow (+0xBC8), each
+link's actor (+0x48) and its durability (+0xD4C), written only when it is a weapon (its name, +0x1C, starts with
+"Weap"). Kept in the save when the game saves.
+580F0000 01E13ED0
+580F1000 00000060
+400C0000 00000000 70616557
+400B0000 00000000 00000D4C
+580E2F00 00000B98
+580E1000 00000048
+C045C2E0 0000001C
+640E01B0 00000000 000186A0
+20000000
+580E2F00 00000BC8
+580E1000 00000048
+C045C2E0 0000001C
+640E01B0 00000000 000186A0
+20000000
+
+[Shield never breaks]
+As the weapons' cheat, for the shield (the link at +0xBB0).
+580F0000 01E13ED0
+580F1000 00000060
+400C0000 00000000 70616557
+400B0000 00000000 00000D4C
+580E2F00 00000BB0
+580E1000 00000048
+C045C2E0 0000001C
+640E01B0 00000000 000186A0
+20000000

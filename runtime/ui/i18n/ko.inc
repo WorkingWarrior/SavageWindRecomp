@@ -644,7 +644,7 @@ T("Mods", "모드")  // runtime/ui/menu.mm:1078
 T("Opens the mods folder (%s) in your file manager. Each mod goes in a folder of its own, as emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents layout). A folder whose name starts with _ is left out.", "모드 폴더(%s)를 파일 관리자에서 엽니다. 에뮬레이터처럼 모드마다 자체 폴더에 넣습니다(안에 romfs 폴더, 또는 Switch SD 카드의 atmosphere/contents 구조). 이름이 _로 시작하는 폴더는 제외됩니다.")  // runtime/ui/menu.mm:1080
 T("Open mods folder", "모드 폴더 열기")  // runtime/ui/menu.mm:1083
 T("Look for new mods", "새 모드 찾기")  // runtime/ui/menu.mm:1084
-T("Reads the mods folder again, for mods copied in while Savage Wind is running.", "Savage Wind 실행 중에 복사한 모드를 위해 모드 폴더를 다시 읽습니다.")  // runtime/ui/menu.mm:1084
+T("Reads the mods folder again, for mods copied in while Savage Wind is running and cheat files changed since.", "Savage Wind 실행 중에 복사한 모드와 그 뒤에 바뀐 치트 파일을 위해 모드 폴더를 다시 읽습니다.")  // runtime/ui/menu.mm:1146
 T("Changes apply at the next start.", "변경 사항은 다음 시작 때 적용됩니다.")  // runtime/ui/menu.mm:1087
 T("Order (the top mod wins a file two mods change)", "순서(위의 모드가 우선)")  // runtime/ui/menu.mm:1088
 T("No mods yet", "아직 모드 없음")  // runtime/ui/menu.mm:1092
@@ -665,6 +665,8 @@ T(" %d cheats in %d files.", " 치트 %d개(파일 %d개).")  // runtime/ui/menu
 T(" %d cheats in 1 file.", " 치트 %d개(파일 1개).")  // runtime/ui/menu.mm:1127
 T(" 1 cheat in 1 file.", " 치트 1개(파일 1개).")  // runtime/ui/menu.mm:1128
 T("None of its cheat files is for this game's version.", "이 모드의 치트 파일 중 이 게임 버전용은 없습니다.")  // runtime/ui/menu.mm:1129
+T("None of its cheats can work here.", "이 모드의 치트는 여기서 하나도 작동하지 않습니다.")  // runtime/ui/menu.mm:1108
+T("%d on", "%d개 켜짐")  // runtime/ui/menu.mm:1161
 T("Some change the game's code, which is recompiled: those cheats are left out.", "일부는 재컴파일된 게임 코드를 바꿉니다: 그 치트는 제외됩니다.")  // runtime/ui/menu.mm:1131
 T("They stopped at a code Savage Wind can't run.", "일부는 Savage Wind가 실행할 수 없는 코드에서 멈췄습니다.")  // runtime/ui/menu.mm:1134
 T("Use this mod", "이 모드 사용")  // runtime/ui/menu.mm:1142

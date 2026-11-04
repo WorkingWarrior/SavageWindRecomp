@@ -1104,7 +1104,9 @@ static void mod_describe(const Mod *m, char *desc, size_t cap) {
         if (m->cheats) {
             desc_add(desc, cap, &k, "\n\n%s", tr("Cheats: each one has a switch of its own, off until you switch it on. "
                                                  "They work at once, whatever the mod's switch."));
-            if (m->cheat_files) {
+            if (m->cheat_files && !m->cheat_count)
+                desc_add(desc, cap, &k, " %s", tr("None of its cheats can work here."));
+            else if (m->cheat_files) {
                 desc_add(desc, cap, &k, m->cheat_files > 1 ? tr(" %d cheats in %d files.")
                                                    : m->cheat_count != 1 ? tr(" %d cheats in 1 file.")
                                                                        : tr(" 1 cheat in 1 file."),
@@ -1123,10 +1125,17 @@ static void mod_describe(const Mod *m, char *desc, size_t cap) {
     }
 }
 
-// Mods (runtime/mods.h): the mods folder's list, top first. A selects a mod: its switch and arrows show under it.
-// Changes are saved at once and used when the game next opens its files.
+// A page used this frame's B / Esc itself (an open mod folded): the menu, or the start screen's page, stays
+static bool g_back_taken;
+bool menu_back_taken(void) { return g_back_taken; }
+
+// Mods (runtime/mods.h): the mods folder's list, top first. A selects a mod: its switch and arrows show under it, B
+// folds it again. Changes are saved at once and used when the game next opens its files.
 static void tab_mods(float scale, bool in_game) {
-    static int sel = -1;
+    static int sel = -1, refocus = -1;  // (refocus: the mod just folded, its row takes the cursor)
+    if (sel >= 0 && !ui_text_busy() && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+        (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
+        refocus = sel, sel = -1, g_back_taken = true;
     opt_begin("##mods", scale);
     opt_section("Mods");
     char d[1400];
@@ -1134,7 +1143,7 @@ static void tab_mods(float scale, bool in_game) {
                              "emulators take them (a romfs folder in it, or the Switch SD card's atmosphere/contents "
                              "layout). A folder whose name starts with _ is left out."), mods_folder());
     if (opt_action("Open mods folder", "", d)) reveal_folder(mods_folder());
-    if (opt_action("Look for new mods", "", "Reads the mods folder again, for mods copied in while Savage Wind is running."))
+    if (opt_action("Look for new mods", "", "Reads the mods folder again, for mods copied in while Savage Wind is running and cheat files changed since."))
         mods_rescan(), sel = -1;
     if (in_game && mods_changed())
         ImGui::TextWrapped("%s", tr("Changes apply at the next start."));
@@ -1147,10 +1156,20 @@ static void tab_mods(float scale, bool in_game) {
     for (int i = 0; i < n; i++) {
         Mod m;
         if (!mods_get(i, &m)) break;
-        const char *value = m.problem != MOD_OK ? tr("Not used") : m.on ? tr("On") : tr("Off");
+        // (a mod of cheats alone has no switch of its own: how many of its cheats are on)
+        char on_n[64];
+        snprintf(on_n, sizeof on_n, tr("%d on"), m.cheat_on);
+        bool cheats_only = !m.layout[0] && !m.exefs;
+        const char *value = m.problem != MOD_OK ? tr("Not used") : !cheats_only ? tr(m.on ? "On" : "Off")
+                          : m.cheat_on ? on_n : tr("Off");
         char desc[1200];
         mod_describe(&m, desc, sizeof desc);
         if (opt_action(m.name, value, desc, false)) sel = sel == i ? -1 : i;
+        if (refocus == i) {
+            refocus = -1;
+            ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+            ImGui::SetNavCursorVisible(true);
+        }
         if (sel != i) continue;
         opt_indent(1);
         bool on = m.on;
@@ -1487,6 +1506,7 @@ extern "C" int menu_keyboard_run(const char *initial, int max_len, char *out, in
 // false: nothing of the game is loaded yet - the tabs that need it are greyed out; prelaunch: the start screen's own
 // first tab, game files and fonts, drawn by launcher.mm).
 static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
+    g_back_taken = false;
     // (id: the page; -1 = Prelaunch)
     struct Tab { const char *name; int id; bool on; };
     Tab tabs[11];
@@ -1742,7 +1762,7 @@ void menu_render(void *cmd, uint32_t target_w, uint32_t target_h) {
         tabs_body(scale, true, NULL);                                                                          //  pages run)
         // B with nothing focused-deeper closes the menu (not the Esc / B that ends typing: typing is from the frame
         // before, so it's still true the frame a field lets go)
-        if (!any_popup && !typing && !ui_text_busy() && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        if (!any_popup && !typing && !ui_text_busy() && !g_back_taken && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
             (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)))
             set_open(false);
         ImGui::PopFont();

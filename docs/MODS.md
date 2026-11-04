@@ -52,21 +52,29 @@ recompiled game.
 
 ## Cheats
 
-Atmosphere cheat files (`cheats/<build id>.txt`, the first 16 digits of the build id) list their cheats under the
-mod in Settings > Mods, once the game is running: each cheat has a switch of its own, off until you switch it on, and
+Atmosphere cheat files (`cheats/<build id>.txt`, the first 16 digits of the build id) list their cheats under the mod
+in Settings > Mods, once the game is running: each cheat has a switch of its own, off until you switch it on, and
 works from that moment, twelve times a second. The mod's own switch is for its game files, not its cheats. The cheats
 on are kept in `cheats.ini` in the game's mods folder. A file's master code (`{name}`) runs with its cheats on. A
-cheat copied in while the game runs comes in with Look for new mods. As with ExeFS patches, a cheat that changes the
-game's code can't work: it is left out whole, with what else it writes (often code of its own, put in a free spot of
-the game's data), and shown greyed. Cheats that change the game's data (health, stamina, items, its values in memory)
-work. When a code can't be run, the file's cheats stop until a switch changes. The codes that pause the game (FF0 /
-FF1) pause it while the codes between them run, as on the console.
+cheat file copied in or changed while the game runs comes in with Look for new mods (a changed file's switches stay on
+as they were, by the cheats' names). As with ExeFS patches, a cheat that changes the game's code can't work: it is
+left out whole, with what else it writes (often code of its own, put in a free spot of the game's data), and shown
+greyed. Cheats that change the game's data (health, stamina, items, its values in memory) work. When a code can't be
+run, the file's cheats stop until a switch changes. The codes that pause the game (FF0 / FF1) pause it while the codes
+between them run, as on the console.
 
 A cheat is made for one version of the game: its file is named for that build, and its addresses are that build's.
 Most cheats shared for Breath of the Wild 1.9.0 change its code (they write instructions, like `04000000 00CE9B60
 D503201F`), so they do nothing here; a cheat that follows pointers to the game's data (`58...` codes) works once its
 addresses are the ones of the version you play. A line of a cheat file that is not codes (a note under a cheat's name)
-is skipped, and a cheat with a broken code (not 8 hex digits) is left out, the rest of the file still loads.
+is skipped, an entry with no codes at all (a file's title, a `-NOTE-`) is not listed, and a cheat with a broken code
+(not 8 hex digits) is left out, the rest of the file still loads. In the list, a mod of cheats alone shows how many of
+them are on; B folds an open mod.
+
+[docs/cheats](cheats) has a cheat file for Breath of the Wild 1.9.0 written for Savage Wind, from data addresses only:
+infinite health and stamina, 999999 rupees, 999 arrows of every kind, and weapons, bows and the shield that never
+break. Copy its folder (`BOTW 1.9.0 data cheats (Savage Wind)`) into the game's mods folder; each cheat's notes say
+what it changes and where.
 
 ## Limits
 
